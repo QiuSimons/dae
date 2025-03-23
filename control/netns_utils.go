@@ -191,8 +191,8 @@ func (ns *DaeNetns) setupRoutingPolicy() (err error) {
 		Flow:              -1,
 		Family:            unix.AF_INET,
 		Table:             table,
-		Mark:              int(consts.TproxyMark),
-		Mask:              int(consts.TproxyMark),
+		Mark:              consts.TproxyMark,
+		Mask:              &consts.TproxyMark,
 	}, {
 		SuppressIfgroup:   -1,
 		SuppressPrefixlen: -1,
@@ -201,8 +201,8 @@ func (ns *DaeNetns) setupRoutingPolicy() (err error) {
 		Flow:              -1,
 		Family:            unix.AF_INET6,
 		Table:             table,
-		Mark:              int(consts.TproxyMark),
-		Mask:              int(consts.TproxyMark),
+		Mark:              consts.TproxyMark,
+		Mask:              &consts.TproxyMark,
 	}}
 
 	for _, rule := range rules {
