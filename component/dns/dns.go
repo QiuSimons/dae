@@ -40,10 +40,12 @@ type NewOption struct {
 func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 	s = &Dns{
 		log: opt.Logger,
-		// upstream2Index uses sync.Map, no need to initialize
 	}
-	// Set the default nil mapping
-	s.upstream2Index.Store((*Upstream)(nil), int(consts.DnsRequestOutboundIndex_AsIs))
+	// Set the default nil mapping - add safety check
+	if opt != nil && opt.UpstreamReadyCallback != nil {
+		s.upstream2Index.Store((*Upstream)(nil), int(consts.DnsRequestOutboundIndex_AsIs))
+	}
+	
 	// Parse upstream.
 	upstreamName2Id := map[string]uint8{}
 	for i, upstreamRaw := range dns.Upstream {
@@ -117,8 +119,10 @@ func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 		return nil, fmt.Errorf("failed to build DNS response routing: %w", err)
 	}
 	if len(dns.Upstream) == 0 {
-		// Immediately ready.
-		go opt.UpstreamReadyCallback(nil)
+		// Immediately ready - add safety check
+		if opt != nil && opt.UpstreamReadyCallback != nil {
+			opt.UpstreamReadyCallback(nil)
+		}
 	}
 	return s, nil
 }
