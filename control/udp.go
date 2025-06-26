@@ -55,7 +55,12 @@ func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Msg, timeout
 func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn *net.UDPConn) (err error) {
 	uConn, _, err := DefaultAnyfromPool.GetOrCreate(from.String(), AnyfromTimeout)
 	if err != nil {
-		return
+		// If unable to create connection, log detailed error but do not crash
+		log.WithError(err).WithFields(logrus.Fields{
+			"from": from.String(),
+			"to":   realTo.String(),
+		}).Debug("Failed to get UDP connection from pool, skipping packet")
+		return err
 	}
 	_, err = uConn.WriteToUDPAddrPort(data, realTo)
 	return err

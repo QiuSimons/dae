@@ -560,9 +560,16 @@ func (c *ControlPlane) InjectBpf(bpf *bpfObjects) {
 }
 
 func (c *ControlPlane) CloneDnsCache() map[string]*DnsCache {
-	c.dnsController.dnsCacheMu.Lock()
-	defer c.dnsController.dnsCacheMu.Unlock()
-	return deepcopy.Copy(c.dnsController.dnsCache).(map[string]*DnsCache)
+	clonedCache := make(map[string]*DnsCache)
+	c.dnsController.dnsCache.Range(func(key, value interface{}) bool {
+		cache := value.(*DnsCache)
+		// Only clone the cache when it is still valid to avoid unnecessary deep copy
+		if cache.Deadline.After(time.Now()) {
+			clonedCache[key.(string)] = deepcopy.Copy(cache).(*DnsCache)
+		}
+		return true
+	})
+	return clonedCache
 }
 
 func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err error) {

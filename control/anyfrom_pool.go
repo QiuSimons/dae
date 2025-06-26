@@ -8,6 +8,7 @@ package control
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"net"
 	"net/netip"
@@ -161,71 +162,81 @@ func appendUDPSegmentSizeMsg(b []byte, size uint16) []byte {
 
 // AnyfromPool is a full-cone udp listener pool
 type AnyfromPool struct {
-	pool map[string]*Anyfrom
-	mu   sync.RWMutex
+	pool sync.Map // Use sync.Map to reduce lock contention
 }
 
 var DefaultAnyfromPool = NewAnyfromPool()
 
 func NewAnyfromPool() *AnyfromPool {
-	return &AnyfromPool{
-		pool: make(map[string]*Anyfrom, 64),
-		mu:   sync.RWMutex{},
-	}
+	return &AnyfromPool{}
 }
 
 func (p *AnyfromPool) GetOrCreate(lAddr string, ttl time.Duration) (conn *Anyfrom, isNew bool, err error) {
-	p.mu.RLock()
-	af, ok := p.pool[lAddr]
-	if !ok {
-		p.mu.RUnlock()
-		p.mu.Lock()
-		defer p.mu.Unlock()
-		if af, ok = p.pool[lAddr]; ok {
-			return af, false, nil
-		}
-		// Create an Anyfrom.
-		isNew = true
-		d := net.ListenConfig{
-			Control: func(network string, address string, c syscall.RawConn) error {
-				return dialer.TransparentControl(c)
-			},
-			KeepAlive: 0,
-		}
-		var err error
-		var pc net.PacketConn
-		GetDaeNetns().With(func() error {
-			pc, err = d.ListenPacket(context.Background(), "udp", lAddr)
-			return nil
-		})
-		if err != nil {
-			return nil, true, err
-		}
-		uConn := pc.(*net.UDPConn)
-		af = &Anyfrom{
-			UDPConn:       uConn,
-			deadlineTimer: nil,
-			ttl:           ttl,
-			gotGSOError:   false,
-			gso:           isGSOSupported(uConn),
-		}
-
-		if ttl > 0 {
-			af.deadlineTimer = time.AfterFunc(ttl, func() {
-				p.mu.Lock()
-				defer p.mu.Unlock()
-				_af := p.pool[lAddr]
-				if _af == af {
-					delete(p.pool, lAddr)
-					af.Close()
-				}
-			})
-			p.pool[lAddr] = af
-		}
-		return af, true, nil
-	} else {
-		af.RefreshTtl()
-		p.mu.RUnlock()
-		return af, false, nil
+	if af, ok := p.pool.Load(lAddr); ok {
+		anyfrom := af.(*Anyfrom)
+		anyfrom.RefreshTtl()
+		return anyfrom, false, nil
 	}
+	
+	// Use a more precise double-check locking pattern to avoid duplicate creation
+	// Temporary key for creation lock
+	createKey := lAddr + "_creating"
+	if _, loaded := p.pool.LoadOrStore(createKey, struct{}{}); loaded {
+		// If another goroutine is creating, use backoff retry mechanism
+		for i := 0; i < 10; i++ {
+			time.Sleep(time.Millisecond * time.Duration(i+1)) // Incremental backoff
+			if af, ok := p.pool.Load(lAddr); ok {
+				anyfrom := af.(*Anyfrom)
+				anyfrom.RefreshTtl()
+				return anyfrom, false, nil
+			}
+		}
+		// If still not created after waiting, return error instead of continuing
+		return nil, false, fmt.Errorf("timeout waiting for connection creation on %s", lAddr)
+	}
+	
+	defer p.pool.Delete(createKey)
+	
+	// Check again if it has been created
+	if af, ok := p.pool.Load(lAddr); ok {
+		anyfrom := af.(*Anyfrom)
+		anyfrom.RefreshTtl()
+		return anyfrom, false, nil
+	}
+	
+	// Create a new Anyfrom
+	d := net.ListenConfig{
+		Control: func(network string, address string, c syscall.RawConn) error {
+			return dialer.TransparentControl(c)
+		},
+		KeepAlive: 0,
+	}
+	var pc net.PacketConn
+	GetDaeNetns().With(func() error {
+		pc, err = d.ListenPacket(context.Background(), "udp", lAddr)
+		return nil
+	})
+	if err != nil {
+		return nil, true, err
+	}
+	
+	uConn := pc.(*net.UDPConn)
+	af := &Anyfrom{
+		UDPConn:       uConn,
+		deadlineTimer: nil,
+		ttl:           ttl,
+		gotGSOError:   false,
+		gso:           isGSOSupported(uConn),
+	}
+
+	if ttl > 0 {
+		af.deadlineTimer = time.AfterFunc(ttl, func() {
+			if loaded := p.pool.CompareAndDelete(lAddr, af); loaded {
+				af.Close()
+			}
+		})
+	}
+	
+	p.pool.Store(lAddr, af)
+	return af, true, nil
 }
