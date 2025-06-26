@@ -24,6 +24,8 @@ type Sniffer struct {
 	r         io.Reader
 	dataReady chan struct{}
 	dataError error
+	dataErrMu sync.Mutex
+	closeOnce sync.Once
 
 	// Common
 	sniffed string
@@ -95,6 +97,9 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 			s.sniffed = d
 		}
 	}()
+	// cancel context when sniffing completes to free resources
+	defer s.cancel()
+	
 	s.readMu.Lock()
 	defer s.readMu.Unlock()
 	var oerr error
@@ -103,23 +108,31 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 			err = fmt.Errorf("%w: %w", oerr, err)
 		}
 	}()
+	const maxRetries = 5
+	retries := 0
 	for {
+		if retries >= maxRetries {
+			return "", fmt.Errorf("%w: maximum sniff retries reached", ErrNotApplicable)
+		}
 		if s.stream {
 			go func() {
-				// Read once.
 				_, err := s.buf.ReadFromOnce(s.r)
 				if err != nil {
+					s.dataErrMu.Lock()
 					s.dataError = err
+					s.dataErrMu.Unlock()
 				}
-				close(s.dataReady)
+				s.closeOnce.Do(func() { close(s.dataReady) })
 			}()
-
 			// Waiting 100ms for data.
 			select {
 			case <-s.dataReady:
+				s.dataErrMu.Lock()
 				if s.dataError != nil {
+					s.dataErrMu.Unlock()
 					return "", s.dataError
 				}
+				s.dataErrMu.Unlock()
 			case <-s.ctx.Done():
 				return "", fmt.Errorf("%w: %w", ErrNotApplicable, context.DeadlineExceeded)
 			}
@@ -138,7 +151,13 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 		)
 		if errors.Is(err, ErrNeedMore) {
 			oerr = err
+			// reset dataReady channel and closeOnce for next retry
 			s.dataReady = make(chan struct{})
+			s.closeOnce = sync.Once{}
+			s.dataErrMu.Lock()
+			s.dataError = nil
+			s.dataErrMu.Unlock()
+			retries++
 			continue
 		}
 		return d, err
@@ -149,16 +168,8 @@ func (s *Sniffer) SniffUdp() (d string, err error) {
 	if s.sniffed != "" {
 		return s.sniffed, nil
 	}
-	defer func() {
-		if err == nil {
-			s.sniffed = d
-		}
-	}()
-	defer func() {
-		if err == nil {
-			s.sniffed = d
-		}
-	}()
+	// cancel context when sniffing completes to free resources
+	defer s.cancel()
 	s.readMu.Lock()
 	defer s.readMu.Unlock()
 
@@ -166,7 +177,7 @@ func (s *Sniffer) SniffUdp() (d string, err error) {
 	select {
 	case <-s.dataReady:
 	default:
-		close(s.dataReady)
+		s.closeOnce.Do(func() { close(s.dataReady) })
 	}
 
 	if s.buf.Len() == 0 {
@@ -198,7 +209,9 @@ func (s *Sniffer) Read(p []byte) (n int, err error) {
 
 	s.readMu.Lock()
 	defer s.readMu.Unlock()
-
+	
+	s.dataErrMu.Lock()
+	defer s.dataErrMu.Unlock()
 	if s.dataError != nil {
 		n, _ = s.buf.Read(p)
 		return n, s.dataError
