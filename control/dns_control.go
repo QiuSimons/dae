@@ -77,7 +77,7 @@ type DnsController struct {
 
 	fixedDomainTtl map[string]int
 	// mutex protects the dnsCache.
-	dnsCacheMu          sync.Mutex
+	dnsCacheMu          sync.RWMutex
 	dnsCache            map[string]*DnsCache
 	dnsForwarderCacheMu sync.Mutex
 	dnsForwarderCache   map[dnsForwarderKey]DnsForwarder
@@ -120,7 +120,7 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		timeoutExceedCallback: option.TimeoutExceedCallback,
 
 		fixedDomainTtl:      option.FixedDomainTtl,
-		dnsCacheMu:          sync.Mutex{},
+		dnsCacheMu:          sync.RWMutex{},
 		dnsCache:            make(map[string]*DnsCache),
 		dnsForwarderCacheMu: sync.Mutex{},
 		dnsForwarderCache:   make(map[dnsForwarderKey]DnsForwarder),
@@ -141,9 +141,9 @@ func (c *DnsController) RemoveDnsRespCache(cacheKey string) {
 	c.dnsCacheMu.Unlock()
 }
 func (c *DnsController) LookupDnsRespCache(cacheKey string, ignoreFixedTtl bool) (cache *DnsCache) {
-	c.dnsCacheMu.Lock()
+	c.dnsCacheMu.RLock()
 	cache, ok := c.dnsCache[cacheKey]
-	c.dnsCacheMu.Unlock()
+	c.dnsCacheMu.RUnlock()
 	if !ok {
 		return nil
 	}
@@ -290,7 +290,9 @@ func (c *DnsController) __updateDnsCacheDeadline(host string, dnsTyp uint16, ans
 	c.dnsCacheMu.Lock()
 	cache, ok := c.dnsCache[cacheKey]
 	if ok {
-		cache.Answer = answers
+		// Create a copy of answers to ensure thread safety
+		cache.Answer = make([]dnsmessage.RR, len(answers))
+		copy(cache.Answer, answers)
 		cache.Deadline = deadline
 		cache.OriginalDeadline = originalDeadline
 		c.dnsCacheMu.Unlock()
@@ -580,15 +582,25 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 	// get forwarder from cache
 	c.dnsForwarderCacheMu.Lock()
 	forwarder, ok := c.dnsForwarderCache[dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}]
+	c.dnsForwarderCacheMu.Unlock()
+	
 	if !ok {
+		// Create forwarder outside of lock to avoid blocking other requests
 		forwarder, err = newDnsForwarder(upstream, *dialArgument)
 		if err != nil {
-			c.dnsForwarderCacheMu.Unlock()
 			return err
 		}
-		c.dnsForwarderCache[dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}] = forwarder
+		
+		// Double-check pattern to avoid race condition
+		c.dnsForwarderCacheMu.Lock()
+		if existing, exists := c.dnsForwarderCache[dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}]; exists {
+			forwarder.Close()
+			forwarder = existing
+		} else {
+			c.dnsForwarderCache[dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}] = forwarder
+		}
+		c.dnsForwarderCacheMu.Unlock()
 	}
-	c.dnsForwarderCacheMu.Unlock()
 
 	defer func() {
 		if !connClosed {

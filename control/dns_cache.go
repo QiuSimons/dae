@@ -10,7 +10,6 @@ import (
 	"time"
 
 	dnsmessage "github.com/miekg/dns"
-	"github.com/mohae/deepcopy"
 )
 
 type DnsCache struct {
@@ -21,7 +20,9 @@ type DnsCache struct {
 }
 
 func (c *DnsCache) FillInto(req *dnsmessage.Msg) {
-	req.Answer = deepcopy.Copy(c.Answer).([]dnsmessage.RR)
+	// Create a shallow copy of Answer slice to ensure thread safety
+	req.Answer = make([]dnsmessage.RR, len(c.Answer))
+	copy(req.Answer, c.Answer)
 	req.Rcode = dnsmessage.RcodeSuccess
 	req.Response = true
 	req.RecursionAvailable = true
