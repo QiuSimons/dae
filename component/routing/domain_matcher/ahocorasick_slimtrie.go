@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/pkg/trie"
@@ -31,7 +33,13 @@ type AhocorasickSlimtrie struct {
 	toBuildAc   [][][]byte
 	toBuildTrie [][]string
 	err         error
+	
+	// Simple domain matching cache with size limit
+	domainCache sync.Map // map[string][]uint32
+	cacheSize   int32    // atomic counter
 }
+
+const maxCacheEntries = 10000 // Maximum cache entries
 
 func NewAhocorasickSlimtrie(log *logrus.Logger, bitLength int) *AhocorasickSlimtrie {
 	return &AhocorasickSlimtrie{
@@ -43,6 +51,7 @@ func NewAhocorasickSlimtrie(log *logrus.Logger, bitLength int) *AhocorasickSlimt
 		toBuildTrie: make([][]string, bitLength),
 	}
 }
+
 func (n *AhocorasickSlimtrie) AddSet(bitIndex int, patterns []string, typ consts.RoutingDomainKey) {
 	if n.err != nil {
 		return
@@ -92,7 +101,21 @@ nextPattern:
 		}
 	}
 }
+
 func (n *AhocorasickSlimtrie) MatchDomainBitmap(domain string) (bitmap []uint32) {
+	// Check cache first
+	if cached, ok := n.domainCache.Load(domain); ok {
+		// Type assertion with safety check
+		if cachedBitmap, ok := cached.([]uint32); ok && cachedBitmap != nil {
+			// Return a copy to avoid race conditions
+			result := make([]uint32, len(cachedBitmap))
+			copy(result, cachedBitmap)
+			return result
+		}
+		// If type assertion fails or cached value is nil, remove invalid entry
+		n.domainCache.Delete(domain)
+	}
+	
 	N := len(n.ac) / 32
 	if len(n.ac)%32 != 0 {
 		N++
@@ -142,8 +165,40 @@ func (n *AhocorasickSlimtrie) MatchDomainBitmap(domain string) (bitmap []uint32)
 			}
 		}
 	}
+	
+	// Cache result
+	n.cacheResult(domain, bitmap)
 	return bitmap
 }
+
+// cacheResult safely caches the result
+func (n *AhocorasickSlimtrie) cacheResult(domain string, bitmap []uint32) {
+	// Check cache size limit
+	if atomic.LoadInt32(&n.cacheSize) >= maxCacheEntries {
+		// Simple cleanup: remove one entry
+		n.removeOneEntry()
+	}
+	
+	// Create a copy for caching to avoid race conditions
+	cachedBitmap := make([]uint32, len(bitmap))
+	copy(cachedBitmap, bitmap)
+	
+	// Use LoadOrStore to avoid race conditions
+	if _, loaded := n.domainCache.LoadOrStore(domain, cachedBitmap); !loaded {
+		atomic.AddInt32(&n.cacheSize, 1)
+	}
+}
+
+// removeOneEntry removes one entry from cache
+func (n *AhocorasickSlimtrie) removeOneEntry() {
+	n.domainCache.Range(func(key, value interface{}) bool {
+		if _, deleted := n.domainCache.LoadAndDelete(key); deleted {
+			atomic.AddInt32(&n.cacheSize, -1)
+		}
+		return false // Stop after removing one entry
+	})
+}
+
 func ToSuffixTrieString(s string) string {
 	// No need for end char "$".
 	b := []byte(strings.TrimSuffix(s, "$"))
@@ -154,6 +209,7 @@ func ToSuffixTrieString(s string) string {
 	}
 	return string(b)
 }
+
 func ToSuffixTrieStrings(s []string) []string {
 	to := make([]string, len(s))
 	for i := range s {
@@ -161,6 +217,7 @@ func ToSuffixTrieStrings(s []string) []string {
 	}
 	return to
 }
+
 func (n *AhocorasickSlimtrie) Build() (err error) {
 	if n.err != nil {
 		return n.err

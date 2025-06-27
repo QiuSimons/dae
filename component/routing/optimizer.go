@@ -126,6 +126,20 @@ func (o *MergeAndSortRulesOptimizer) Optimize(rules []*config_parser.RoutingRule
 			}
 		}
 	}
+	
+	// Sort rules by complexity - simple rules first
+	sort.SliceStable(newRules, func(i, j int) bool {
+		// Simple complexity: number of functions
+		complexityI := len(newRules[i].AndFunctions)
+		complexityJ := len(newRules[j].AndFunctions)
+		
+		if complexityI != complexityJ {
+			return complexityI < complexityJ
+		}
+		// Use original index for stable sorting when complexity is equal
+		return i < j
+	})
+	
 	return newRules, nil
 }
 
