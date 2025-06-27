@@ -38,22 +38,68 @@ type UdpEndpoint struct {
 }
 
 func (ue *UdpEndpoint) start() {
-	buf := pool.GetFullCap(consts.EthernetMtu)
-	defer pool.Put(buf)
+	// Use buffered channel to implement asynchronous processing
+	const maxPendingPackets = 1000
+	packetChan := make(chan struct {
+		data []byte
+		from netip.AddrPort
+	}, maxPendingPackets)
+
+	// Start async packet processor
+	go func() {
+		for packet := range packetChan {
+			// Asynchronously process each packet to avoid blocking read loop
+			go func(data []byte, from netip.AddrPort) {
+				defer pool.Put(data) // Ensure buffer is released
+				if err := ue.handler(data, from); err != nil {
+					// Handle error but do not block
+					return
+				}
+			}(packet.data, packet.from)
+		}
+	}()
+
+	// High performance read loop
 	for {
+		buf := pool.GetFullCap(consts.EthernetMtu)
 		n, from, err := ue.conn.ReadFrom(buf[:])
 		if err != nil {
+			pool.Put(buf)
 			break
 		}
+
+		// Quickly reset timer to reduce lock contention
 		ue.mu.Lock()
-		ue.deadlineTimer.Reset(ue.NatTimeout)
+		if ue.deadlineTimer != nil {
+			ue.deadlineTimer.Reset(ue.NatTimeout)
+		}
 		ue.mu.Unlock()
-		if err = ue.handler(buf[:n], from); err != nil {
-			break
+
+		// Copy data to buffer of correct size
+		data := pool.Get(n)
+		copy(data, buf[:n])
+		pool.Put(buf)
+
+		// Non-blocking send to processor
+		select {
+		case packetChan <- struct {
+			data []byte
+			from netip.AddrPort
+		}{data, from}:
+			// Successfully sent to processing queue
+		default:
+			// Queue is full, drop packet (avoid blocking read)
+			pool.Put(data)
+			// Can record drop statistics here
 		}
 	}
+
+	// Cleanup
+	close(packetChan)
 	ue.mu.Lock()
-	ue.deadlineTimer.Stop()
+	if ue.deadlineTimer != nil {
+		ue.deadlineTimer.Stop()
+	}
 	ue.mu.Unlock()
 }
 

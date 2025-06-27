@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/daeuniverse/dae/common"
@@ -68,27 +69,63 @@ func newDnsForwarder(upstream *dns.Upstream, dialArgument dialArgument) (DnsForw
 	return forwarder, nil
 }
 
+// Generic per-target pool for connection/client reuse
+type TargetPool[T any] struct {
+	pool   sync.Map // key: string(target) -> T
+	create func(ctx context.Context, target string) (T, error)
+}
+
+func (p *TargetPool[T]) Get(ctx context.Context, target string) (T, error) {
+	if v, ok := p.pool.Load(target); ok {
+		return v.(T), nil
+	}
+	obj, err := p.create(ctx, target)
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	p.pool.Store(target, obj)
+	return obj, nil
+}
+
+func (p *TargetPool[T]) Delete(target string) {
+	p.pool.Delete(target)
+}
+
 type DoH struct {
 	dns.Upstream
 	netproxy.Dialer
 	dialArgument dialArgument
 	http3        bool
-	client       *http.Client
+	clientPool   TargetPool[*http.Client]
 }
 
 func (d *DoH) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, error) {
-	if d.client == nil {
-		d.client = d.getClient()
+	target := d.dialArgument.bestTarget.String()
+	if d.clientPool.create == nil {
+		d.clientPool.create = func(_ context.Context, _ string) (*http.Client, error) {
+			var roundTripper http.RoundTripper
+			if d.http3 {
+				roundTripper = d.getHttp3RoundTripper()
+			} else {
+				roundTripper = d.getHttpRoundTripper()
+			}
+			return &http.Client{Transport: roundTripper}, nil
+		}
 	}
-	msg, err := sendHttpDNS(d.client, d.dialArgument.bestTarget.String(), &d.Upstream, data)
+	client, err := d.clientPool.Get(ctx, target)
 	if err != nil {
-		// If failed to send DNS request, we should try to create a new client.
-		d.client = d.getClient()
-		msg, err = sendHttpDNS(d.client, d.dialArgument.bestTarget.String(), &d.Upstream, data)
+		return nil, err
+	}
+	msg, err := sendHttpDNS(client, target, &d.Upstream, data)
+	if err != nil {
+		d.clientPool.Delete(target)
+		// Retry once
+		client, err = d.clientPool.Get(ctx, target)
 		if err != nil {
 			return nil, err
 		}
-		return msg, nil
+		return sendHttpDNS(client, target, &d.Upstream, data)
 	}
 	return msg, nil
 }
@@ -162,27 +199,29 @@ type DoQ struct {
 	dns.Upstream
 	netproxy.Dialer
 	dialArgument dialArgument
-	connection   quic.EarlyConnection
+	connPool     TargetPool[quic.EarlyConnection]
 }
 
 func (d *DoQ) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, error) {
-	if d.connection == nil {
-		qc, err := d.createConnection(ctx)
-		if err != nil {
-			return nil, err
+	target := d.dialArgument.bestTarget.String()
+	if d.connPool.create == nil {
+		d.connPool.create = func(ctx context.Context, _ string) (quic.EarlyConnection, error) {
+			return d.createConnection(ctx)
 		}
-		d.connection = qc
 	}
-
-	stream, err := d.connection.OpenStreamSync(ctx)
+	qc, err := d.connPool.Get(ctx, target)
 	if err != nil {
-		// If failed to open stream, we should try to create a new connection.
-		qc, err := d.createConnection(ctx)
+		return nil, err
+	}
+	stream, err := qc.OpenStreamSync(ctx)
+	if err != nil {
+		d.connPool.Delete(target)
+		// Retry once
+		qc, err = d.connPool.Get(ctx, target)
 		if err != nil {
 			return nil, err
 		}
-		d.connection = qc
-		stream, err = d.connection.OpenStreamSync(ctx)
+		stream, err = qc.OpenStreamSync(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -190,18 +229,26 @@ func (d *DoQ) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, err
 	defer func() {
 		_ = stream.Close()
 	}()
-
-	// According https://datatracker.ietf.org/doc/html/rfc9250#section-4.2.1
-	// msg id should set to 0 when transport over QUIC.
-	// thanks https://github.com/natesales/q/blob/1cb2639caf69bd0a9b46494a3c689130df8fb24a/transport/quic.go#L97
 	binary.BigEndian.PutUint16(data[0:2], 0)
-
 	msg, err := sendStreamDNS(stream, data)
 	if err != nil {
-		return nil, err
+		d.connPool.Delete(target)
+		// Retry once
+		qc, err = d.connPool.Get(ctx, target)
+		if err != nil {
+			return nil, err
+		}
+		stream, err = qc.OpenStreamSync(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer stream.Close()
+		binary.BigEndian.PutUint16(data[0:2], 0)
+		return sendStreamDNS(stream, data)
 	}
 	return msg, nil
 }
+
 func (d *DoQ) createConnection(ctx context.Context) (quic.EarlyConnection, error) {
 
 	udpAddr := net.UDPAddrFromAddrPort(d.dialArgument.bestTarget)
@@ -237,35 +284,49 @@ type DoTLS struct {
 	dns.Upstream
 	netproxy.Dialer
 	dialArgument dialArgument
-	conn         netproxy.Conn
+	connPool     TargetPool[netproxy.Conn]
 }
 
 func (d *DoTLS) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, error) {
-	conn, err := d.dialArgument.bestDialer.DialContext(
-		ctx,
-		common.MagicNetwork("tcp", d.dialArgument.mark, d.dialArgument.mptcp),
-		d.dialArgument.bestTarget.String(),
-	)
+	target := d.dialArgument.bestTarget.String()
+	if d.connPool.create == nil {
+		d.connPool.create = func(ctx context.Context, target string) (netproxy.Conn, error) {
+			rawConn, err := d.dialArgument.bestDialer.DialContext(
+				ctx,
+				common.MagicNetwork("tcp", d.dialArgument.mark, d.dialArgument.mptcp),
+				target,
+			)
+			if err != nil {
+				return nil, err
+			}
+			tlsConn := tls.Client(&netproxy.FakeNetConn{Conn: rawConn}, &tls.Config{
+				InsecureSkipVerify: false,
+				ServerName:         d.Upstream.Hostname,
+			})
+			if err = tlsConn.Handshake(); err != nil {
+				return nil, err
+			}
+			return tlsConn, nil
+		}
+	}
+	tlsConn, err := d.connPool.Get(ctx, target)
 	if err != nil {
 		return nil, err
 	}
-
-	tlsConn := tls.Client(&netproxy.FakeNetConn{Conn: conn}, &tls.Config{
-		InsecureSkipVerify: false,
-		ServerName:         d.Upstream.Hostname,
-	})
-	if err = tlsConn.Handshake(); err != nil {
-		return nil, err
+	msg, err := sendStreamDNS(tlsConn, data)
+	if err != nil {
+		d.connPool.Delete(target)
+		// Retry once
+		tlsConn, err = d.connPool.Get(ctx, target)
+		if err != nil {
+			return nil, err
+		}
+		return sendStreamDNS(tlsConn, data)
 	}
-	d.conn = tlsConn
-
-	return sendStreamDNS(tlsConn, data)
+	return msg, nil
 }
 
 func (d *DoTLS) Close() error {
-	if d.conn != nil {
-		return d.conn.Close()
-	}
 	return nil
 }
 
@@ -273,27 +334,38 @@ type DoTCP struct {
 	dns.Upstream
 	netproxy.Dialer
 	dialArgument dialArgument
-	conn         netproxy.Conn
+	connPool     TargetPool[netproxy.Conn]
 }
 
 func (d *DoTCP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, error) {
-	conn, err := d.dialArgument.bestDialer.DialContext(
-		ctx,
-		common.MagicNetwork("tcp", d.dialArgument.mark, d.dialArgument.mptcp),
-		d.dialArgument.bestTarget.String(),
-	)
+	target := d.dialArgument.bestTarget.String()
+	if d.connPool.create == nil {
+		d.connPool.create = func(ctx context.Context, target string) (netproxy.Conn, error) {
+			return d.dialArgument.bestDialer.DialContext(
+				ctx,
+				common.MagicNetwork("tcp", d.dialArgument.mark, d.dialArgument.mptcp),
+				target,
+			)
+		}
+	}
+	conn, err := d.connPool.Get(ctx, target)
 	if err != nil {
 		return nil, err
 	}
-
-	d.conn = conn
-	return sendStreamDNS(conn, data)
+	msg, err := sendStreamDNS(conn, data)
+	if err != nil {
+		d.connPool.Delete(target)
+		// Retry once
+		conn, err = d.connPool.Get(ctx, target)
+		if err != nil {
+			return nil, err
+		}
+		return sendStreamDNS(conn, data)
+	}
+	return msg, nil
 }
 
 func (d *DoTCP) Close() error {
-	if d.conn != nil {
-		return d.conn.Close()
-	}
 	return nil
 }
 
