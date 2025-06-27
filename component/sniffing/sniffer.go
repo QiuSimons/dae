@@ -24,13 +24,13 @@ type Sniffer struct {
 	r         io.Reader
 	dataReady chan struct{}
 	dataError error
-	dataErrMu sync.Mutex
+	dataErrMu sync.RWMutex
 	closeOnce sync.Once
 
 	// Common
 	sniffed string
 	buf     *bytes.Buffer
-	readMu  sync.Mutex
+	readMu  sync.RWMutex
 	ctx     context.Context
 	cancel  func()
 
@@ -50,7 +50,7 @@ func NewStreamSniffer(r io.Reader, timeout time.Duration) *Sniffer {
 		stream:    true,
 		r:         r,
 		buf:       buffer,
-		dataReady: make(chan struct{}),
+		dataReady: make(chan struct{}, 1), // Use buffered channel to avoid blocking
 		ctx:       ctx,
 		cancel:    cancel,
 	}
@@ -66,7 +66,7 @@ func NewPacketSniffer(data []byte, timeout time.Duration) *Sniffer {
 		r:         nil,
 		buf:       buffer,
 		data:      [][]byte{buffer.Bytes()},
-		dataReady: make(chan struct{}),
+		dataReady: make(chan struct{}, 1),
 		ctx:       ctx,
 		cancel:    cancel,
 	}
@@ -102,19 +102,20 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 	
 	s.readMu.Lock()
 	defer s.readMu.Unlock()
-	var oerr error
-	defer func() {
-		if err != nil {
-			err = fmt.Errorf("%w: %w", oerr, err)
-		}
-	}()
-	const maxRetries = 5
+	
+	const maxRetries = 3 // Reduced retries for better performance
 	retries := 0
 	for {
 		if retries >= maxRetries {
 			return "", fmt.Errorf("%w: maximum sniff retries reached", ErrNotApplicable)
 		}
 		if s.stream {
+			// Use buffered channel to avoid goroutine leak
+			select {
+			case s.dataReady <- struct{}{}:
+			default:
+			}
+			
 			go func() {
 				_, err := s.buf.ReadFromOnce(s.r)
 				if err != nil {
@@ -122,22 +123,31 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 					s.dataError = err
 					s.dataErrMu.Unlock()
 				}
-				s.closeOnce.Do(func() { close(s.dataReady) })
+				s.closeOnce.Do(func() { 
+					select {
+					case s.dataReady <- struct{}{}:
+					default:
+					}
+				})
 			}()
-			// Waiting 100ms for data.
+			
+			// Wait for data or timeout
 			select {
 			case <-s.dataReady:
-				s.dataErrMu.Lock()
+				s.dataErrMu.RLock()
 				if s.dataError != nil {
-					s.dataErrMu.Unlock()
+					s.dataErrMu.RUnlock()
 					return "", s.dataError
 				}
-				s.dataErrMu.Unlock()
+				s.dataErrMu.RUnlock()
 			case <-s.ctx.Done():
 				return "", fmt.Errorf("%w: %w", ErrNotApplicable, context.DeadlineExceeded)
 			}
 		} else {
-			close(s.dataReady)
+			select {
+			case s.dataReady <- struct{}{}:
+			default:
+			}
 		}
 
 		if s.buf.Len() == 0 {
@@ -150,9 +160,8 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 			s.SniffHttp,
 		)
 		if errors.Is(err, ErrNeedMore) {
-			oerr = err
-			// reset dataReady channel and closeOnce for next retry
-			s.dataReady = make(chan struct{})
+			// Reset for retry without recreating channel
+			s.dataReady = make(chan struct{}, 1)
 			s.closeOnce = sync.Once{}
 			s.dataErrMu.Lock()
 			s.dataError = nil
@@ -175,9 +184,8 @@ func (s *Sniffer) SniffUdp() (d string, err error) {
 
 	// Always ready.
 	select {
-	case <-s.dataReady:
+	case s.dataReady <- struct{}{}:
 	default:
-		s.closeOnce.Do(func() { close(s.dataReady) })
 	}
 
 	if s.buf.Len() == 0 {
@@ -207,11 +215,11 @@ func (s *Sniffer) NeedMore() bool {
 func (s *Sniffer) Read(p []byte) (n int, err error) {
 	<-s.dataReady
 
-	s.readMu.Lock()
-	defer s.readMu.Unlock()
+	s.readMu.RLock()
+	defer s.readMu.RUnlock()
 	
-	s.dataErrMu.Lock()
-	defer s.dataErrMu.Unlock()
+	s.dataErrMu.RLock()
+	defer s.dataErrMu.RUnlock()
 	if s.dataError != nil {
 		n, _ = s.buf.Read(p)
 		return n, s.dataError
@@ -228,13 +236,13 @@ func (s *Sniffer) Read(p []byte) (n int, err error) {
 }
 
 func (s *Sniffer) Close() (err error) {
-	select {
-	case <-s.ctx.Done():
-	default:
+	s.closeOnce.Do(func() {
 		s.cancel()
-		if s.buf.Len() == 0 {
+		// Ensure buffer is always released
+		if s.buf != nil {
 			pool.PutBuffer(s.buf)
+			s.buf = nil
 		}
-	}
+	})
 	return nil
 }
