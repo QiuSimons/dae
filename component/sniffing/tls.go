@@ -36,13 +36,12 @@ func (s *Sniffer) SniffTls() (d string, err error) {
 		return "", ErrNotApplicable
 	}
 
-	bufBytes := s.buf.Bytes()
-	if bufBytes[0] != ContentType_HandShake || (!bytes.Equal(bufBytes[1:3], Version_Tls1_0) && !bytes.Equal(bufBytes[1:3], Version_Tls1_2)) {
+	if s.buf.Bytes()[0] != ContentType_HandShake || (!bytes.Equal(s.buf.Bytes()[1:3], Version_Tls1_0) && !bytes.Equal(s.buf.Bytes()[1:3], Version_Tls1_2)) {
 		return "", ErrNotApplicable
 	}
 
-	length := int(binary.BigEndian.Uint16(bufBytes[3:5]))
-	search := bufBytes[5:]
+	length := int(binary.BigEndian.Uint16(s.buf.Bytes()[3:5]))
+	search := s.buf.Bytes()[5:]
 	if len(search) < length {
 		return "", ErrNeedMore
 	}
@@ -66,7 +65,7 @@ func extractSniFromTls(search quicutils.Locator) (sni string, err error) {
 
 	// Three bytes length.
 	length2 := (int(b[1]) << 16) + (int(b[2]) << 8) + int(b[3])
-	if search.Len() < length2+4 {
+	if search.Len() > length2+4 {
 		return "", ErrNotApplicable
 	}
 
@@ -81,7 +80,7 @@ func extractSniFromTls(search quicutils.Locator) (sni string, err error) {
 		return "", err
 	}
 	boundary += int(sessionIdLength) + 2 // +2 because the next field has 2B length
-	if search.Len() < boundary {
+	if search.Len() < boundary || search.Len() < boundary {
 		return "", ErrNotApplicable
 	}
 
@@ -91,7 +90,7 @@ func extractSniFromTls(search quicutils.Locator) (sni string, err error) {
 	}
 	cipherSuiteLength := int(binary.BigEndian.Uint16(b))
 	boundary += int(cipherSuiteLength) + 1 // +1 because the next field has 1B length
-	if search.Len() < boundary {
+	if search.Len() < boundary || search.Len() < boundary {
 		return "", ErrNotApplicable
 	}
 
@@ -100,7 +99,7 @@ func extractSniFromTls(search quicutils.Locator) (sni string, err error) {
 		return "", err
 	}
 	boundary += int(compressMethodsLength) + 2 // +2 because the next field has 2B length
-	if search.Len() < boundary {
+	if search.Len() < boundary || search.Len() < boundary {
 		return "", ErrNotApplicable
 	}
 
@@ -109,8 +108,8 @@ func extractSniFromTls(search quicutils.Locator) (sni string, err error) {
 		return "", err
 	}
 	extensionsLength := int(binary.BigEndian.Uint16(b))
-	boundary += extensionsLength
-	if search.Len() < boundary {
+	boundary += extensionsLength + 0 // +0 because our search ends
+	if search.Len() < boundary || search.Len() < boundary {
 		return "", ErrNotApplicable
 	}
 	// Search SNI
