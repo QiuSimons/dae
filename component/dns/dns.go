@@ -25,8 +25,7 @@ var ErrBadUpstreamFormat = fmt.Errorf("bad upstream format")
 type Dns struct {
 	log              *logrus.Logger
 	upstream         []*UpstreamResolver
-	upstream2IndexMu sync.Mutex
-	upstream2Index   map[*Upstream]int
+	upstream2Index   sync.Map // Use sync.Map instead of mutex+map to reduce lock contention
 	reqMatcher       *RequestMatcher
 	respMatcher      *ResponseMatcher
 }
@@ -41,10 +40,10 @@ type NewOption struct {
 func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 	s = &Dns{
 		log: opt.Logger,
-		upstream2Index: map[*Upstream]int{
-			nil: int(consts.DnsRequestOutboundIndex_AsIs),
-		},
+		// upstream2Index uses sync.Map, no need to initialize
 	}
+	// Set the default nil mapping
+	s.upstream2Index.Store((*Upstream)(nil), int(consts.DnsRequestOutboundIndex_AsIs))
 	// Parse upstream.
 	upstreamName2Id := map[string]uint8{}
 	for i, upstreamRaw := range dns.Upstream {
@@ -73,9 +72,7 @@ func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 						}
 					}
 
-					s.upstream2IndexMu.Lock()
-					s.upstream2Index[upstream] = i
-					s.upstream2IndexMu.Unlock()
+					s.upstream2Index.Store(upstream, i)
 					return nil
 				}
 			}(i),
@@ -207,10 +204,15 @@ func (s *Dns) ResponseSelect(msg *dnsmessage.Msg, fromUpstream *Upstream) (upstr
 		}
 	}
 
-	s.upstream2IndexMu.Lock()
-	from := s.upstream2Index[fromUpstream]
-	s.upstream2IndexMu.Unlock()
 	// Route.
+	fromValue, ok := s.upstream2Index.Load(fromUpstream)
+	if !ok {
+		fromValue = int(consts.DnsRequestOutboundIndex_AsIs) // Default value
+	}
+	from, ok := fromValue.(int)
+	if !ok {
+		from = int(consts.DnsRequestOutboundIndex_AsIs) // Fallback to default
+	}
 	upstreamIndex, err = s.respMatcher.Match(qname, qtype, ips, consts.DnsRequestOutboundIndex(from))
 	if err != nil {
 		return 0, nil, err

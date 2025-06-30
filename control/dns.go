@@ -15,6 +15,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/common"
@@ -39,9 +41,19 @@ func newDnsForwarder(upstream *dns.Upstream, dialArgument dialArgument) (DnsForw
 		case consts.L4ProtoStr_TCP:
 			switch upstream.Scheme {
 			case dns.UpstreamScheme_TCP, dns.UpstreamScheme_TCP_UDP:
-				return &DoTCP{Upstream: *upstream, Dialer: dialArgument.bestDialer, dialArgument: dialArgument}, nil
+				return &DoTCP{MultiplexedDNSForwarder{
+					upstream:     *upstream,
+					dialer:       dialArgument.bestDialer,
+					dialArgument: dialArgument,
+					isTLS:        false,
+				}}, nil
 			case dns.UpstreamScheme_TLS:
-				return &DoTLS{Upstream: *upstream, Dialer: dialArgument.bestDialer, dialArgument: dialArgument}, nil
+				return &DoTLS{MultiplexedDNSForwarder{
+					upstream:     *upstream,
+					dialer:       dialArgument.bestDialer,
+					dialArgument: dialArgument,
+					isTLS:        true,
+				}}, nil
 			case dns.UpstreamScheme_HTTPS:
 				return &DoH{Upstream: *upstream, Dialer: dialArgument.bestDialer, dialArgument: dialArgument, http3: false}, nil
 			default:
@@ -66,6 +78,188 @@ func newDnsForwarder(upstream *dns.Upstream, dialArgument dialArgument) (DnsForw
 		return nil, err
 	}
 	return forwarder, nil
+}
+
+type multiplexedDNSConn struct {
+	mu      sync.Mutex
+	conn    net.Conn // or tls.Conn, quic.EarlyConnection
+	pending map[uint16]chan *dnsmessage.Msg
+	closed  chan struct{}
+	readErr error
+}
+
+func newMultiplexedDNSConn(conn net.Conn, readFunc func(io.Reader) (*dnsmessage.Msg, error)) *multiplexedDNSConn {
+	m := &multiplexedDNSConn{
+		conn:    conn,
+		pending: make(map[uint16]chan *dnsmessage.Msg),
+		closed:  make(chan struct{}),
+	}
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Printf("[multiplexedDNSConn] readLoop panic: %v\n", r)
+			}
+		}()
+		m.readLoop(readFunc)
+	}()
+	return m
+}
+
+func (m *multiplexedDNSConn) send(ctx context.Context, req *dnsmessage.Msg, writeFunc func(io.Writer, *dnsmessage.Msg) error) (*dnsmessage.Msg, error) {
+	respCh := make(chan *dnsmessage.Msg, 1)
+	m.mu.Lock()
+	if m.readErr != nil {
+		m.mu.Unlock()
+		return nil, m.readErr
+	}
+	m.pending[req.Id] = respCh
+	defer m.mu.Unlock()
+
+	if err := writeFunc(m.conn, req); err != nil {
+		delete(m.pending, req.Id)
+		return nil, err
+	}
+
+	m.mu.Unlock()
+
+	select {
+	case resp := <-respCh:
+		return resp, nil
+	case <-ctx.Done():
+		m.removePending(req.Id)
+		return nil, ctx.Err()
+	case <-m.closed:
+		m.removePending(req.Id)
+		return nil, m.readErr
+	}
+}
+
+func (m *multiplexedDNSConn) removePending(id uint16) {
+	m.mu.Lock()
+	delete(m.pending, id)
+	m.mu.Unlock()
+}
+
+func (m *multiplexedDNSConn) readLoop(readFunc func(io.Reader) (*dnsmessage.Msg, error)) {
+	for {
+		resp, err := readFunc(m.conn)
+		if err != nil {
+			m.mu.Lock()
+			m.readErr = err
+			for _, ch := range m.pending {
+				select {
+				case <-ch:
+					// already closed or drained
+				default:
+					close(ch)
+				}
+			}
+			m.pending = make(map[uint16]chan *dnsmessage.Msg)
+			select {
+			case <-m.closed:
+				// already closed
+			default:
+				close(m.closed)
+			}
+			m.mu.Unlock()
+			return
+		}
+		m.mu.Lock()
+		ch, ok := m.pending[resp.Id]
+		if ok {
+			ch <- resp
+			delete(m.pending, resp.Id)
+		}
+		m.mu.Unlock()
+	}
+}
+
+type MultiplexedDNSForwarder struct {
+	upstream        dns.Upstream
+	dialer          netproxy.Dialer
+	dialArgument    dialArgument
+	multiplexedConn *multiplexedDNSConn
+	connMu          sync.Mutex
+	isTLS           bool
+	nextID          uint32
+}
+
+func (f *MultiplexedDNSForwarder) allocUniqueID() uint16 {
+	id := atomic.AddUint32(&f.nextID, 1)
+	if id == 0 {
+		id = atomic.AddUint32(&f.nextID, 1)
+	}
+	return uint16(id)
+}
+
+func (f *MultiplexedDNSForwarder) ensureConn() error {
+	f.connMu.Lock()
+	defer f.connMu.Unlock()
+	if f.multiplexedConn != nil && f.multiplexedConn.readErr == nil {
+		return nil
+	}
+
+	// Add timeout to prevent infinite waiting
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	conn, err := f.dialArgument.bestDialer.DialContext(
+		ctx,
+		common.MagicNetwork("tcp", f.dialArgument.mark, f.dialArgument.mptcp),
+		f.dialArgument.bestTarget.String(),
+	)
+	if err != nil {
+		return fmt.Errorf("[MultiplexedDNSForwarder] DialContext failed: %w", err)
+	}
+
+	// Try to convert netproxy.Conn to net.Conn
+	var netConn net.Conn
+	if nc, ok := conn.(net.Conn); ok {
+		netConn = nc
+	} else {
+		// If direct conversion fails, try to wrap with FakeNetConn
+		netConn = &netproxy.FakeNetConn{Conn: conn}
+		// 检查FakeNetConn是否实现了必要接口，否则报错
+		if netConn == nil {
+			return fmt.Errorf("[MultiplexedDNSForwarder] conn cannot be converted to net.Conn nor wrapped by FakeNetConn")
+		}
+	}
+
+	if f.isTLS {
+		tlsConn := tls.Client(netConn, &tls.Config{
+			InsecureSkipVerify: false,
+			ServerName:         f.upstream.Hostname,
+		})
+		if err = tlsConn.Handshake(); err != nil {
+			netConn.Close()
+			return fmt.Errorf("[MultiplexedDNSForwarder] TLS handshake failed: %w", err)
+		}
+		f.multiplexedConn = newMultiplexedDNSConn(tlsConn, readStreamDNS)
+	} else {
+		f.multiplexedConn = newMultiplexedDNSConn(netConn, readStreamDNS)
+	}
+	return nil
+}
+
+func (f *MultiplexedDNSForwarder) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, error) {
+	if err := f.ensureConn(); err != nil {
+		return nil, err
+	}
+	var req dnsmessage.Msg
+	if err := req.Unpack(data); err != nil {
+		return nil, err
+	}
+	req.Id = f.allocUniqueID()
+	return f.multiplexedConn.send(ctx, &req, writeStreamDNS)
+}
+
+func (f *MultiplexedDNSForwarder) Close() error {
+	f.connMu.Lock()
+	defer f.connMu.Unlock()
+	if f.multiplexedConn != nil && f.multiplexedConn.conn != nil {
+		return f.multiplexedConn.conn.Close()
+	}
+	return nil
 }
 
 type DoH struct {
@@ -146,7 +340,14 @@ func (d *DoH) getHttp3RoundTripper() *http3.RoundTripper {
 			if err != nil {
 				return nil, err
 			}
-			fakePkt := netproxy.NewFakeNetPacketConn(conn.(netproxy.PacketConn), net.UDPAddrFromAddrPort(tc.GetUniqueFakeAddrPort()), udpAddr)
+
+			// Safely convert to PacketConn
+			packetConn, ok := conn.(netproxy.PacketConn)
+			if !ok {
+				return nil, fmt.Errorf("connection does not implement netproxy.PacketConn")
+			}
+
+			fakePkt := netproxy.NewFakeNetPacketConn(packetConn, net.UDPAddrFromAddrPort(tc.GetUniqueFakeAddrPort()), udpAddr)
 			c, e := quic.DialEarly(ctx, fakePkt, udpAddr, tlsCfg, cfg)
 			return c, e
 		},
@@ -162,46 +363,56 @@ type DoQ struct {
 	dns.Upstream
 	netproxy.Dialer
 	dialArgument dialArgument
+	connMu       sync.Mutex
 	connection   quic.EarlyConnection
 }
 
-func (d *DoQ) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, error) {
-	if d.connection == nil {
-		qc, err := d.createConnection(ctx)
-		if err != nil {
-			return nil, err
-		}
-		d.connection = qc
+func (d *DoQ) ensureConn(ctx context.Context) error {
+	d.connMu.Lock()
+	defer d.connMu.Unlock()
+	if d.connection != nil && d.connection.Context().Err() == nil {
+		return nil
 	}
+	qc, err := d.createConnection(ctx)
+	if err != nil {
+		return err
+	}
+	d.connection = qc
+	return nil
+}
 
+func (d *DoQ) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, error) {
+	if err := d.ensureConn(ctx); err != nil {
+		return nil, err
+	}
+	// Each request uses an independent stream
 	stream, err := d.connection.OpenStreamSync(ctx)
 	if err != nil {
-		// If failed to open stream, we should try to create a new connection.
-		qc, err := d.createConnection(ctx)
-		if err != nil {
+		// The connection may be broken, try to reconnect
+		d.connMu.Lock()
+		d.connection = nil
+		d.connMu.Unlock()
+		if err := d.ensureConn(ctx); err != nil {
 			return nil, err
 		}
-		d.connection = qc
 		stream, err = d.connection.OpenStreamSync(ctx)
 		if err != nil {
 			return nil, err
 		}
 	}
-	defer func() {
-		_ = stream.Close()
-	}()
-
-	// According https://datatracker.ietf.org/doc/html/rfc9250#section-4.2.1
-	// msg id should set to 0 when transport over QUIC.
-	// thanks https://github.com/natesales/q/blob/1cb2639caf69bd0a9b46494a3c689130df8fb24a/transport/quic.go#L97
-	binary.BigEndian.PutUint16(data[0:2], 0)
-
+	// According to RFC9250, the messageId of QUIC DNS requests must be 0
+	if len(data) >= 2 {
+		data[0] = 0
+		data[1] = 0
+	}
 	msg, err := sendStreamDNS(stream, data)
+	_ = stream.Close() // Only close after receiving the full response
 	if err != nil {
 		return nil, err
 	}
 	return msg, nil
 }
+
 func (d *DoQ) createConnection(ctx context.Context) (quic.EarlyConnection, error) {
 
 	udpAddr := net.UDPAddrFromAddrPort(d.dialArgument.bestTarget)
@@ -214,7 +425,13 @@ func (d *DoQ) createConnection(ctx context.Context) (quic.EarlyConnection, error
 		return nil, err
 	}
 
-	fakePkt := netproxy.NewFakeNetPacketConn(conn.(netproxy.PacketConn), net.UDPAddrFromAddrPort(tc.GetUniqueFakeAddrPort()), udpAddr)
+	// Safely convert to PacketConn
+	packetConn, ok := conn.(netproxy.PacketConn)
+	if !ok {
+		return nil, fmt.Errorf("connection does not implement netproxy.PacketConn")
+	}
+
+	fakePkt := netproxy.NewFakeNetPacketConn(packetConn, net.UDPAddrFromAddrPort(tc.GetUniqueFakeAddrPort()), udpAddr)
 	tlsCfg := &tls.Config{
 		NextProtos:         []string{"doq"},
 		InsecureSkipVerify: false,
@@ -230,142 +447,16 @@ func (d *DoQ) createConnection(ctx context.Context) (quic.EarlyConnection, error
 }
 
 func (d *DoQ) Close() error {
-	return nil
-}
-
-type DoTLS struct {
-	dns.Upstream
-	netproxy.Dialer
-	dialArgument dialArgument
-	conn         netproxy.Conn
-}
-
-func (d *DoTLS) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, error) {
-	conn, err := d.dialArgument.bestDialer.DialContext(
-		ctx,
-		common.MagicNetwork("tcp", d.dialArgument.mark, d.dialArgument.mptcp),
-		d.dialArgument.bestTarget.String(),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	tlsConn := tls.Client(&netproxy.FakeNetConn{Conn: conn}, &tls.Config{
-		InsecureSkipVerify: false,
-		ServerName:         d.Upstream.Hostname,
-	})
-	if err = tlsConn.Handshake(); err != nil {
-		return nil, err
-	}
-	d.conn = tlsConn
-
-	return sendStreamDNS(tlsConn, data)
-}
-
-func (d *DoTLS) Close() error {
-	if d.conn != nil {
-		return d.conn.Close()
+	d.connMu.Lock()
+	defer d.connMu.Unlock()
+	if d.connection != nil {
+		return d.connection.CloseWithError(0, "closed")
 	}
 	return nil
 }
 
-type DoTCP struct {
-	dns.Upstream
-	netproxy.Dialer
-	dialArgument dialArgument
-	conn         netproxy.Conn
-}
-
-func (d *DoTCP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, error) {
-	conn, err := d.dialArgument.bestDialer.DialContext(
-		ctx,
-		common.MagicNetwork("tcp", d.dialArgument.mark, d.dialArgument.mptcp),
-		d.dialArgument.bestTarget.String(),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	d.conn = conn
-	return sendStreamDNS(conn, data)
-}
-
-func (d *DoTCP) Close() error {
-	if d.conn != nil {
-		return d.conn.Close()
-	}
-	return nil
-}
-
-type DoUDP struct {
-	dns.Upstream
-	netproxy.Dialer
-	dialArgument dialArgument
-	conn         netproxy.Conn
-}
-
-func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, error) {
-	conn, err := d.dialArgument.bestDialer.DialContext(
-		ctx,
-		common.MagicNetwork("udp", d.dialArgument.mark, d.dialArgument.mptcp),
-		d.dialArgument.bestTarget.String(),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	timeout := 5 * time.Second
-	_ = conn.SetDeadline(time.Now().Add(timeout))
-	dnsReqCtx, cancelDnsReqCtx := context.WithTimeout(context.TODO(), timeout)
-	defer cancelDnsReqCtx()
-
-	go func() {
-		// Send DNS request every seconds.
-		for {
-			_, _ = conn.Write(data)
-			// if err != nil {
-			// 	if c.log.IsLevelEnabled(logrus.DebugLevel) {
-			// 		c.log.WithFields(logrus.Fields{
-			// 			"to":      dialArgument.bestTarget.String(),
-			// 			"pid":     req.routingResult.Pid,
-			// 			"pname":   ProcessName2String(req.routingResult.Pname[:]),
-			// 			"mac":     Mac2String(req.routingResult.Mac[:]),
-			// 			"from":    req.realSrc.String(),
-			// 			"network": networkType.String(),
-			// 			"err":     err.Error(),
-			// 		}).Debugln("Failed to write UDP(DNS) packet request.")
-			// 	}
-			// 	return
-			// }
-			select {
-			case <-dnsReqCtx.Done():
-				return
-			case <-time.After(1 * time.Second):
-			}
-		}
-	}()
-
-	// We can block here because we are in a coroutine.
-	respBuf := pool.GetFullCap(consts.EthernetMtu)
-	defer pool.Put(respBuf)
-	// Wait for response.
-	n, err := conn.Read(respBuf)
-	if err != nil {
-		return nil, err
-	}
-	var msg dnsmessage.Msg
-	if err = msg.Unpack(respBuf[:n]); err != nil {
-		return nil, err
-	}
-	return &msg, nil
-}
-
-func (d *DoUDP) Close() error {
-	if d.conn != nil {
-		return d.conn.Close()
-	}
-	return nil
-}
+type DoTLS struct{ MultiplexedDNSForwarder }
+type DoTCP struct{ MultiplexedDNSForwarder }
 
 func sendHttpDNS(client *http.Client, target string, upstream *dns.Upstream, data []byte) (respMsg *dnsmessage.Msg, err error) {
 	// disable redirect https://github.com/daeuniverse/dae/pull/649#issuecomment-2379577896
@@ -439,4 +530,170 @@ func sendStreamDNS(stream io.ReadWriter, data []byte) (respMsg *dnsmessage.Msg, 
 		return nil, err
 	}
 	return &msg, nil
+}
+
+func readStreamDNS(r io.Reader) (*dnsmessage.Msg, error) {
+	b := make([]byte, 2)
+	if _, err := io.ReadFull(r, b); err != nil {
+		return nil, err
+	}
+	respLen := int(binary.BigEndian.Uint16(b))
+	buf := make([]byte, respLen)
+	if _, err := io.ReadFull(r, buf); err != nil {
+		return nil, err
+	}
+	var msg dnsmessage.Msg
+	if err := msg.Unpack(buf); err != nil {
+		return nil, err
+	}
+	return &msg, nil
+}
+
+func writeStreamDNS(w io.Writer, req *dnsmessage.Msg) error {
+	buf, err := req.Pack()
+	if err != nil {
+		return err
+	}
+	b := make([]byte, 2+len(buf))
+	binary.BigEndian.PutUint16(b, uint16(len(buf)))
+	copy(b[2:], buf)
+	_, err = w.Write(b)
+	return err
+}
+
+// High-performance UDP task pool for DoUDP only
+var dnsUDPTaskPool = newDnsUDPTaskPool()
+
+type DnsUDPTask = func()
+
+type DnsUDPTaskQueue struct {
+	ch    chan DnsUDPTask
+	close chan struct{}
+}
+
+type DnsUDPTaskPool struct {
+	mu sync.RWMutex
+	m  map[string]*DnsUDPTaskQueue
+}
+
+func newDnsUDPTaskPool() *DnsUDPTaskPool {
+	return &DnsUDPTaskPool{m: make(map[string]*DnsUDPTaskQueue)}
+}
+
+// EmitTask: ensure tasks with the same key are executed in order
+func (p *DnsUDPTaskPool) EmitTask(key string, task DnsUDPTask) {
+	if task == nil {
+		return
+	}
+	p.mu.RLock()
+	q, ok := p.m[key]
+	p.mu.RUnlock()
+	if ok {
+		select {
+		case q.ch <- task:
+		default:
+			// drop if full
+		}
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if q, ok := p.m[key]; ok {
+		select {
+		case q.ch <- task:
+		default:
+		}
+		return
+	}
+	ch := make(chan DnsUDPTask, 512)
+	closeCh := make(chan struct{})
+	q = &DnsUDPTaskQueue{ch: ch, close: closeCh}
+	p.m[key] = q
+	go func() {
+		for {
+			select {
+			case t := <-ch:
+				if t != nil {
+					func() {
+						defer func() { _ = recover() }()
+						t()
+					}()
+				}
+			case <-closeCh:
+				return
+			}
+		}
+	}()
+	select {
+	case ch <- task:
+	default:
+	}
+}
+
+type DoUDP struct {
+	Upstream     dns.Upstream
+	Dialer       netproxy.Dialer
+	dialArgument dialArgument
+	conn         netproxy.Conn
+}
+
+func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, error) {
+	conn, err := d.dialArgument.bestDialer.DialContext(
+		ctx,
+		common.MagicNetwork("udp", d.dialArgument.mark, d.dialArgument.mptcp),
+		d.dialArgument.bestTarget.String(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	timeout := 5 * time.Second
+	_ = conn.SetDeadline(time.Now().Add(timeout))
+	dnsReqCtx, cancelDnsReqCtx := context.WithTimeout(context.TODO(), timeout)
+	defer cancelDnsReqCtx()
+
+	respCh := make(chan []byte, 1)
+	errCh := make(chan error, 1)
+
+	// 只发送一次数据包
+	go func() {
+		_, err := conn.Write(data)
+		if err != nil {
+			errCh <- err
+			return
+		}
+	}()
+
+	// Read response
+	go func() {
+		respBuf := pool.GetFullCap(consts.EthernetMtu)
+		defer pool.Put(respBuf)
+		n, err := conn.Read(respBuf)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		respCh <- respBuf[:n]
+	}()
+
+	select {
+	case <-dnsReqCtx.Done():
+		return nil, fmt.Errorf("timeout waiting for DNS response")
+	case err := <-errCh:
+		return nil, err
+	case resp := <-respCh:
+		var msg dnsmessage.Msg
+		if err := msg.Unpack(resp); err != nil {
+			return nil, err
+		}
+		return &msg, nil
+	}
+}
+
+func (d *DoUDP) Close() error {
+	if d.conn != nil {
+		return d.conn.Close()
+	}
+	return nil
 }

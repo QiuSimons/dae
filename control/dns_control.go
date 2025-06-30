@@ -31,6 +31,10 @@ import (
 const (
 	MaxDnsLookupDepth  = 3
 	minFirefoxCacheTtl = 120
+	// Shard count for UDP DNS task pool. Each shard is an independent queue to improve concurrency.
+	udpShardCount = 8
+	// Maximum number of concurrent UDP DNS requests allowed per upstream.
+	maxConcurrentUDPPerUpstream = 32
 )
 
 type IpVersionPrefer int
@@ -48,6 +52,14 @@ var (
 var (
 	UnspecifiedAddressA    = netip.MustParseAddr("0.0.0.0")
 	UnspecifiedAddressAAAA = netip.MustParseAddr("::")
+)
+
+var (
+	// Global UDP semaphore for backward compatibility
+	udpSemaphore = make(chan struct{}, maxConcurrentUDPPerUpstream)
+	// Per-upstream UDP semaphores to avoid interference between different upstreams
+	upstreamUDPSemaphores   = make(map[string]chan struct{})
+	upstreamUDPSemaphoresMu sync.RWMutex
 )
 
 type DnsControllerOption struct {
@@ -77,7 +89,7 @@ type DnsController struct {
 
 	fixedDomainTtl map[string]int
 	// mutex protects the dnsCache.
-	dnsCacheMu          sync.Mutex
+	dnsCacheMu          sync.RWMutex
 	dnsCache            map[string]*DnsCache
 	dnsForwarderCacheMu sync.Mutex
 	dnsForwarderCache   map[dnsForwarderKey]DnsForwarder
@@ -120,7 +132,7 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		timeoutExceedCallback: option.TimeoutExceedCallback,
 
 		fixedDomainTtl:      option.FixedDomainTtl,
-		dnsCacheMu:          sync.Mutex{},
+		dnsCacheMu:          sync.RWMutex{},
 		dnsCache:            make(map[string]*DnsCache),
 		dnsForwarderCacheMu: sync.Mutex{},
 		dnsForwarderCache:   make(map[dnsForwarderKey]DnsForwarder),
@@ -141,9 +153,9 @@ func (c *DnsController) RemoveDnsRespCache(cacheKey string) {
 	c.dnsCacheMu.Unlock()
 }
 func (c *DnsController) LookupDnsRespCache(cacheKey string, ignoreFixedTtl bool) (cache *DnsCache) {
-	c.dnsCacheMu.Lock()
+	c.dnsCacheMu.RLock()
 	cache, ok := c.dnsCache[cacheKey]
-	c.dnsCacheMu.Unlock()
+	c.dnsCacheMu.RUnlock()
 	if !ok {
 		return nil
 	}
@@ -357,6 +369,31 @@ type dnsForwarderKey struct {
 	dialArgument dialArgument
 }
 
+// getUpstreamUDPSemaphore returns a semaphore for the specific upstream
+func getUpstreamUDPSemaphore(upstream *dns.Upstream) chan struct{} {
+	key := upstream.String()
+
+	upstreamUDPSemaphoresMu.RLock()
+	if sem, exists := upstreamUDPSemaphores[key]; exists {
+		upstreamUDPSemaphoresMu.RUnlock()
+		return sem
+	}
+	upstreamUDPSemaphoresMu.RUnlock()
+
+	upstreamUDPSemaphoresMu.Lock()
+	defer upstreamUDPSemaphoresMu.Unlock()
+
+	// Double-check after acquiring write lock
+	if sem, exists := upstreamUDPSemaphores[key]; exists {
+		return sem
+	}
+
+	// Create new semaphore for this upstream
+	sem := make(chan struct{}, maxConcurrentUDPPerUpstream)
+	upstreamUDPSemaphores[key] = sem
+	return sem
+}
+
 func (c *DnsController) Handle_(dnsMessage *dnsmessage.Msg, req *udpRequest) (err error) {
 	if c.log.IsLevelEnabled(logrus.TraceLevel) && len(dnsMessage.Question) > 0 {
 		q := dnsMessage.Question[0]
@@ -435,6 +472,12 @@ func (c *DnsController) handle_(
 	req *udpRequest,
 	needResp bool,
 ) (err error) {
+	// Always perform cache lookup first. If cache hits, respond immediately and do not proceed to network or task pool.
+	// This ensures maximum performance for cached queries.
+	// Only if cache misses, proceed to upstream query.
+	// For UDP upstream, dispatch the request asynchronously via dnsUDPTaskPool.EmitTask to avoid goroutine explosion and ensure per-key ordering.
+	// For other protocols (TCP, DoT, DoH, DoQ), handle synchronously as their own connection/stream management provides concurrency and flow control.
+
 	// Prepare qname, qtype.
 	var qname string
 	var qtype uint16
@@ -472,7 +515,7 @@ func (c *DnsController) handle_(
 	}()
 
 	if resp := c.LookupDnsRespCache_(dnsMessage, cacheKey, false); resp != nil {
-		// Send cache to client directly.
+		// Cache hit: respond immediately, do not enter task pool or network.
 		if needResp {
 			if err = sendPkt(c.log, resp, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
 				return fmt.Errorf("failed to write cached DNS resp: %w", err)
@@ -487,18 +530,32 @@ func (c *DnsController) handle_(
 		return nil
 	}
 
-	if c.log.IsLevelEnabled(logrus.TraceLevel) {
-		upstreamName := upstreamIndex.String()
-		if upstream != nil {
-			upstreamName = upstream.String()
+	// Cache miss: for UDP upstream, use semaphore to limit concurrency. Only drop if timeout.
+	if upstream != nil && upstream.Scheme == "udp" {
+		data, err := dnsMessage.Pack()
+		if err != nil {
+			return fmt.Errorf("pack DNS packet: %w", err)
 		}
-		c.log.WithFields(logrus.Fields{
-			"question": dnsMessage.Question,
-			"upstream": upstreamName,
-		}).Traceln("Request to DNS upstream")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		// Use more efficient waiting strategy
+		select {
+		case getUpstreamUDPSemaphore(upstream) <- struct{}{}:
+			// Successfully acquired semaphore
+		case <-ctx.Done():
+			// Timeout, discard request
+			return nil
+		}
+
+		go func() {
+			defer func() { <-getUpstreamUDPSemaphore(upstream) }()
+			_ = c.dialSend(0, req, data, dnsMessage.Id, upstream, needResp)
+		}()
+		return nil
 	}
 
-	// Re-pack DNS packet.
+	// For other protocols (TCP, DoT, DoH, DoQ), handle synchronously.
 	data, err := dnsMessage.Pack()
 	if err != nil {
 		return fmt.Errorf("pack DNS packet: %w", err)
@@ -537,8 +594,6 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 	upstreamName := "asis"
 	if upstream == nil {
 		// As-is.
-
-		// As-is should not be valid in response routing, thus using connection realDest is reasonable.
 		var ip46 netutils.Ip46
 		if req.realDst.Addr().Is4() {
 			ip46.Ip4 = req.realDst.Addr()
@@ -555,6 +610,43 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		upstreamName = upstream.String()
 	}
 
+	// Protocol fallback: if TCP_UDP, try optimal protocol first, then fallback to others
+	if upstream.Scheme == dns.UpstreamScheme_TCP_UDP {
+		// First, try the optimal protocol (maintain original latency optimization)
+		optimalDialArgument, err := c.bestDialerChooser(req, upstream)
+		if err == nil {
+			optimalDialArgumentCopy := *optimalDialArgument
+			if respMsg, err := c.tryForwardDNS(&optimalDialArgumentCopy, upstream, data, req); err == nil {
+				return c.handleResponse(respMsg, req, id, needResp)
+			}
+		}
+
+		// If optimal protocol fails, fallback to other protocols
+		l4protos := []consts.L4ProtoStr{consts.L4ProtoStr_UDP, consts.L4ProtoStr_TCP}
+		var lastErr error
+		for _, proto := range l4protos {
+			// Skip the protocol we already tried
+			if optimalDialArgument != nil && optimalDialArgument.l4proto == proto {
+				continue
+			}
+
+			dialArgument, err := c.bestDialerChooser(req, upstream)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			dialArgument.l4proto = proto
+
+			if respMsg, err := c.tryForwardDNS(dialArgument, upstream, data, req); err == nil {
+				return c.handleResponse(respMsg, req, id, needResp)
+			} else {
+				lastErr = err
+			}
+		}
+		return lastErr
+	}
+
+	// Original logic for other protocols
 	// Select best dial arguments (outbound, dialer, l4proto, ipversion, etc.)
 	dialArgument, err := c.bestDialerChooser(req, upstream)
 	if err != nil {
@@ -567,17 +659,12 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		IsDns:     true,
 	}
 
-	// Dial and send.
 	var respMsg *dnsmessage.Msg
-	// defer in a recursive call will delay Close(), thus we Close() before
-	// the next recursive call. However, a connection cannot be closed twice.
-	// We should set a connClosed flag to avoid it.
 	var connClosed bool
 
 	ctxDial, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
 	defer cancel()
 
-	// get forwarder from cache
 	c.dnsForwarderCacheMu.Lock()
 	forwarder, ok := c.dnsForwarderCache[dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}]
 	if !ok {
@@ -605,18 +692,15 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		return err
 	}
 
-	// Close conn before the recursive call.
 	forwarder.Close()
 	connClosed = true
 
-	// Route response.
 	upstreamIndex, nextUpstream, err := c.routing.ResponseSelect(respMsg, upstream)
 	if err != nil {
 		return err
 	}
 	switch upstreamIndex {
 	case consts.DnsResponseOutboundIndex_Accept:
-		// Accept.
 		if c.log.IsLevelEnabled(logrus.TraceLevel) {
 			c.log.WithFields(logrus.Fields{
 				"question": respMsg.Question,
@@ -624,7 +708,6 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 			}).Traceln("Accept")
 		}
 	case consts.DnsResponseOutboundIndex_Reject:
-		// Reject the request with empty answer.
 		respMsg.Answer = nil
 		if c.log.IsLevelEnabled(logrus.TraceLevel) {
 			c.log.WithFields(logrus.Fields{
@@ -632,7 +715,6 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 				"upstream": upstreamName,
 			}).Traceln("Reject with empty answer")
 		}
-		// We also cache response reject.
 	default:
 		if c.log.IsLevelEnabled(logrus.TraceLevel) {
 			c.log.WithFields(logrus.Fields{
@@ -678,10 +760,124 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		return err
 	}
 	if needResp {
-		// Keep the id the same with request.
 		respMsg.Id = id
 		respMsg.Compress = true
 		data, err = respMsg.Pack()
+		if err != nil {
+			return err
+		}
+		if err = sendPkt(c.log, data, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *DnsController) tryForwardDNS(dialArgument *dialArgument, upstream *dns.Upstream, data []byte, req *udpRequest) (respMsg *dnsmessage.Msg, err error) {
+	networkType := &dialer.NetworkType{
+		L4Proto:   dialArgument.l4proto,
+		IpVersion: dialArgument.ipversion,
+		IsDns:     true,
+	}
+
+	ctxDial, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
+	defer cancel()
+
+	c.dnsForwarderCacheMu.Lock()
+	forwarder, ok := c.dnsForwarderCache[dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}]
+	if !ok {
+		forwarder, err = newDnsForwarder(upstream, *dialArgument)
+		if err != nil {
+			c.dnsForwarderCacheMu.Unlock()
+			return nil, err
+		}
+		c.dnsForwarderCache[dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}] = forwarder
+	}
+	c.dnsForwarderCacheMu.Unlock()
+
+	defer func() {
+		if err != nil {
+			forwarder.Close()
+		}
+	}()
+
+	respMsg, err = forwarder.ForwardDNS(ctxDial, data)
+	if err != nil {
+		return nil, err
+	}
+
+	upstreamIndex, nextUpstream, err := c.routing.ResponseSelect(respMsg, upstream)
+	if err != nil {
+		return nil, err
+	}
+	switch upstreamIndex {
+	case consts.DnsResponseOutboundIndex_Accept:
+		if c.log.IsLevelEnabled(logrus.TraceLevel) {
+			c.log.WithFields(logrus.Fields{
+				"question": respMsg.Question,
+				"upstream": upstream.String(),
+			}).Traceln("Accept")
+		}
+	case consts.DnsResponseOutboundIndex_Reject:
+		respMsg.Answer = nil
+		if c.log.IsLevelEnabled(logrus.TraceLevel) {
+			c.log.WithFields(logrus.Fields{
+				"question": respMsg.Question,
+				"upstream": upstream.String(),
+			}).Traceln("Reject with empty answer")
+		}
+	default:
+		if c.log.IsLevelEnabled(logrus.TraceLevel) {
+			c.log.WithFields(logrus.Fields{
+				"question":      respMsg.Question,
+				"last_upstream": upstream.String(),
+				"next_upstream": nextUpstream.String(),
+			}).Traceln("Change DNS upstream and resend")
+		}
+		return c.tryForwardDNS(dialArgument, nextUpstream, data, req)
+	}
+	if upstreamIndex.IsReserved() && c.log.IsLevelEnabled(logrus.InfoLevel) {
+		var (
+			qname string
+			qtype string
+		)
+		if len(respMsg.Question) > 0 {
+			q := respMsg.Question[0]
+			qname = strings.ToLower(q.Name)
+			qtype = QtypeToString(q.Qtype)
+		}
+		fields := logrus.Fields{
+			"network":  networkType.String(),
+			"outbound": dialArgument.bestOutbound.Name,
+			"policy":   dialArgument.bestOutbound.GetSelectionPolicy(),
+			"dialer":   dialArgument.bestDialer.Property().Name,
+			"_qname":   qname,
+			"qtype":    qtype,
+			"pid":      req.routingResult.Pid,
+			"dscp":     req.routingResult.Dscp,
+			"pname":    ProcessName2String(req.routingResult.Pname[:]),
+			"mac":      Mac2String(req.routingResult.Mac[:]),
+		}
+		switch upstreamIndex {
+		case consts.DnsResponseOutboundIndex_Accept:
+			c.log.WithFields(fields).Infof("%v <-> %v", RefineSourceToShow(req.realSrc, req.realDst.Addr()), RefineAddrPortToShow(dialArgument.bestTarget))
+		case consts.DnsResponseOutboundIndex_Reject:
+			c.log.WithFields(fields).Infof("%v -> reject", RefineSourceToShow(req.realSrc, req.realDst.Addr()))
+		default:
+			return nil, fmt.Errorf("unknown upstream: %v", upstreamIndex.String())
+		}
+	}
+	return respMsg, nil
+}
+
+func (c *DnsController) handleResponse(respMsg *dnsmessage.Msg, req *udpRequest, id uint16, needResp bool) (err error) {
+	if err = c.NormalizeAndCacheDnsResp_(respMsg); err != nil {
+		return err
+	}
+	if needResp {
+		respMsg.Id = id
+		respMsg.Compress = true
+		data, err := respMsg.Pack()
 		if err != nil {
 			return err
 		}
