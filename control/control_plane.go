@@ -818,13 +818,32 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			copy(newOob, oob[:oobn])
 			newSrc := src
 			convergeSrc := common.ConvergeAddrPort(src)
-			// Debug:
-			// t := time.Now()
-			DefaultUdpTaskPool.EmitTask(convergeSrc.String(), func() {
+			// Try cache fast path
+			if c.dnsController != nil {
+				// parse DNS message
+				msg := &dnsmessage.Msg{}
+				if err := msg.Unpack(newBuf); err == nil && len(msg.Question) > 0 {
+					cacheKey := c.dnsController.cacheKey(msg.Question[0].Name, msg.Question[0].Qtype)
+					cache := c.dnsController.LookupDnsRespCache(cacheKey, false)
+					if cache != nil {
+						// cache hit, respond directly
+						cache.FillInto(msg)
+						msg.Compress = true
+						resp, err := msg.Pack()
+						if err == nil {
+							udpConn.WriteToUDPAddrPort(resp, newSrc)
+							newBuf.Put()
+							newOob.Put()
+							continue
+						}
+					}
+				}
+			}
+			// cache miss or parse fail, enqueue to global DNS UDP task pool
+			dns.DefaultDnsUdpTaskPool.EmitTask(func() {
 				data := newBuf
 				oob := newOob
 				src := newSrc
-
 				defer data.Put()
 				defer oob.Put()
 				var realDst netip.AddrPort
@@ -841,9 +860,6 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 					c.log.Warnln("handlePkt:", e)
 				}
 			})
-			// if d := time.Since(t); d > 100*time.Millisecond {
-			// 	logrus.Println(d)
-			// }
 		}
 	}()
 	c.ActivateCheck()
@@ -1011,6 +1027,15 @@ func (c *ControlPlane) Close() (err error) {
 			}
 		}
 	}
+
+	// Clean up DNS controller resources
+	if c.dnsController != nil {
+		c.dnsController.Close()
+	}
+
+	// 修复：关闭DNS UDP任务池
+	dns.DefaultDnsUdpTaskPool.Close()
+
 	c.cancel()
 	return c.core.Close()
 }

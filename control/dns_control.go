@@ -60,119 +60,6 @@ type DnsControllerOption struct {
 	FixedDomainTtl        map[string]int
 }
 
-type SimpleHandlingState struct {
-	done       chan struct{}
-	once       sync.Once
-	lastAccess int64 // unix nano
-}
-
-func (s *SimpleHandlingState) touch() {
-	s.lastAccess = time.Now().UnixNano()
-}
-
-func (s *SimpleHandlingState) Wait() {
-	s.touch()
-	<-s.done
-}
-
-func (s *SimpleHandlingState) Complete() {
-	s.touch()
-	s.once.Do(func() {
-		close(s.done)
-	})
-}
-
-func NewSimpleHandlingState() *SimpleHandlingState {
-	return &SimpleHandlingState{
-		done:       make(chan struct{}),
-		lastAccess: time.Now().UnixNano(),
-	}
-}
-
-// HandlingStateManager manages concurrent DNS handling states with automatic cleanup.
-type HandlingStateManager struct {
-	states sync.Map // map[string]*SimpleHandlingState
-	stopCh chan struct{}
-}
-
-// Create a new HandlingStateManager and start the background cleanup goroutine.
-func NewHandlingStateManager() *HandlingStateManager {
-	m := &HandlingStateManager{stopCh: make(chan struct{})}
-	go m.backgroundCleanup()
-	return m
-}
-
-// Start a background goroutine to periodically clean up expired states based on lastAccess.
-func (m *HandlingStateManager) backgroundCleanup() {
-	maxWait := 30 * time.Minute
-	for {
-		now := time.Now().UnixNano()
-		soonestExpire := now + int64(maxWait)
-		m.states.Range(func(k, v any) bool {
-			state, ok := v.(*SimpleHandlingState)
-			if !ok {
-				m.states.Delete(k)
-				return true
-			}
-			expireTime := state.lastAccess + int64(10*time.Minute)
-			if now > expireTime {
-				m.states.Delete(k)
-			} else if expireTime < soonestExpire {
-				soonestExpire = expireTime
-			}
-			return true
-		})
-		wait := time.Duration(soonestExpire - now)
-		if wait <= 0 || wait > maxWait {
-			wait = maxWait
-		}
-		select {
-		case <-time.After(wait):
-		case <-m.stopCh:
-			return
-		}
-	}
-}
-
-func (m *HandlingStateManager) Close() {
-	close(m.stopCh)
-	m.states.Range(func(key, value any) bool {
-		m.states.Delete(key)
-		return true
-	})
-}
-
-func (m *HandlingStateManager) GetOrCreateState(key string) (*SimpleHandlingState, bool) {
-	if stateValue, ok := m.states.Load(key); ok {
-		state, ok := stateValue.(*SimpleHandlingState)
-		if !ok {
-			m.states.Delete(key)
-			return NewSimpleHandlingState(), true
-		}
-		state.touch()
-		return state, false
-	}
-	newState := NewSimpleHandlingState()
-	if actualValue, loaded := m.states.LoadOrStore(key, newState); loaded {
-		state, ok := actualValue.(*SimpleHandlingState)
-		if !ok {
-			m.states.Delete(key)
-			return newState, true
-		}
-		state.touch()
-		return state, false
-	}
-	return newState, true
-}
-
-func (m *HandlingStateManager) CompleteAndCleanup(key string, state *SimpleHandlingState) {
-	state.Complete()
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		m.states.Delete(key)
-	}()
-}
-
 type DnsController struct {
 	routing     *dns.Dns
 	qtypePrefer uint16
@@ -190,8 +77,30 @@ type DnsController struct {
 	dnsCache          sync.Map // map[string]*DnsCache
 	dnsForwarderCache sync.Map // map[dnsForwarderKey]DnsForwarder
 
-	forwarderManager     *DnsForwarderManager  // new field
-	handlingStateManager *HandlingStateManager // new field
+	forwarderManager *DnsForwarderManager // 保留转发器管理器
+
+	// 缓存清理相关
+	stopCleanup chan struct{}
+
+	// 优化的清理参数
+	cleanupStats struct {
+		sync.RWMutex     // 使用读写锁减少竞争
+		lastCleanupTime  time.Time
+		lastCleanupCount int
+		avgCleanupCount  float64
+		cacheSize        int
+		expiredRatio     float64
+		nextCleanupTime  time.Time // 下次清理时间
+	}
+
+	// 清理控制
+	cleanupConfig struct {
+		sync.RWMutex
+		enabled     bool
+		maxInterval time.Duration
+		minInterval time.Duration
+		batchSize   int // 每次清理的最大批次数
+	}
 }
 
 func parseIpVersionPreference(prefer int) (uint16, error) {
@@ -214,7 +123,7 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		return nil, err
 	}
 
-	return &DnsController{
+	c = &DnsController{
 		routing:     routing,
 		qtypePrefer: prefer,
 
@@ -227,9 +136,30 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 
 		fixedDomainTtl: option.FixedDomainTtl,
 		// Use sync.Map, no need to initialize
-		forwarderManager:     NewDnsForwarderManager(),  // new initialization
-		handlingStateManager: NewHandlingStateManager(), // new initialization
-	}, nil
+		forwarderManager: NewDnsForwarderManager(), // new initialization
+		stopCleanup:      make(chan struct{}),
+	}
+
+	// 初始化清理配置
+	c.cleanupConfig.enabled = true
+	c.cleanupConfig.maxInterval = 30 * time.Minute
+	c.cleanupConfig.minInterval = 2 * time.Minute
+	c.cleanupConfig.batchSize = 100 // 每次最多清理100个
+
+	// 初始化清理统计
+	c.cleanupStats.lastCleanupTime = time.Now()
+	c.cleanupStats.nextCleanupTime = time.Now().Add(c.cleanupConfig.minInterval)
+	c.cleanupStats.avgCleanupCount = 0
+
+	// 修复：确保DNS路由配置有效
+	if routing == nil {
+		return nil, fmt.Errorf("DNS routing configuration is nil")
+	}
+
+	// 启动优化的缓存清理协程
+	go c.optimizedCleanupExpiredCache()
+
+	return c, nil
 }
 
 func (c *DnsController) cacheKey(qname string, qtype uint16) string {
@@ -238,6 +168,13 @@ func (c *DnsController) cacheKey(qname string, qtype uint16) string {
 }
 
 func (c *DnsController) RemoveDnsRespCache(cacheKey string) {
+	cacheValue, ok := c.dnsCache.Load(cacheKey)
+	if ok {
+		cache, ok := cacheValue.(*DnsCache)
+		if ok && c.cacheRemoveCallback != nil {
+			_ = c.cacheRemoveCallback(cache)
+		}
+	}
 	c.dnsCache.Delete(cacheKey)
 }
 
@@ -256,17 +193,14 @@ func (c *DnsController) LookupDnsRespCache(cacheKey string, ignoreFixedTtl bool)
 	} else {
 		deadline = cache.OriginalDeadline
 	}
-	if !deadline.After(time.Now()) {
+	if time.Now().After(deadline) {
 		return nil
 	}
-	if err := c.cacheAccessCallback(cache); err != nil {
-		c.log.Warnf("failed to BatchUpdateDomainRouting: %v", err)
-		return nil
-	}
+	// Do not update eBPF on cache hit
 	return cache
 }
 
-// LookupDnsRespCache_ will modify the msg in place.
+// LookupDnsRespCache_ handle DNS resp in place.
 func (c *DnsController) LookupDnsRespCache_(msg *dnsmessage.Msg, cacheKey string, ignoreFixedTtl bool) (resp []byte) {
 	cache := c.LookupDnsRespCache(cacheKey, ignoreFixedTtl)
 	if cache != nil {
@@ -398,8 +332,14 @@ func (c *DnsController) __updateDnsCacheDeadline(host string, dnsTyp uint16, ans
 	// Atomically update the cache
 	c.dnsCache.Store(cacheKey, cache)
 
-	if err = c.cacheAccessCallback(cache); err != nil {
-		return err
+	// 异步执行回调函数，避免阻塞DNS处理
+	if c.cacheAccessCallback != nil {
+		go func() {
+			if err := c.cacheAccessCallback(cache); err != nil {
+				// 记录错误但不阻塞主流程
+				c.log.WithError(err).Warnf("Cache access callback failed for %v", cacheKey)
+			}
+		}()
 	}
 
 	return nil
@@ -494,7 +434,9 @@ func (c *DnsController) Handle_(dnsMessage *dnsmessage.Msg, req *udpRequest) (er
 	default:
 		return fmt.Errorf("unexpected qtype path")
 	}
-	dnsMessage2.Question[0].Qtype = qtype2
+	if len(dnsMessage2.Question) > 0 {
+		dnsMessage2.Question[0].Qtype = qtype2
+	}
 
 	done := make(chan struct{})
 	go func() {
@@ -542,7 +484,10 @@ func (c *DnsController) handle_(
 	// Route request.
 	upstreamIndex, upstream, err := c.routing.RequestSelect(qname, qtype)
 	if err != nil {
-		return err
+		// 修复：如果路由选择失败，发送拒绝响应
+		cacheKey := c.cacheKey(qname, qtype)
+		c.RemoveDnsRespCache(cacheKey)
+		return c.sendReject_(dnsMessage, req)
 	}
 
 	cacheKey := c.cacheKey(qname, qtype)
@@ -563,28 +508,8 @@ func (c *DnsController) handle_(
 		return nil
 	}
 
-	// Optimized: spin until become the main handler or cache is available
-	for {
-		handlingState, isNew := c.handlingStateManager.GetOrCreateState(cacheKey)
-		if !isNew {
-			// Another goroutine is handling the same request, wait for completion.
-			handlingState.Wait()
-			// Re-check the cache after wait.
-			if resp := c.LookupDnsRespCache_(dnsMessage, cacheKey, false); resp != nil {
-				if needResp {
-					if err = sendPkt(c.log, resp, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
-						return fmt.Errorf("failed to write cached DNS resp: %w", err)
-					}
-				}
-				return nil
-			}
-			// If still no cache, spin and try to become the main handler
-			continue
-		}
-		// We are the main handler now, break the spin
-		defer c.handlingStateManager.CompleteAndCleanup(cacheKey, handlingState)
-		break
-	}
+	// 简化处理：直接处理DNS请求，移除复杂的并发控制
+	// 原来的并发控制逻辑过于复杂，可能导致性能问题
 
 	if c.log.IsLevelEnabled(logrus.TraceLevel) {
 		upstreamName := upstreamIndex.String()
@@ -595,6 +520,12 @@ func (c *DnsController) handle_(
 			"question": dnsMessage.Question,
 			"upstream": upstreamName,
 		}).Traceln("Request to DNS upstream")
+	}
+
+	// 修复：检查upstream是否有效
+	if upstream == nil && upstreamIndex != consts.DnsRequestOutboundIndex_AsIs {
+		c.log.Warnf("Invalid upstream for index %v", upstreamIndex)
+		return c.sendReject_(dnsMessage, req)
 	}
 
 	// Re-pack DNS packet.
@@ -654,6 +585,11 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		upstreamName = upstream.String()
 	}
 
+	// 修复：检查upstream是否有效
+	if upstream == nil {
+		return fmt.Errorf("invalid upstream configuration")
+	}
+
 	// Select best dial arguments (outbound, dialer, l4proto, ipversion, etc.)
 	dialArgument, err := c.bestDialerChooser(req, upstream)
 	if err != nil {
@@ -669,7 +605,7 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 	// Dial and send.
 	var respMsg *dnsmessage.Msg
 
-	ctxDial, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
+	ctxDial, cancel := context.WithTimeout(context.TODO(), 3*time.Second) // DNS专用超时，比默认的8秒更短
 	defer cancel()
 
 	// Use the new forwarder manager to avoid duplicate creation.
@@ -681,7 +617,30 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 
 	respMsg, err = forwarder.ForwardDNS(ctxDial, data)
 	if err != nil {
-		return err
+		// 如果DNS转发失败，发送拒绝响应而不是直接返回错误
+		if needResp {
+			// 创建一个拒绝响应
+			rejectMsg := &dnsmessage.Msg{
+				MsgHdr: dnsmessage.MsgHdr{
+					Id:                 id,
+					Response:           true,
+					Rcode:              dnsmessage.RcodeServerFailure,
+					RecursionAvailable: true,
+				},
+				Question: []dnsmessage.Question{}, // 空问题列表
+			}
+			rejectMsg.Compress = true
+			rejectData, packErr := rejectMsg.Pack()
+			if packErr != nil {
+				return fmt.Errorf("failed to pack reject response: %w", packErr)
+			}
+			if sendErr := sendPkt(c.log, rejectData, req.realDst, req.realSrc, req.src, req.lConn); sendErr != nil {
+				return fmt.Errorf("failed to send reject response: %w", sendErr)
+			}
+		}
+		// 修复：不返回错误，而是记录日志并继续
+		c.log.WithError(err).Warnf("DNS forward failed for upstream %v", upstreamName)
+		return nil
 	}
 
 	// Route response.
@@ -818,4 +777,207 @@ func (m *DnsForwarderManager) GetForwarder(upstream *dns.Upstream, dialArgument 
 		entry.mu.Unlock()
 	}
 	return entry.fwd, release, nil
+}
+
+func (c *DnsController) optimizedCleanupExpiredCache() {
+	// 使用更长的初始间隔，减少频繁清理
+	cleanupInterval := 5 * time.Minute
+	ticker := time.NewTicker(cleanupInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			// 检查是否需要清理
+			if !c.shouldPerformCleanup() {
+				continue
+			}
+
+			// 执行清理
+			cleaned, cacheSize, expiredRatio := c.performOptimizedCleanup()
+
+			// 更新统计信息
+			c.updateCleanupStats(cleaned, cacheSize, expiredRatio)
+
+			// 动态调整下次清理时间
+			c.adjustNextCleanupTime(cleaned, cacheSize, expiredRatio)
+
+		case <-c.stopCleanup:
+			return
+		}
+	}
+}
+
+func (c *DnsController) shouldPerformCleanup() bool {
+	c.cleanupStats.RLock()
+	defer c.cleanupStats.RUnlock()
+
+	// 如果距离上次清理时间太短，跳过
+	if time.Since(c.cleanupStats.lastCleanupTime) < c.cleanupConfig.minInterval {
+		return false
+	}
+
+	// 如果缓存很小，减少清理频率
+	if c.cleanupStats.cacheSize < 50 {
+		return time.Since(c.cleanupStats.lastCleanupTime) > 10*time.Minute
+	}
+
+	return true
+}
+
+func (c *DnsController) performOptimizedCleanup() (cleaned, cacheSize int, expiredRatio float64) {
+	now := time.Now()
+	cleaned = 0
+	total := 0
+	expired := 0
+	batchCount := 0
+
+	// 限制每次清理的数量，避免长时间阻塞
+	maxCleanup := c.cleanupConfig.batchSize
+
+	// 使用更高效的遍历方式
+	c.dnsCache.Range(func(key, value any) bool {
+		total++
+
+		// 限制清理批次数
+		if batchCount >= maxCleanup {
+			return false // 停止遍历
+		}
+
+		cache, ok := value.(*DnsCache)
+		if !ok {
+			// 直接删除无效项
+			c.dnsCache.Delete(key)
+			cleaned++
+			batchCount++
+			return true
+		}
+
+		if !cache.Deadline.After(now) {
+			// 缓存已过期，立即删除
+			if c.cacheRemoveCallback != nil {
+				_ = c.cacheRemoveCallback(cache)
+			}
+			c.dnsCache.Delete(key)
+			cleaned++
+			expired++
+			batchCount++
+		}
+
+		return true
+	})
+
+	cacheSize = total - cleaned
+	if total > 0 {
+		expiredRatio = float64(expired) / float64(total)
+	}
+
+	if cleaned > 0 && c.log.IsLevelEnabled(logrus.DebugLevel) {
+		c.log.Debugf("Optimized cleanup: cleaned %d/%d expired entries, remaining: %d", cleaned, batchCount, cacheSize)
+	}
+
+	return cleaned, cacheSize, expiredRatio
+}
+
+func (c *DnsController) updateCleanupStats(cleaned, cacheSize int, expiredRatio float64) {
+	c.cleanupStats.Lock()
+	defer c.cleanupStats.Unlock()
+
+	// 使用更轻量的统计更新
+	if c.cleanupStats.avgCleanupCount == 0 {
+		c.cleanupStats.avgCleanupCount = float64(cleaned)
+	} else {
+		// 使用更小的平滑因子，减少计算开销
+		alpha := 0.2
+		c.cleanupStats.avgCleanupCount = alpha*float64(cleaned) + (1-alpha)*c.cleanupStats.avgCleanupCount
+	}
+
+	c.cleanupStats.lastCleanupCount = cleaned
+	c.cleanupStats.lastCleanupTime = time.Now()
+	c.cleanupStats.cacheSize = cacheSize
+	c.cleanupStats.expiredRatio = expiredRatio
+}
+
+func (c *DnsController) adjustNextCleanupTime(cleaned, cacheSize int, expiredRatio float64) {
+	c.cleanupStats.Lock()
+	defer c.cleanupStats.Unlock()
+
+	// 简化的间隔计算
+	baseInterval := c.cleanupConfig.minInterval
+
+	// 根据缓存大小和过期比例调整
+	if cacheSize > 1000 || expiredRatio > 0.2 {
+		// 缓存大或过期比例高，缩短间隔
+		baseInterval = c.cleanupConfig.minInterval
+	} else if cacheSize < 100 && expiredRatio < 0.05 {
+		// 缓存小且过期比例低，延长间隔
+		baseInterval = c.cleanupConfig.maxInterval
+	} else {
+		// 中等情况，使用中等间隔
+		baseInterval = 10 * time.Minute
+	}
+
+	c.cleanupStats.nextCleanupTime = time.Now().Add(baseInterval)
+}
+
+// GetCleanupStats 返回DNS缓存清理统计信息
+func (c *DnsController) GetCleanupStats() map[string]interface{} {
+	c.cleanupStats.RLock()
+	defer c.cleanupStats.RUnlock()
+
+	return map[string]interface{}{
+		"last_cleanup_time":  c.cleanupStats.lastCleanupTime,
+		"next_cleanup_time":  c.cleanupStats.nextCleanupTime,
+		"last_cleanup_count": c.cleanupStats.lastCleanupCount,
+		"avg_cleanup_count":  c.cleanupStats.avgCleanupCount,
+		"cache_size":         c.cleanupStats.cacheSize,
+		"expired_ratio":      c.cleanupStats.expiredRatio,
+		"cleanup_enabled":    c.cleanupConfig.enabled,
+		"batch_size":         c.cleanupConfig.batchSize,
+	}
+}
+
+// SetCleanupConfig 允许动态调整清理配置
+func (c *DnsController) SetCleanupConfig(enabled bool, minInterval, maxInterval time.Duration, batchSize int) {
+	c.cleanupConfig.Lock()
+	defer c.cleanupConfig.Unlock()
+
+	c.cleanupConfig.enabled = enabled
+	if minInterval > 0 {
+		c.cleanupConfig.minInterval = minInterval
+	}
+	if maxInterval > 0 {
+		c.cleanupConfig.maxInterval = maxInterval
+	}
+	if batchSize > 0 {
+		c.cleanupConfig.batchSize = batchSize
+	}
+}
+
+func (c *DnsController) Close() {
+	// 停止缓存清理协程
+	close(c.stopCleanup)
+
+	// 清理所有缓存
+	c.dnsCache.Range(func(key, value any) bool {
+		cache, ok := value.(*DnsCache)
+		if ok && c.cacheRemoveCallback != nil {
+			_ = c.cacheRemoveCallback(cache)
+		}
+		c.dnsCache.Delete(key)
+		return true
+	})
+
+	// 修复：清理所有转发器
+	if c.forwarderManager != nil {
+		c.forwarderManager.cache.Range(func(key, value interface{}) bool {
+			if entry, ok := value.(*forwarderEntry); ok {
+				entry.mu.Lock()
+				entry.fwd.Close()
+				entry.mu.Unlock()
+			}
+			c.forwarderManager.cache.Delete(key)
+			return true
+		})
+	}
 }

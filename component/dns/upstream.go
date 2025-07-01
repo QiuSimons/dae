@@ -170,12 +170,17 @@ func (u *UpstreamResolver) GetUpstream() (_ *Upstream, err error) {
 			if err == nil {
 				if err = u.FinishInitCallback(u.Raw, u.upstream); err != nil {
 					u.upstream = nil
+					u.init = false
 					return
 				}
 				u.init = true
+			} else {
+				// 修复：初始化失败时不设置init为true，允许重试
+				u.upstream = nil
+				u.init = false
 			}
 		}()
-		ctx, cancel := context.WithTimeout(context.TODO(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.TODO(), 3*time.Second)
 		defer cancel()
 		if u.upstream, err = NewUpstream(ctx, u.Raw, u.Network); err != nil {
 			return nil, fmt.Errorf("failed to init dns upstream: %w", err)
