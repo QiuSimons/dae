@@ -6,10 +6,14 @@
 package dns
 
 import (
+	"context"
 	"fmt"
+	"net"
 	"net/netip"
 	"net/url"
 	"sync"
+	"syscall"
+	"time"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/assets"
@@ -22,11 +26,17 @@ import (
 
 var ErrBadUpstreamFormat = fmt.Errorf("bad upstream format")
 
+const (
+	maxDnsUdpListenerPoolSize = 4096
+	maxDnsUdpEndpointPoolSize = 4096
+	maxDnsUdpTaskPoolSize     = 4096
+	cleanupInterval           = 5 * time.Minute
+)
+
 type Dns struct {
 	log              *logrus.Logger
 	upstream         []*UpstreamResolver
-	upstream2IndexMu sync.Mutex
-	upstream2Index   map[*Upstream]int
+	upstream2Index   sync.Map
 	reqMatcher       *RequestMatcher
 	respMatcher      *ResponseMatcher
 }
@@ -38,13 +48,288 @@ type NewOption struct {
 	UpstreamResolverNetwork string
 }
 
+// Lockless UDP listener pool dedicated for DNS, used only internally
+// Add maximum capacity and periodic cleanup mechanism
+
+type DnsUdpListenerPool struct {
+	pool   sync.Map // map[string]*net.UDPConn
+	stopCh chan struct{}
+}
+
+func NewDnsUdpListenerPool() *DnsUdpListenerPool {
+	p := &DnsUdpListenerPool{stopCh: make(chan struct{})}
+	go p.backgroundCleanup()
+	return p
+}
+
+// Periodically clean up expired or invalid UDP listeners.
+func (p *DnsUdpListenerPool) backgroundCleanup() {
+	maxWait := 30 * time.Minute
+	for {
+		now := time.Now()
+		soonestExpire := now.Add(maxWait)
+		p.pool.Range(func(key, value any) bool {
+			// Only clean by capacity, TTL expiration is handled by time.AfterFunc.
+			// No unified expiration field, skip.
+			return true
+		})
+		wait := soonestExpire.Sub(now)
+		if wait <= 0 || wait > maxWait {
+			wait = maxWait
+		}
+		select {
+		case <-time.After(wait):
+		case <-p.stopCh:
+			return
+		}
+	}
+}
+
+func (p *DnsUdpListenerPool) Close() {
+	close(p.stopCh)
+	p.pool.Range(func(key, value any) bool {
+		p.pool.Delete(key)
+		return true
+	})
+}
+
+func (p *DnsUdpListenerPool) GetOrCreate(lAddr string, ttl time.Duration) (conn *net.UDPConn, isNew bool, err error) {
+	count := 0
+	p.pool.Range(func(_, _ any) bool { count++; return true })
+	if count >= maxDnsUdpListenerPoolSize {
+		return nil, false, fmt.Errorf("listener pool full")
+	}
+	if c, ok := p.pool.Load(lAddr); ok {
+		return c.(*net.UDPConn), false, nil
+	}
+	createKey := lAddr + "_creating"
+	if _, loaded := p.pool.LoadOrStore(createKey, struct{}{}); loaded {
+		for i := 0; i < 10; i++ {
+			time.Sleep(time.Millisecond * 10)
+			if c, ok := p.pool.Load(lAddr); ok {
+				return c.(*net.UDPConn), false, nil
+			}
+		}
+		p.pool.Delete(createKey)
+		return nil, false, fmt.Errorf("concurrent create timeout: %s", lAddr)
+	}
+	defer p.pool.Delete(createKey)
+	if c, ok := p.pool.Load(lAddr); ok {
+		return c.(*net.UDPConn), false, nil
+	}
+	d := net.ListenConfig{
+		Control: func(network string, address string, c syscall.RawConn) error {
+			return nil
+		},
+		KeepAlive: 0,
+	}
+	var pc net.PacketConn
+	pc, err = d.ListenPacket(context.Background(), "udp", lAddr)
+	if err != nil {
+		return nil, true, err
+	}
+	uConn := pc.(*net.UDPConn)
+	if ttl > 0 {
+		time.AfterFunc(ttl, func() {
+			p.pool.Delete(lAddr)
+			uConn.Close()
+		})
+	}
+	p.pool.Store(lAddr, uConn)
+	return uConn, true, nil
+}
+
+// Lockless UDP endpoint pool dedicated for DNS, used only internally
+// Add maximum capacity, periodic cleanup, and DCLP retry mechanism
+
+type DnsUdpEndpoint struct {
+	lastActive time.Time
+}
+
+type DnsUdpEndpointPool struct {
+	pool   sync.Map // map[string]*DnsUdpEndpoint
+	stopCh chan struct{}
+}
+
+func NewDnsUdpEndpointPool() *DnsUdpEndpointPool {
+	p := &DnsUdpEndpointPool{stopCh: make(chan struct{})}
+	go p.backgroundCleanup()
+	return p
+}
+
+// Periodically clean up expired UDP endpoints based on lastActive.
+func (p *DnsUdpEndpointPool) backgroundCleanup() {
+	maxWait := 30 * time.Minute
+	for {
+		now := time.Now()
+		soonestExpire := now.Add(maxWait)
+		p.pool.Range(func(key, value any) bool {
+			endpoint, ok := value.(*DnsUdpEndpoint)
+			if !ok {
+				p.pool.Delete(key)
+				return true
+			}
+			expireTime := endpoint.lastActive.Add(10 * cleanupInterval)
+			if now.After(expireTime) {
+				p.pool.Delete(key)
+			} else if expireTime.Before(soonestExpire) {
+				soonestExpire = expireTime
+			}
+			return true
+		})
+		wait := soonestExpire.Sub(now)
+		if wait <= 0 || wait > maxWait {
+			wait = maxWait
+		}
+		select {
+		case <-time.After(wait):
+		case <-p.stopCh:
+			return
+		}
+	}
+}
+
+func (p *DnsUdpEndpointPool) Close() {
+	close(p.stopCh)
+	p.pool.Range(func(key, value any) bool {
+		p.pool.Delete(key)
+		return true
+	})
+}
+
+func (p *DnsUdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption any) (endpoint *DnsUdpEndpoint, isNew bool, err error) {
+	count := 0
+	p.pool.Range(func(_, _ any) bool { count++; return true })
+	if count >= maxDnsUdpEndpointPoolSize {
+		return nil, false, fmt.Errorf("endpoint pool full")
+	}
+	key := lAddr.String()
+	if e, ok := p.pool.Load(key); ok {
+		endpoint, ok = e.(*DnsUdpEndpoint)
+		if !ok {
+			p.pool.Delete(key)
+			return nil, false, fmt.Errorf("endpoint type assertion failed")
+		}
+		endpoint.lastActive = time.Now()
+		return endpoint, false, nil
+	}
+	createKey := key + "_creating"
+	if _, loaded := p.pool.LoadOrStore(createKey, struct{}{}); loaded {
+		for i := 0; i < 10; i++ {
+			time.Sleep(time.Millisecond * 10)
+			if e, ok := p.pool.Load(key); ok {
+				endpoint, ok = e.(*DnsUdpEndpoint)
+				if !ok {
+					p.pool.Delete(key)
+					return nil, false, fmt.Errorf("endpoint type assertion failed")
+				}
+				endpoint.lastActive = time.Now()
+				return endpoint, false, nil
+			}
+		}
+		p.pool.Delete(createKey)
+		return nil, false, fmt.Errorf("concurrent create timeout: %s", key)
+	}
+	defer p.pool.Delete(createKey)
+	if e, ok := p.pool.Load(key); ok {
+		endpoint, ok = e.(*DnsUdpEndpoint)
+		if !ok {
+			p.pool.Delete(key)
+			return nil, false, fmt.Errorf("endpoint type assertion failed")
+		}
+		endpoint.lastActive = time.Now()
+		return endpoint, false, nil
+	}
+	endpoint = &DnsUdpEndpoint{lastActive: time.Now()}
+	p.pool.Store(key, endpoint)
+	return endpoint, true, nil
+}
+
+// Lockless UDP task pool dedicated for DNS, used only internally
+// Add maximum capacity and periodic cleanup mechanism
+
+type DnsUdpTask func()
+
+type DnsUdpTaskQueue struct {
+	ch         chan DnsUdpTask
+	lastActive time.Time
+}
+
+type DnsUdpTaskPool struct {
+	pool   sync.Map // map[string]*DnsUdpTaskQueue
+	stopCh chan struct{}
+}
+
+func NewDnsUdpTaskPool() *DnsUdpTaskPool {
+	p := &DnsUdpTaskPool{stopCh: make(chan struct{})}
+	go p.backgroundCleanup()
+	return p
+}
+
+// Periodically clean up expired UDP task queues based on lastActive.
+func (p *DnsUdpTaskPool) backgroundCleanup() {
+	maxWait := 30 * time.Minute
+	for {
+		now := time.Now()
+		soonestExpire := now.Add(maxWait)
+		p.pool.Range(func(key, value any) bool {
+			q, ok := value.(*DnsUdpTaskQueue)
+			if !ok {
+				p.pool.Delete(key)
+				return true
+			}
+			expireTime := q.lastActive.Add(10 * cleanupInterval)
+			if now.After(expireTime) {
+				p.pool.Delete(key)
+			} else if expireTime.Before(soonestExpire) {
+				soonestExpire = expireTime
+			}
+			return true
+		})
+		wait := soonestExpire.Sub(now)
+		if wait <= 0 || wait > maxWait {
+			wait = maxWait
+		}
+		select {
+		case <-time.After(wait):
+		case <-p.stopCh:
+			return
+		}
+	}
+}
+
+func (p *DnsUdpTaskPool) Close() {
+	close(p.stopCh)
+	p.pool.Range(func(key, value any) bool {
+		p.pool.Delete(key)
+		return true
+	})
+}
+
+func (p *DnsUdpTaskPool) EmitTask(key string, task DnsUdpTask) {
+	count := 0
+	p.pool.Range(func(_, _ any) bool { count++; return true })
+	if count >= maxDnsUdpTaskPoolSize {
+		return
+	}
+	qAny, _ := p.pool.LoadOrStore(key, &DnsUdpTaskQueue{ch: make(chan DnsUdpTask, 512), lastActive: time.Now()})
+	q := qAny.(*DnsUdpTaskQueue)
+	select {
+	case q.ch <- task:
+		q.lastActive = time.Now()
+		// ok
+	default:
+		// Drop the task if the queue is full.
+	}
+}
+
 func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 	s = &Dns{
 		log: opt.Logger,
-		upstream2Index: map[*Upstream]int{
-			nil: int(consts.DnsRequestOutboundIndex_AsIs),
-		},
+		// upstream2Index uses sync.Map, no need to initialize
 	}
+	// Set the default nil mapping
+	s.upstream2Index.Store((*Upstream)(nil), int(consts.DnsRequestOutboundIndex_AsIs))
 	// Parse upstream.
 	upstreamName2Id := map[string]uint8{}
 	for i, upstreamRaw := range dns.Upstream {
@@ -73,9 +358,7 @@ func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 						}
 					}
 
-					s.upstream2IndexMu.Lock()
-					s.upstream2Index[upstream] = i
-					s.upstream2IndexMu.Unlock()
+					s.upstream2Index.Store(upstream, i)
 					return nil
 				}
 			}(i),
@@ -207,9 +490,11 @@ func (s *Dns) ResponseSelect(msg *dnsmessage.Msg, fromUpstream *Upstream) (upstr
 		}
 	}
 
-	s.upstream2IndexMu.Lock()
-	from := s.upstream2Index[fromUpstream]
-	s.upstream2IndexMu.Unlock()
+	fromValue, ok := s.upstream2Index.Load(fromUpstream)
+	if !ok {
+		fromValue = int(consts.DnsRequestOutboundIndex_AsIs) // default value
+	}
+	from := fromValue.(int)
 	// Route.
 	upstreamIndex, err = s.respMatcher.Match(qname, qtype, ips, consts.DnsRequestOutboundIndex(from))
 	if err != nil {

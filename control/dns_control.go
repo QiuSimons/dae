@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -61,9 +60,120 @@ type DnsControllerOption struct {
 	FixedDomainTtl        map[string]int
 }
 
-type DnsController struct {
-	handling sync.Map
+type SimpleHandlingState struct {
+	done       chan struct{}
+	once       sync.Once
+	lastAccess int64 // unix nano
+}
 
+func (s *SimpleHandlingState) touch() {
+	s.lastAccess = time.Now().UnixNano()
+}
+
+func (s *SimpleHandlingState) Wait() {
+	s.touch()
+	<-s.done
+}
+
+func (s *SimpleHandlingState) Complete() {
+	s.touch()
+	s.once.Do(func() {
+		close(s.done)
+	})
+}
+
+func NewSimpleHandlingState() *SimpleHandlingState {
+	return &SimpleHandlingState{
+		done:       make(chan struct{}),
+		lastAccess: time.Now().UnixNano(),
+	}
+}
+
+// HandlingStateManager manages concurrent DNS handling states with automatic cleanup.
+type HandlingStateManager struct {
+	states sync.Map // map[string]*SimpleHandlingState
+	stopCh chan struct{}
+}
+
+// Create a new HandlingStateManager and start the background cleanup goroutine.
+func NewHandlingStateManager() *HandlingStateManager {
+	m := &HandlingStateManager{stopCh: make(chan struct{})}
+	go m.backgroundCleanup()
+	return m
+}
+
+// Start a background goroutine to periodically clean up expired states based on lastAccess.
+func (m *HandlingStateManager) backgroundCleanup() {
+	maxWait := 30 * time.Minute
+	for {
+		now := time.Now().UnixNano()
+		soonestExpire := now + int64(maxWait)
+		m.states.Range(func(k, v any) bool {
+			state, ok := v.(*SimpleHandlingState)
+			if !ok {
+				m.states.Delete(k)
+				return true
+			}
+			expireTime := state.lastAccess + int64(10*time.Minute)
+			if now > expireTime {
+				m.states.Delete(k)
+			} else if expireTime < soonestExpire {
+				soonestExpire = expireTime
+			}
+			return true
+		})
+		wait := time.Duration(soonestExpire - now)
+		if wait <= 0 || wait > maxWait {
+			wait = maxWait
+		}
+		select {
+		case <-time.After(wait):
+		case <-m.stopCh:
+			return
+		}
+	}
+}
+
+func (m *HandlingStateManager) Close() {
+	close(m.stopCh)
+	m.states.Range(func(key, value any) bool {
+		m.states.Delete(key)
+		return true
+	})
+}
+
+func (m *HandlingStateManager) GetOrCreateState(key string) (*SimpleHandlingState, bool) {
+	if stateValue, ok := m.states.Load(key); ok {
+		state, ok := stateValue.(*SimpleHandlingState)
+		if !ok {
+			m.states.Delete(key)
+			return NewSimpleHandlingState(), true
+		}
+		state.touch()
+		return state, false
+	}
+	newState := NewSimpleHandlingState()
+	if actualValue, loaded := m.states.LoadOrStore(key, newState); loaded {
+		state, ok := actualValue.(*SimpleHandlingState)
+		if !ok {
+			m.states.Delete(key)
+			return newState, true
+		}
+		state.touch()
+		return state, false
+	}
+	return newState, true
+}
+
+func (m *HandlingStateManager) CompleteAndCleanup(key string, state *SimpleHandlingState) {
+	state.Complete()
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		m.states.Delete(key)
+	}()
+}
+
+type DnsController struct {
 	routing     *dns.Dns
 	qtypePrefer uint16
 
@@ -76,16 +186,12 @@ type DnsController struct {
 	timeoutExceedCallback func(dialArgument *dialArgument, err error)
 
 	fixedDomainTtl map[string]int
-	// mutex protects the dnsCache.
-	dnsCacheMu          sync.Mutex
-	dnsCache            map[string]*DnsCache
-	dnsForwarderCacheMu sync.Mutex
-	dnsForwarderCache   map[dnsForwarderKey]DnsForwarder
-}
+	// Use sync.Map instead of mutex+map to reduce lock contention
+	dnsCache          sync.Map // map[string]*DnsCache
+	dnsForwarderCache sync.Map // map[dnsForwarderKey]DnsForwarder
 
-type handlingState struct {
-	mu  sync.Mutex
-	ref uint32
+	forwarderManager     *DnsForwarderManager  // new field
+	handlingStateManager *HandlingStateManager // new field
 }
 
 func parseIpVersionPreference(prefer int) (uint16, error) {
@@ -119,11 +225,10 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		bestDialerChooser:     option.BestDialerChooser,
 		timeoutExceedCallback: option.TimeoutExceedCallback,
 
-		fixedDomainTtl:      option.FixedDomainTtl,
-		dnsCacheMu:          sync.Mutex{},
-		dnsCache:            make(map[string]*DnsCache),
-		dnsForwarderCacheMu: sync.Mutex{},
-		dnsForwarderCache:   make(map[dnsForwarderKey]DnsForwarder),
+		fixedDomainTtl: option.FixedDomainTtl,
+		// Use sync.Map, no need to initialize
+		forwarderManager:     NewDnsForwarderManager(),  // new initialization
+		handlingStateManager: NewHandlingStateManager(), // new initialization
 	}, nil
 }
 
@@ -133,17 +238,15 @@ func (c *DnsController) cacheKey(qname string, qtype uint16) string {
 }
 
 func (c *DnsController) RemoveDnsRespCache(cacheKey string) {
-	c.dnsCacheMu.Lock()
-	_, ok := c.dnsCache[cacheKey]
-	if ok {
-		delete(c.dnsCache, cacheKey)
-	}
-	c.dnsCacheMu.Unlock()
+	c.dnsCache.Delete(cacheKey)
 }
+
 func (c *DnsController) LookupDnsRespCache(cacheKey string, ignoreFixedTtl bool) (cache *DnsCache) {
-	c.dnsCacheMu.Lock()
-	cache, ok := c.dnsCache[cacheKey]
-	c.dnsCacheMu.Unlock()
+	cacheValue, ok := c.dnsCache.Load(cacheKey)
+	if !ok {
+		return nil
+	}
+	cache, ok = cacheValue.(*DnsCache)
 	if !ok {
 		return nil
 	}
@@ -153,8 +256,6 @@ func (c *DnsController) LookupDnsRespCache(cacheKey string, ignoreFixedTtl bool)
 	} else {
 		deadline = cache.OriginalDeadline
 	}
-	// We should make sure the cache did not expire, or
-	// return nil and request a new lookup to refresh the cache.
 	if !deadline.After(time.Now()) {
 		return nil
 	}
@@ -287,22 +388,16 @@ func (c *DnsController) __updateDnsCacheDeadline(host string, dnsTyp uint16, ans
 	deadline, originalDeadline := deadlineFunc(now, host)
 
 	cacheKey := c.cacheKey(fqdn, dnsTyp)
-	c.dnsCacheMu.Lock()
-	cache, ok := c.dnsCache[cacheKey]
-	if ok {
-		cache.Answer = answers
-		cache.Deadline = deadline
-		cache.OriginalDeadline = originalDeadline
-		c.dnsCacheMu.Unlock()
-	} else {
-		cache, err = c.newCache(fqdn, answers, deadline, originalDeadline)
-		if err != nil {
-			c.dnsCacheMu.Unlock()
-			return err
-		}
-		c.dnsCache[cacheKey] = cache
-		c.dnsCacheMu.Unlock()
+
+	// Create a new cache entry instead of modifying the existing one to avoid data races.
+	cache, err := c.newCache(fqdn, answers, deadline, originalDeadline)
+	if err != nil {
+		return err
 	}
+
+	// Atomically update the cache
+	c.dnsCache.Store(cacheKey, cache)
+
 	if err = c.cacheAccessCallback(cache); err != nil {
 		return err
 	}
@@ -458,33 +553,37 @@ func (c *DnsController) handle_(
 		return c.sendReject_(dnsMessage, req)
 	}
 
-	// No parallel for the same lookup.
-	handlingState_, _ := c.handling.LoadOrStore(cacheKey, new(handlingState))
-	handlingState := handlingState_.(*handlingState)
-	atomic.AddUint32(&handlingState.ref, 1)
-	handlingState.mu.Lock()
-	defer func() {
-		handlingState.mu.Unlock()
-		atomic.AddUint32(&handlingState.ref, ^uint32(0))
-		if atomic.LoadUint32(&handlingState.ref) == 0 {
-			c.handling.Delete(cacheKey)
-		}
-	}()
-
+	// First, try to return cache immediately (fast path)
 	if resp := c.LookupDnsRespCache_(dnsMessage, cacheKey, false); resp != nil {
-		// Send cache to client directly.
 		if needResp {
 			if err = sendPkt(c.log, resp, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
 				return fmt.Errorf("failed to write cached DNS resp: %w", err)
 			}
 		}
-		if c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Question) > 0 {
-			q := dnsMessage.Question[0]
-			c.log.Debugf("UDP(DNS) %v <-> Cache: %v %v",
-				RefineSourceToShow(req.realSrc, req.realDst.Addr()), strings.ToLower(q.Name), QtypeToString(q.Qtype),
-			)
-		}
 		return nil
+	}
+
+	// Optimized: spin until become the main handler or cache is available
+	for {
+		handlingState, isNew := c.handlingStateManager.GetOrCreateState(cacheKey)
+		if !isNew {
+			// Another goroutine is handling the same request, wait for completion.
+			handlingState.Wait()
+			// Re-check the cache after wait.
+			if resp := c.LookupDnsRespCache_(dnsMessage, cacheKey, false); resp != nil {
+				if needResp {
+					if err = sendPkt(c.log, resp, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
+						return fmt.Errorf("failed to write cached DNS resp: %w", err)
+					}
+				}
+				return nil
+			}
+			// If still no cache, spin and try to become the main handler
+			continue
+		}
+		// We are the main handler now, break the spin
+		defer c.handlingStateManager.CompleteAndCleanup(cacheKey, handlingState)
+		break
 	}
 
 	if c.log.IsLevelEnabled(logrus.TraceLevel) {
@@ -501,7 +600,7 @@ func (c *DnsController) handle_(
 	// Re-pack DNS packet.
 	data, err := dnsMessage.Pack()
 	if err != nil {
-		return fmt.Errorf("pack DNS packet: %w", err)
+		return err
 	}
 	return c.dialSend(0, req, data, dnsMessage.Id, upstream, needResp)
 }
@@ -569,45 +668,21 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 
 	// Dial and send.
 	var respMsg *dnsmessage.Msg
-	// defer in a recursive call will delay Close(), thus we Close() before
-	// the next recursive call. However, a connection cannot be closed twice.
-	// We should set a connClosed flag to avoid it.
-	var connClosed bool
 
 	ctxDial, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
 	defer cancel()
 
-	// get forwarder from cache
-	c.dnsForwarderCacheMu.Lock()
-	forwarder, ok := c.dnsForwarderCache[dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}]
-	if !ok {
-		forwarder, err = newDnsForwarder(upstream, *dialArgument)
-		if err != nil {
-			c.dnsForwarderCacheMu.Unlock()
-			return err
-		}
-		c.dnsForwarderCache[dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}] = forwarder
-	}
-	c.dnsForwarderCacheMu.Unlock()
-
-	defer func() {
-		if !connClosed {
-			forwarder.Close()
-		}
-	}()
-
+	// Use the new forwarder manager to avoid duplicate creation.
+	forwarder, releaseForwarder, err := c.forwarderManager.GetForwarder(upstream, *dialArgument)
 	if err != nil {
 		return err
 	}
+	defer releaseForwarder()
 
 	respMsg, err = forwarder.ForwardDNS(ctxDial, data)
 	if err != nil {
 		return err
 	}
-
-	// Close conn before the recursive call.
-	forwarder.Close()
-	connClosed = true
 
 	// Route response.
 	upstreamIndex, nextUpstream, err := c.routing.ResponseSelect(respMsg, upstream)
@@ -690,4 +765,57 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		}
 	}
 	return nil
+}
+
+// DnsForwarderManager provides DNS forwarder caching/creation for DNS controller (with cache and refcount)
+type DnsForwarderManager struct {
+	cache sync.Map // map[dnsForwarderKey]*forwarderEntry
+}
+
+type forwarderEntry struct {
+	fwd DnsForwarder
+	ref int32
+	mu  sync.Mutex
+}
+
+func NewDnsForwarderManager() *DnsForwarderManager {
+	return &DnsForwarderManager{}
+}
+
+func (m *DnsForwarderManager) GetForwarder(upstream *dns.Upstream, dialArgument dialArgument) (DnsForwarder, func(), error) {
+	key := dnsForwarderKey{upstream: upstream.String(), dialArgument: dialArgument}
+	var entry *forwarderEntry
+	actual, loaded := m.cache.Load(key)
+	if loaded {
+		var ok bool
+		entry, ok = actual.(*forwarderEntry)
+		if !ok {
+			m.cache.Delete(key)
+			loaded = false
+		}
+	}
+	if !loaded {
+		fwd, err := newDnsForwarder(upstream, dialArgument)
+		if err != nil {
+			return nil, func() {}, err
+		}
+		entry = &forwarderEntry{fwd: fwd, ref: 1}
+		m.cache.Store(key, entry)
+	} else {
+		entry.mu.Lock()
+		entry.ref++
+		entry.mu.Unlock()
+	}
+	release := func() {
+		entry.mu.Lock()
+		entry.ref--
+		if entry.ref == 0 {
+			entry.mu.Unlock()
+			entry.fwd.Close()
+			m.cache.Delete(key)
+			return
+		}
+		entry.mu.Unlock()
+	}
+	return entry.fwd, release, nil
 }
