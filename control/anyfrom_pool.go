@@ -14,6 +14,7 @@ import (
 	"net/netip"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -180,6 +181,17 @@ func (p *AnyfromPool) GetOrCreate(lAddr string, ttl time.Duration) (conn *Anyfro
 	}
 	
 	// 创建新的Anyfrom连接
+	// 彻底修复：始终使用本地绑定，避免任何地址冲突
+	// 不再尝试绑定到目标地址，统一使用本地地址绑定
+	var bindAddr string
+	if strings.Contains(lAddr, ":") && !strings.Contains(lAddr, ".") {
+		// IPv6地址
+		bindAddr = "[::]:0"
+	} else {
+		// IPv4地址
+		bindAddr = "0.0.0.0:0"
+	}
+
 	d := net.ListenConfig{
 		Control: func(network string, address string, c syscall.RawConn) error {
 			return dialer.TransparentControl(c)
@@ -188,7 +200,8 @@ func (p *AnyfromPool) GetOrCreate(lAddr string, ttl time.Duration) (conn *Anyfro
 	}
 	var pc net.PacketConn
 	GetDaeNetns().With(func() error {
-		pc, err = d.ListenPacket(context.Background(), "udp", lAddr)
+		// 始终使用本地地址绑定，避免任何冲突
+		pc, err = d.ListenPacket(context.Background(), "udp", bindAddr)
 		return nil
 	})
 	if err != nil {
