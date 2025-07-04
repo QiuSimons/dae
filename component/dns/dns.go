@@ -17,6 +17,7 @@ import (
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/config"
 	dnsmessage "github.com/miekg/dns"
+	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -133,41 +134,38 @@ func (s *Dns) CheckUpstreamsFormat() error {
 	return nil
 }
 
-func (s *Dns) InitUpstreams() {
-	var wg sync.WaitGroup
+func (s *Dns) InitUpstreams(wg *sync.WaitGroup) {
 	for _, upstream := range s.upstream {
 		wg.Add(1)
-		go func(upstream *UpstreamResolver) {
+		go func() {
 			_, err := upstream.GetUpstream()
 			if err != nil {
-				log.WithError(err).Debugln("Dns.GetUpstream")
+				log.Debugf("%+v", oops.Wrapf(err, "Dns.GetUpstream"))
 			}
 			wg.Done()
-		}(upstream)
+		}()
 	}
-	wg.Wait()
 }
 
-func (s *Dns) RequestSelect(qname string, qtype uint16) (upstreamIndex consts.DnsRequestOutboundIndex, upstream *Upstream, err error) {
+func (s *Dns) GetUpstream(upstreamIndex consts.DnsRequestOutboundIndex) (upstream *Upstream, err error) {
+	return s.upstream[upstreamIndex].GetUpstream()
+}
+
+func (s *Dns) RequestSelect(qname string, qtype uint16) (upstreamIndex consts.DnsRequestOutboundIndex, err error) {
 	// Route.
 	upstreamIndex, err = s.reqMatcher.Match(qname, qtype)
 	if err != nil {
-		return 0, nil, err
+		return 0, err
 	}
 	// nil indicates AsIs.
 	if upstreamIndex == consts.DnsRequestOutboundIndex_AsIs ||
 		upstreamIndex == consts.DnsRequestOutboundIndex_Reject {
-		return upstreamIndex, nil, nil
+		return upstreamIndex, nil
 	}
 	if int(upstreamIndex) >= len(s.upstream) {
-		return 0, nil, fmt.Errorf("bad upstream index: %v not in [0, %v]", upstreamIndex, len(s.upstream)-1)
+		return 0, fmt.Errorf("bad upstream index: %v not in [0, %v]", upstreamIndex, len(s.upstream)-1)
 	}
-	// Get corresponding upstream.
-	upstream, err = s.upstream[upstreamIndex].GetUpstream()
-	if err != nil {
-		return 0, nil, err
-	}
-	return upstreamIndex, upstream, nil
+	return upstreamIndex, nil
 }
 
 func (s *Dns) ResponseSelect(msg *dnsmessage.Msg, fromUpstream *Upstream) (upstreamIndex consts.DnsResponseOutboundIndex, upstream *Upstream, err error) {

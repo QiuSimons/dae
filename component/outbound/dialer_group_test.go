@@ -27,7 +27,7 @@ var TestNetworkType = &dialer.NetworkType{
 
 func newDirectDialer(option *dialer.GlobalOption, fullcone bool) *dialer.Dialer {
 	_d, p := dialer.NewDirectDialer(option, true)
-	d := dialer.NewDialer(_d, option, dialer.InstanceOption{DisableCheck: false}, p)
+	d := dialer.NewDialer(_d, option, dialer.InstanceOption{DisableCheck: false}, p, false)
 	return d
 }
 

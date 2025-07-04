@@ -25,6 +25,7 @@ const (
 const (
 	UdpCheckLookupHost = "connectivitycheck.gstatic.com."
 	DefaultDialTimeout = 8 * time.Second
+	DefaultReadTimeout = 21600 * time.Second
 )
 
 type L4ProtoStr string
@@ -39,7 +40,7 @@ func (l L4ProtoStr) ToL4Proto() uint8 {
 	case L4ProtoStr_TCP:
 		return unix.IPPROTO_TCP
 	case L4ProtoStr_UDP:
-		return unix.IPPROTO_IDP
+		return unix.IPPROTO_UDP
 	}
 	panic("unsupported l4proto")
 }

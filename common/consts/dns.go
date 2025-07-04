@@ -8,6 +8,7 @@ package consts
 import (
 	"strconv"
 	"strings"
+	"time"
 )
 
 type DnsRequestOutboundIndex int16
@@ -20,6 +21,9 @@ const (
 	DnsRequestOutboundIndex_LogicalMask DnsRequestOutboundIndex = 0xFE
 
 	DnsRequestOutboundIndex_UserDefinedMax = DnsRequestOutboundIndex_Reject - 1
+
+	DefaultDNSTimeout    = 5 * time.Second
+	DefaultRetryInterval = 1 * time.Second
 )
 
 func (i DnsRequestOutboundIndex) String() string {

@@ -12,13 +12,151 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"strings"
 	"structs"
 	"syscall"
+	"time"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/outbound"
+	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/samber/oops"
+	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
+
+type RouteParam struct {
+	routingResult *bpfRoutingResult
+	networkType   *dialer.NetworkType
+	Domain        string
+	Src           netip.AddrPort
+	Dest          netip.AddrPort
+}
+
+type DialOption struct {
+	DialTarget    string
+	Dialer        *dialer.Dialer
+	Outbound      *outbound.DialerGroup
+	OutboundIndex consts.OutboundIndex
+	isFallback    bool
+	Mark          uint32
+}
+
+func (c *ControlPlane) RouteDialOption(p *RouteParam) (dialOption *DialOption, err error) {
+	// TODO: Why not directly transfer routingResult
+	outboundIndex := consts.OutboundIndex(p.routingResult.Outbound)
+	mark := p.routingResult.Mark
+
+	dialTarget, shouldReroute, dialIp := c.ChooseDialTarget(outboundIndex, p.Dest, p.Domain)
+	if shouldReroute {
+		outboundIndex = consts.OutboundControlPlaneRouting
+	}
+
+	switch outboundIndex {
+	case consts.OutboundDirect:
+	case consts.OutboundControlPlaneRouting:
+		if outboundIndex, mark, _, err = c.Route(p.Src, p.Dest, p.Domain, p.networkType.L4Proto.ToL4ProtoType(), p.routingResult); err != nil {
+			oops.Wrap(err)
+			return
+		}
+		if log.IsLevelEnabled(log.TraceLevel) {
+			log.Tracef("outbound: %v => <Control Plane Routing>",
+				outboundIndex.String(),
+			)
+		}
+		// Reset dialTarget.
+		dialTarget, _, dialIp = c.ChooseDialTarget(outboundIndex, p.Dest, p.Domain)
+	default:
+	}
+	if mark == 0 {
+		mark = c.soMarkFromDae
+	}
+	// TODO: Set-up ip to domain mapping and show domain if possible.
+	if int(outboundIndex) >= len(c.outbounds) {
+		if len(c.outbounds) == int(consts.OutboundUserDefinedMin) {
+			err = oops.Errorf("traffic was dropped due to no-load configuration")
+			return
+		}
+		err = oops.Errorf("outbound id from bpf is out of range: %v not in [0, %v]", outboundIndex, len(c.outbounds)-1)
+		return
+	}
+	outbound := c.outbounds[outboundIndex]
+	// TODO: ChooseDialTarget 应该替我们实现这个逻辑?
+	if p.networkType.L4Proto == consts.L4ProtoStr_UDP {
+		dialIp = false
+	}
+	dialer, _, err := outbound.SelectFallbackIpVersion(p.networkType, dialIp)
+	if err != nil {
+		dialer, _, err = c.outbounds[c.noConnectivityOutbound].Select(p.networkType)
+		if err != nil {
+			panic(fmt.Sprintf("fail to get fallback dialer %v(%v): %v", c.outbounds[c.noConnectivityOutbound], c.noConnectivityOutbound, err))
+		}
+		return &DialOption{
+			DialTarget:    dialTarget,
+			Dialer:        dialer,
+			Outbound:      outbound,
+			OutboundIndex: outboundIndex,
+			isFallback:    false,
+			Mark:          mark,
+		}, nil
+	}
+	return &DialOption{
+		DialTarget:    dialTarget,
+		Dialer:        dialer,
+		Outbound:      outbound,
+		OutboundIndex: outboundIndex,
+		isFallback:    false,
+		Mark:          mark,
+	}, nil
+}
+
+func LogDial(src, dst netip.AddrPort, domain string, dialOption *DialOption, networkType *dialer.NetworkType, routingResult *bpfRoutingResult) {
+	if log.IsLevelEnabled(log.InfoLevel) {
+		if dialOption.isFallback {
+			log.WithFields(log.Fields{
+				"network":          networkType.String(),
+				"originalOutbound": dialOption.Outbound.Name,
+				"fallbackDialer":   dialOption.Dialer.Property().Name,
+				"sniffed":          domain,
+				"ip":               RefineAddrPortToShow(dst),
+				"pid":              routingResult.Pid,
+				"ifindex":          routingResult.Ifindex,
+				"dscp":             routingResult.Dscp,
+				"pname":            ProcessName2String(routingResult.Pname[:]),
+				"mac":              Mac2String(routingResult.Mac[:]),
+			}).Infof("[%v] %v <-(fallback)-> %v", strings.ToUpper(networkType.String()), RefineSourceToShow(src, dst.Addr()), dialOption.DialTarget)
+		} else {
+			log.WithFields(log.Fields{
+				"network":  networkType.StringWithoutDns(),
+				"outbound": dialOption.Outbound.Name,
+				"policy":   dialOption.Outbound.GetSelectionPolicy(),
+				"dialer":   dialOption.Dialer.Property().Name,
+				"sniffed":  domain,
+				"ip":       RefineAddrPortToShow(dst),
+				"pid":      routingResult.Pid,
+				"ifindex":  routingResult.Ifindex,
+				"dscp":     routingResult.Dscp,
+				"pname":    ProcessName2String(routingResult.Pname[:]),
+				"mac":      Mac2String(routingResult.Mac[:]),
+			}).Infof("[%v] %v <-> %v", strings.ToUpper(networkType.String()), RefineSourceToShow(src, dst.Addr()), dialOption.DialTarget)
+		}
+	}
+}
+
+type WriteCloser interface {
+	CloseWrite() error
+}
+
+type ConnWithReadTimeout struct {
+	netproxy.Conn
+}
+
+func (c *ConnWithReadTimeout) Read(p []byte) (int, error) {
+	_ = c.Conn.SetReadDeadline(time.Now().Add(consts.DefaultReadTimeout))
+	return c.Conn.Read(p)
+}
 
 func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto consts.L4ProtoType, routingResult *bpfRoutingResult) (outboundIndex consts.OutboundIndex, mark uint32, must bool, err error) {
 	var ipVersion consts.IpVersionType

@@ -7,10 +7,10 @@ package control
 
 import (
 	"fmt"
-	"net/netip"
 	"sync"
 	"time"
 
+	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/sniffing"
 )
 
@@ -26,16 +26,11 @@ type PacketSniffer struct {
 
 // PacketSnifferPool is a full-cone udp conn pool
 type PacketSnifferPool struct {
-	pool        sync.Map
-	createMuMap sync.Map
-	refMu       sync.RWMutex
+	pool             sync.Map
+	snifferKeyLocker common.KeyLocker[UdpEndpointKey]
 }
 type PacketSnifferOptions struct {
 	Ttl time.Duration
-}
-type PacketSnifferKey struct {
-	LAddr netip.AddrPort
-	RAddr netip.AddrPort
 }
 
 var DefaultPacketSnifferSessionMgr = NewPacketSnifferPool()
@@ -44,7 +39,7 @@ func NewPacketSnifferPool() *PacketSnifferPool {
 	return &PacketSnifferPool{}
 }
 
-func (p *PacketSnifferPool) Remove(key PacketSnifferKey, sniffer *PacketSniffer) (err error) {
+func (p *PacketSnifferPool) Remove(key UdpEndpointKey, sniffer *PacketSniffer) (err error) {
 	if ue, ok := p.pool.LoadAndDelete(key); ok {
 		sniffer.Close()
 		if ue != sniffer {
@@ -54,7 +49,7 @@ func (p *PacketSnifferPool) Remove(key PacketSnifferKey, sniffer *PacketSniffer)
 	return nil
 }
 
-func (p *PacketSnifferPool) Get(key PacketSnifferKey) *PacketSniffer {
+func (p *PacketSnifferPool) Get(key UdpEndpointKey) *PacketSniffer {
 	_qs, ok := p.pool.Load(key)
 	if !ok {
 		return nil
@@ -62,25 +57,13 @@ func (p *PacketSnifferPool) Get(key PacketSnifferKey) *PacketSniffer {
 	return _qs.(*PacketSniffer)
 }
 
-func (p *PacketSnifferPool) GetOrCreate(key PacketSnifferKey, createOption *PacketSnifferOptions) (qs *PacketSniffer, isNew bool) {
+// TODO: 工作原理
+func (p *PacketSnifferPool) GetOrCreate(key UdpEndpointKey, createOption *PacketSnifferOptions) (qs *PacketSniffer, isNew bool) {
 	_qs, ok := p.pool.Load(key)
 begin:
 	if !ok {
-		p.refMu.RLock()
-		createMu_, _ := p.createMuMap.LoadOrStore(key, new(createMu))
-		createMu := createMu_.(*createMu)
-		createMu.ref += 1
-		p.refMu.RUnlock()
-		createMu.mu.Lock()
-		defer func() {
-			createMu.mu.Unlock()
-			p.refMu.Lock()
-			createMu.ref -= 1
-			if createMu.ref == 0 {
-				p.createMuMap.Delete(key)
-			}
-			p.refMu.Unlock()
-		}()
+		l := p.snifferKeyLocker.Lock(key)
+		defer p.snifferKeyLocker.Unlock(key, l)
 
 		_qs, ok = p.pool.Load(key)
 		if ok {
