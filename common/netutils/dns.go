@@ -7,11 +7,14 @@ package netutils
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"math"
+	"net/http"
 	"net/netip"
+	"net/url"
 	"sync"
 	"time"
 
@@ -20,6 +23,7 @@ import (
 	"github.com/daeuniverse/outbound/pkg/fastrand"
 	"github.com/daeuniverse/outbound/pool"
 	dnsmessage "github.com/miekg/dns"
+	"github.com/samber/oops"
 )
 
 var (
@@ -45,6 +49,7 @@ func TryUpdateSystemDnsElapse(k time.Duration) (err error) {
 	defer systemDnsMu.Unlock()
 	return tryUpdateSystemDnsElapse(k)
 }
+
 func tryUpdateSystemDnsElapse(k time.Duration) (err error) {
 	if time.Now().Before(systemDnsNextUpdateAfter) {
 		return fmt.Errorf("update too quickly")
@@ -84,6 +89,136 @@ func SystemDns() (dns netip.AddrPort, err error) {
 	// To avoid environment changing.
 	_ = tryUpdateSystemDnsElapse(5 * time.Second)
 	return systemDns, nil
+}
+
+func ResolveHttp(client *http.Client, url *url.URL, msg *dnsmessage.Msg) error {
+	// disable redirect https://github.com/daeuniverse/dae/pull/649#issuecomment-2379577896
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		return fmt.Errorf("do not use a server that will redirect, url: %v", url.String())
+	}
+	data, err := msg.Pack()
+	if err != nil {
+		return oops.Wrapf(err, "pack DNS packet")
+	}
+
+	// According https://datatracker.ietf.org/doc/html/rfc8484#section-4
+	// msg id should set to 0 when transport over HTTPS for cache friendly.
+	binary.BigEndian.PutUint16(data[0:2], 0)
+
+	q := url.Query()
+	q.Set("dns", base64.RawURLEncoding.EncodeToString(data))
+	url.RawQuery = q.Encode()
+
+	req, err := http.NewRequest(http.MethodGet, url.String(), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/dns-message")
+	req.Host = url.Host
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	buf, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if err = msg.Unpack(buf); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ResolveStream(stream io.ReadWriter, msg *dnsmessage.Msg, quic bool) error {
+	data, err := msg.Pack()
+	if err != nil {
+		return oops.Wrapf(err, "pack DNS packet")
+	}
+	if quic {
+		// According https://datatracker.ietf.org/doc/html/rfc9250#section-4.2.1
+		// msg id should set to 0 when transport over QUIC.
+		// thanks https://github.com/natesales/q/blob/1cb2639caf69bd0a9b46494a3c689130df8fb24a/transport/quic.go#L97
+		binary.BigEndian.PutUint16(data[0:2], 0)
+	}
+	// We should write two byte length in the front of stream DNS request.
+	buf := pool.Get(2 + len(data))
+	defer buf.Put()
+	binary.BigEndian.PutUint16(buf, uint16(len(data)))
+	copy(buf[2:], data)
+	_, err = stream.Write(buf)
+	if err != nil {
+		return oops.Wrapf(err, "failed to write DNS req")
+	}
+
+	// Read two byte length.
+	if _, err = io.ReadFull(stream, buf[:2]); err != nil {
+		return oops.Wrapf(err, "failed to read DNS resp payload length")
+	}
+	n := int(binary.BigEndian.Uint16(buf))
+	// Try to reuse the buf.
+	// if len(buf) < n {
+	// 	buf.Put()
+	// 	buf = pool.Get(n)
+	// }
+	var respBuf pool.PB
+	if len(buf) < n {
+		respBuf = pool.Get(n)
+		defer respBuf.Put()
+	} else {
+		respBuf = buf
+	}
+	if _, err = io.ReadFull(stream, respBuf[:n]); err != nil {
+		return oops.Wrapf(err, "failed to read DNS resp payload")
+	}
+	if err = msg.Unpack(respBuf[:n]); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ResolveUDP(conn netproxy.Conn, msg *dnsmessage.Msg) error {
+	data, err := msg.Pack()
+	if err != nil {
+		return oops.Wrapf(err, "pack DNS packet")
+	}
+
+	_ = conn.SetDeadline(time.Now().Add(consts.DefaultDNSTimeout))
+	reqCtx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDNSTimeout)
+
+	errCh := make(chan error, 1)
+	go func() {
+		// Send DNS request every seconds.
+		for {
+			_, err := conn.Write(data)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			select {
+			case <-reqCtx.Done():
+				errCh <- nil
+				return
+			case <-time.After(consts.DefaultRetryInterval):
+			}
+		}
+	}()
+
+	// Wait for response.
+	respBuf := pool.GetFullCap(consts.EthernetMtu)
+	defer respBuf.Put()
+	n, err := conn.Read(respBuf)
+	cancel()
+	if err != nil {
+		return err
+	}
+	if err = <-errCh; err != nil {
+		return err
+	}
+	if err = msg.Unpack(respBuf[:n]); err != nil {
+		return err
+	}
+	return nil
 }
 
 func ResolveNetip(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host string, typ uint16, network string) (addrs []netip.Addr, err error) {
@@ -159,9 +294,12 @@ func ResolveSOA(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host
 	return records, nil
 }
 
-func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host string, typ uint16, network string) (ans []dnsmessage.RR, err error) {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+func resolve(ctx context.Context, dialer netproxy.Dialer, server netip.AddrPort, host string, typ uint16, network string) (ans []dnsmessage.RR, err error) {
+	magicNetwork, err := netproxy.ParseMagicNetwork(network)
+	if err != nil {
+		return nil, oops.Wrapf(err, "parse magic network")
+	}
+
 	fqdn := dnsmessage.CanonicalName(host)
 	switch typ {
 	case dnsmessage.TypeA, dnsmessage.TypeAAAA:
@@ -197,7 +335,7 @@ func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host st
 	default:
 	}
 	// Build DNS req.
-	builder := dnsmessage.Msg{
+	msg := dnsmessage.Msg{
 		MsgHdr: dnsmessage.MsgHdr{
 			Id:               uint16(fastrand.Intn(math.MaxUint16 + 1)),
 			Response:         false,
@@ -207,91 +345,20 @@ func resolve(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host st
 			Authoritative:    false,
 		},
 	}
-	builder.SetQuestion(fqdn, typ)
-	b, err := builder.Pack()
+	msg.SetQuestion(fqdn, typ)
+
+	conn, err := dialer.DialContext(ctx, network, server.String())
 	if err != nil {
-		return nil, err
-	}
-	magicNetwork, err := netproxy.ParseMagicNetwork(network)
-	if err != nil {
-		return nil, err
-	}
-	if magicNetwork.Network == "tcp" {
-		// Put DNS request length
-		buf := pool.Get(2 + len(b))
-		defer pool.Put(buf)
-		binary.BigEndian.PutUint16(buf, uint16(len(b)))
-		copy(buf[2:], b)
-		b = buf
+		return nil, oops.Wrapf(err, "DialContext")
 	}
 
-	// Dial and write.
-	c, err := d.DialContext(ctx, network, dns.String())
+	if magicNetwork.Network == "tcp" {
+		err = ResolveStream(conn, &msg, false)
+	} else {
+		err = ResolveUDP(conn, &msg)
+	}
 	if err != nil {
 		return nil, err
 	}
-	defer c.Close()
-	_, err = c.Write(b)
-	if err != nil {
-		return nil, err
-	}
-	ch := make(chan error, 2)
-	if magicNetwork.Network == "udp" {
-		go func() {
-			// Resend every 3 seconds for UDP.
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				default:
-					time.Sleep(3 * time.Second)
-				}
-				_, err := c.Write(b)
-				if err != nil {
-					ch <- err
-					return
-				}
-			}
-		}()
-	}
-	go func() {
-		buf := pool.GetFullCap(consts.EthernetMtu)
-		defer buf.Put()
-		if magicNetwork.Network == "tcp" {
-			// Read DNS response length
-			_, err := io.ReadFull(c, buf[:2])
-			if err != nil {
-				ch <- err
-				return
-			}
-			n := binary.BigEndian.Uint16(buf)
-			if int(n) > cap(buf) {
-				ch <- fmt.Errorf("too big dns resp")
-				return
-			}
-			buf = buf[:n]
-		}
-		n, err := c.Read(buf)
-		if err != nil {
-			ch <- err
-			return
-		}
-		// Resolve DNS response and extract A/AAAA record.
-		var msg dnsmessage.Msg
-		if err = msg.Unpack(buf[:n]); err != nil {
-			ch <- err
-			return
-		}
-		ans = msg.Answer
-		ch <- nil
-	}()
-	select {
-	case <-ctx.Done():
-		return nil, fmt.Errorf("timeout")
-	case err = <-ch:
-		if err != nil {
-			return nil, err
-		}
-		return ans, nil
-	}
+	return msg.Answer, nil
 }

@@ -21,8 +21,6 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/daeuniverse/dae/common"
-
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/outbound/netproxy"
@@ -30,6 +28,7 @@ import (
 	"github.com/daeuniverse/outbound/pool"
 	"github.com/daeuniverse/outbound/protocol/direct"
 	dnsmessage "github.com/miekg/dns"
+	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -53,38 +52,44 @@ func (t *NetworkType) StringWithoutDns() string {
 	return string(t.L4Proto) + string(t.IpVersion)
 }
 
+// TODO: 现在 dialer 是否测速以及 dialerGroup 是否需要 AliveState 依赖于 AliveDialerSet 的注册
+// 不需要AliveState的节点是不是应该始终Alive?
 type collection struct {
 	// AliveDialerSetSet uses reference counting.
 	AliveDialerSetSet AliveDialerSetSet
 	Latencies10       *LatenciesN
 	MovingAverage     time.Duration
-	Alive             bool
+	Alive             bool // Always not alive if there is no AliveDialerSet include the dialer.
+	// 用于追踪连续错误
+	ErrorCount    int
+	LastErrorTime time.Time
 }
 
 func newCollection() *collection {
 	return &collection{
 		AliveDialerSetSet: make(AliveDialerSetSet),
 		Latencies10:       NewLatenciesN(10),
-		Alive:             true,
+		Alive:             false,
 	}
 }
 
-func (d *Dialer) mustGetCollection(typ *NetworkType) *collection {
+// networkTypeToIndex 将网络类型映射到集合索引
+func networkTypeToIndex(typ *NetworkType) int {
 	if typ.IsDns {
 		switch typ.L4Proto {
 		case consts.L4ProtoStr_TCP:
 			switch typ.IpVersion {
 			case consts.IpVersionStr_4:
-				return d.collections[0]
+				return 0
 			case consts.IpVersionStr_6:
-				return d.collections[1]
+				return 1
 			}
 		case consts.L4ProtoStr_UDP:
 			switch typ.IpVersion {
 			case consts.IpVersionStr_4:
-				return d.collections[2]
+				return 2
 			case consts.IpVersionStr_6:
-				return d.collections[3]
+				return 3
 			}
 		}
 	} else {
@@ -92,21 +97,26 @@ func (d *Dialer) mustGetCollection(typ *NetworkType) *collection {
 		case consts.L4ProtoStr_TCP:
 			switch typ.IpVersion {
 			case consts.IpVersionStr_4:
-				return d.collections[4]
+				return 4
 			case consts.IpVersionStr_6:
-				return d.collections[5]
+				return 5
 			}
 		case consts.L4ProtoStr_UDP:
 			// UDP share the DNS check result.
 			switch typ.IpVersion {
 			case consts.IpVersionStr_4:
-				return d.collections[2]
+				return 2
 			case consts.IpVersionStr_6:
-				return d.collections[3]
+				return 3
 			}
 		}
 	}
-	panic("invalid param")
+	panic("invalid network type")
+}
+
+func (d *Dialer) mustGetCollection(typ *NetworkType) *collection {
+	index := networkTypeToIndex(typ)
+	return d.collections[index]
 }
 
 func (d *Dialer) MustGetAlive(typ *NetworkType) bool {
@@ -239,6 +249,7 @@ type TcpCheckOptionRaw struct {
 	Raw             []string
 	ResolverNetwork string
 	Method          string
+	Somark          uint32
 }
 
 func (c *TcpCheckOptionRaw) Option() (opt *TcpCheckOption, err error) {
@@ -284,226 +295,181 @@ type CheckOption struct {
 	CheckFunc   func(ctx context.Context, typ *NetworkType) (ok bool, err error)
 }
 
-func (d *Dialer) ActivateCheck() {
-	d.tickerMu.Lock()
-	defer d.tickerMu.Unlock()
-	if d.InstanceOption.DisableCheck || d.checkActivated {
-		return
+// createTcpCheckFunc 创建TCP检查函数
+func (d *Dialer) createTcpCheckFunc(ipVersion consts.IpVersionStr, network string) func(ctx context.Context, typ *NetworkType) (ok bool, err error) {
+	return func(ctx context.Context, typ *NetworkType) (ok bool, err error) {
+		opt, err := d.TcpCheckOptionRaw.Option()
+		if err != nil {
+			return false, err
+		}
+
+		var ip netip.Addr
+		switch ipVersion {
+		case consts.IpVersionStr_4:
+			ip = opt.Ip4
+		case consts.IpVersionStr_6:
+			ip = opt.Ip6
+		}
+
+		if !ip.IsValid() {
+			log.WithFields(log.Fields{
+				"link":    d.TcpCheckOptionRaw.Raw,
+				"dialer":  d.property.Name,
+				"network": typ.String(),
+			}).Debugln("Skip check due to no DNS record.")
+			return false, nil
+		}
+
+		return d.HttpCheck(ctx, opt.Url, ip, opt.Method, network)
 	}
-	d.checkActivated = true
-	go d.aliveBackground()
 }
 
-func (d *Dialer) aliveBackground() {
-	cycle := d.CheckInterval
-	var tcpSomark uint32
-	var mptcp bool
-	if network, err := netproxy.ParseMagicNetwork(d.TcpCheckOptionRaw.ResolverNetwork); err == nil {
-		tcpSomark = network.Mark
-		mptcp = network.Mptcp
+// createDnsCheckFunc 创建DNS检查函数
+func (d *Dialer) createDnsCheckFunc(ipVersion consts.IpVersionStr, network string) func(ctx context.Context, typ *NetworkType) (ok bool, err error) {
+	return func(ctx context.Context, typ *NetworkType) (ok bool, err error) {
+		opt, err := d.CheckDnsOptionRaw.Option()
+		if err != nil {
+			return false, err
+		}
+
+		var ip netip.Addr
+		switch ipVersion {
+		case consts.IpVersionStr_4:
+			ip = opt.Ip4
+		case consts.IpVersionStr_6:
+			ip = opt.Ip6
+		}
+
+		if !ip.IsValid() {
+			log.WithFields(log.Fields{
+				"link":    d.CheckDnsOptionRaw.Raw,
+				"dialer":  d.property.Name,
+				"network": typ.String(),
+			}).Debugln("Skip check due to no DNS record.")
+			return false, nil
+		}
+
+		return d.DnsCheck(ctx, netip.AddrPortFrom(ip, opt.DnsPort), network)
 	}
-	tcp4CheckOpt := &CheckOption{
-		networkType: &NetworkType{
-			L4Proto:   consts.L4ProtoStr_TCP,
-			IpVersion: consts.IpVersionStr_4,
-			IsDns:     false,
-		},
-		CheckFunc: func(ctx context.Context, typ *NetworkType) (ok bool, err error) {
-			opt, err := d.TcpCheckOptionRaw.Option()
-			if err != nil {
-				return false, err
-			}
-			if !opt.Ip4.IsValid() {
-				log.WithFields(log.Fields{
-					"link":    d.TcpCheckOptionRaw.Raw,
-					"dialer":  d.property.Name,
-					"network": typ.String(),
-				}).Debugln("Skip check due to no DNS record.")
-				return false, nil
-			}
-			return d.HttpCheck(ctx, opt.Url, opt.Ip4, opt.Method, tcpSomark, mptcp)
-		},
-	}
-	tcp6CheckOpt := &CheckOption{
-		networkType: &NetworkType{
-			L4Proto:   consts.L4ProtoStr_TCP,
-			IpVersion: consts.IpVersionStr_6,
-			IsDns:     false,
-		},
-		CheckFunc: func(ctx context.Context, typ *NetworkType) (ok bool, err error) {
-			opt, err := d.TcpCheckOptionRaw.Option()
-			if err != nil {
-				return false, err
-			}
-			if !opt.Ip6.IsValid() {
-				log.WithFields(log.Fields{
-					"link":    d.TcpCheckOptionRaw.Raw,
-					"dialer":  d.property.Name,
-					"network": typ.String(),
-				}).Debugln("Skip check due to no DNS record.")
-				return false, nil
-			}
-			return d.HttpCheck(ctx, opt.Url, opt.Ip6, opt.Method, tcpSomark, mptcp)
-		},
-	}
+}
+
+// createCheckOptions 创建所有检查选项
+func (d *Dialer) createCheckOptions() []*CheckOption {
 	tcpNetwork := netproxy.MagicNetwork{
 		Network: "tcp",
-		Mark:    d.CheckDnsOptionRaw.Somark,
+		Mark:    d.TcpCheckOptionRaw.Somark,
 	}.Encode()
 	udpNetwork := netproxy.MagicNetwork{
 		Network: "udp",
 		Mark:    d.CheckDnsOptionRaw.Somark,
 	}.Encode()
-	tcp4CheckDnsOpt := &CheckOption{
-		networkType: &NetworkType{
-			L4Proto:   consts.L4ProtoStr_TCP,
-			IpVersion: consts.IpVersionStr_4,
-			IsDns:     true,
+
+	return []*CheckOption{
+		{
+			networkType: &NetworkType{
+				L4Proto:   consts.L4ProtoStr_TCP,
+				IpVersion: consts.IpVersionStr_4,
+				IsDns:     false,
+			},
+			CheckFunc: d.createTcpCheckFunc(consts.IpVersionStr_4, tcpNetwork),
 		},
-		CheckFunc: func(ctx context.Context, typ *NetworkType) (ok bool, err error) {
-			opt, err := d.CheckDnsOptionRaw.Option()
-			if err != nil {
-				return false, err
-			}
-			if !opt.Ip4.IsValid() {
-				log.WithFields(log.Fields{
-					"link":    d.CheckDnsOptionRaw.Raw,
-					"dialer":  d.property.Name,
-					"network": typ.String(),
-				}).Debugln("Skip check due to no DNS record.")
-				return false, nil
-			}
-			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip4, opt.DnsPort), tcpNetwork)
+		{
+			networkType: &NetworkType{
+				L4Proto:   consts.L4ProtoStr_TCP,
+				IpVersion: consts.IpVersionStr_6,
+				IsDns:     false,
+			},
+			CheckFunc: d.createTcpCheckFunc(consts.IpVersionStr_6, tcpNetwork),
 		},
-	}
-	tcp6CheckDnsOpt := &CheckOption{
-		networkType: &NetworkType{
-			L4Proto:   consts.L4ProtoStr_TCP,
-			IpVersion: consts.IpVersionStr_6,
-			IsDns:     true,
+		{
+			networkType: &NetworkType{
+				L4Proto:   consts.L4ProtoStr_UDP,
+				IpVersion: consts.IpVersionStr_4,
+				IsDns:     true,
+			},
+			CheckFunc: d.createDnsCheckFunc(consts.IpVersionStr_4, udpNetwork),
 		},
-		CheckFunc: func(ctx context.Context, typ *NetworkType) (ok bool, err error) {
-			opt, err := d.CheckDnsOptionRaw.Option()
-			if err != nil {
-				return false, err
-			}
-			if !opt.Ip6.IsValid() {
-				log.WithFields(log.Fields{
-					"link":    d.CheckDnsOptionRaw.Raw,
-					"dialer":  d.property.Name,
-					"network": typ.String(),
-				}).Debugln("Skip check due to no DNS record.")
-				return false, nil
-			}
-			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip6, opt.DnsPort), tcpNetwork)
+		{
+			networkType: &NetworkType{
+				L4Proto:   consts.L4ProtoStr_UDP,
+				IpVersion: consts.IpVersionStr_6,
+				IsDns:     true,
+			},
+			CheckFunc: d.createDnsCheckFunc(consts.IpVersionStr_6, udpNetwork),
 		},
-	}
-	udp4CheckDnsOpt := &CheckOption{
-		networkType: &NetworkType{
-			L4Proto:   consts.L4ProtoStr_UDP,
-			IpVersion: consts.IpVersionStr_4,
-			IsDns:     true,
+		{
+			networkType: &NetworkType{
+				L4Proto:   consts.L4ProtoStr_TCP,
+				IpVersion: consts.IpVersionStr_4,
+				IsDns:     true,
+			},
+			CheckFunc: d.createDnsCheckFunc(consts.IpVersionStr_4, tcpNetwork),
 		},
-		CheckFunc: func(ctx context.Context, typ *NetworkType) (ok bool, err error) {
-			opt, err := d.CheckDnsOptionRaw.Option()
-			if err != nil {
-				return false, err
-			}
-			if !opt.Ip4.IsValid() {
-				log.WithFields(log.Fields{
-					"link":    d.CheckDnsOptionRaw.Raw,
-					"network": typ.String(),
-				}).Debugln("Skip check due to no DNS record.")
-				return false, nil
-			}
-			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip4, opt.DnsPort), udpNetwork)
+		{
+			networkType: &NetworkType{
+				L4Proto:   consts.L4ProtoStr_TCP,
+				IpVersion: consts.IpVersionStr_6,
+				IsDns:     true,
+			},
+			CheckFunc: d.createDnsCheckFunc(consts.IpVersionStr_6, tcpNetwork),
 		},
 	}
-	udp6CheckDnsOpt := &CheckOption{
-		networkType: &NetworkType{
-			L4Proto:   consts.L4ProtoStr_UDP,
-			IpVersion: consts.IpVersionStr_6,
-			IsDns:     true,
-		},
-		CheckFunc: func(ctx context.Context, typ *NetworkType) (ok bool, err error) {
-			opt, err := d.CheckDnsOptionRaw.Option()
-			if err != nil {
-				return false, err
-			}
-			if !opt.Ip6.IsValid() {
-				log.WithFields(log.Fields{
-					"link":    d.CheckDnsOptionRaw.Raw,
-					"network": typ.String(),
-				}).Debugln("Skip check due to no DNS record.")
-				return false, nil
-			}
-			return d.DnsCheck(ctx, netip.AddrPortFrom(opt.Ip6, opt.DnsPort), udpNetwork)
-		},
-	}
-	var CheckOpts = []*CheckOption{
-		tcp4CheckOpt,
-		tcp6CheckOpt,
-		udp4CheckDnsOpt,
-		udp6CheckDnsOpt,
-		tcp4CheckDnsOpt,
-		tcp6CheckDnsOpt,
+}
+
+// collections:
+// 0: TCP4 DNS
+// 1: TCP6 DNS
+// 2: UDP4(DNS/N)
+// 3: UDP6(DNS/N)
+// 4: TCP4
+// 5: TCP6
+func (d *Dialer) ActivateCheck(wg *sync.WaitGroup) {
+	if d.InstanceOption.DisableCheck || d.checkActivated {
+		return
 	}
 
-	ctx, cancel := context.WithCancel(d.ctx)
-	defer cancel()
-	go func() {
-		/// Splice ticker.C to checkCh.
-		// Sleep to avoid avalanche.
-		time.Sleep(time.Duration(fastrand.Int63n(int64(cycle))))
-		d.tickerMu.Lock()
-		d.ticker = time.NewTicker(cycle)
-		d.tickerMu.Unlock()
-		for t := range d.ticker.C {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				d.checkCh <- t
-			}
-		}
-	}()
-	var unused int
-	for _, opt := range CheckOpts {
-		if len(d.mustGetCollection(opt.networkType).AliveDialerSetSet) == 0 {
-			unused++
-		}
-	}
-	if unused == len(CheckOpts) {
+	d.checkActivated = true
+
+	CheckOpts := d.createCheckOptions()
+
+	// 检查是否有使用的网络类型
+	if d.shouldSkipCheck(CheckOpts) {
 		log.WithField("dialer", d.Property().Name).
 			WithField("p", unsafe.Pointer(d)).
 			Traceln("cleaned up due to unused")
 		return
 	}
-	var wg sync.WaitGroup
-	for range d.checkCh {
-		for _, opt := range CheckOpts {
-			// No need to test if there is no dialer selection policy using its latency.
-			if len(d.mustGetCollection(opt.networkType).AliveDialerSetSet) == 0 {
-				continue
-			}
 
-			wg.Add(1)
-			go func(opt *CheckOption) {
-				_, _ = d.Check(opt)
-				wg.Done()
-			}(opt)
+	wg.Add(1)
+
+	go func() {
+		d.runCheck(CheckOpts)
+		wg.Done()
+		go d.startCheckTicker(d.ctx, d.CheckInterval)
+		go d.runCheckLoop(CheckOpts)
+	}()
+}
+
+func (d *Dialer) startCheckTicker(ctx context.Context, cycle time.Duration) {
+	// Sleep to avoid avalanche.
+	time.Sleep(time.Duration(fastrand.Int63n(int64(cycle))))
+	d.tickerMu.Lock()
+	d.ticker = time.NewTicker(cycle)
+	d.tickerMu.Unlock()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case t := <-d.ticker.C:
+			d.checkCh <- t
 		}
-		// Wait to block the loop.
-		wg.Wait()
 	}
 }
 
-// NotifyCheck will succeed only when CheckEnabled is true.
+// Manually start check.
 func (d *Dialer) NotifyCheck() {
-	select {
-	case <-d.ctx.Done():
+	if d.ctx.Err() != nil {
 		return
-	default:
 	}
 
 	select {
@@ -511,6 +477,42 @@ func (d *Dialer) NotifyCheck() {
 	case d.checkCh <- time.Now():
 	default:
 	}
+}
+
+// TODO: NeedAliveState?
+// shouldSkipCheck 判断是否应该跳过检查
+func (d *Dialer) shouldSkipCheck(checkOpts []*CheckOption) bool {
+	unused := 0
+	for _, opt := range checkOpts {
+		if len(d.mustGetCollection(opt.networkType).AliveDialerSetSet) == 0 {
+			unused++
+		}
+	}
+	return unused == len(checkOpts)
+}
+
+func (d *Dialer) runCheckLoop(checkOpts []*CheckOption) {
+	for range d.checkCh {
+		d.runCheck(checkOpts)
+	}
+}
+
+func (d *Dialer) runCheck(checkOpts []*CheckOption) {
+	var wg sync.WaitGroup
+	for _, opt := range checkOpts {
+		// No need to test if there is no dialerGroup that need alive state.
+		if len(d.mustGetCollection(opt.networkType).AliveDialerSetSet) == 0 {
+			continue
+		}
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = d.Check(opt)
+		}()
+	}
+	// Wait All check done.
+	wg.Wait()
 }
 
 func (d *Dialer) MustGetLatencies10(typ *NetworkType) *LatenciesN {
@@ -523,7 +525,7 @@ func (d *Dialer) RegisterAliveDialerSet(a *AliveDialerSet) {
 		return
 	}
 	d.collectionFineMu.Lock()
-	d.mustGetCollection(a.CheckTyp).AliveDialerSetSet[a]++
+	d.mustGetCollection(a.networkType).AliveDialerSetSet[a]++
 	d.collectionFineMu.Unlock()
 }
 
@@ -534,32 +536,16 @@ func (d *Dialer) UnregisterAliveDialerSet(a *AliveDialerSet) {
 	}
 	d.collectionFineMu.Lock()
 	defer d.collectionFineMu.Unlock()
-	setSet := d.mustGetCollection(a.CheckTyp).AliveDialerSetSet
+	setSet := d.mustGetCollection(a.networkType).AliveDialerSetSet
 	setSet[a]--
 	if setSet[a] <= 0 {
 		delete(setSet, a)
 	}
 }
 
-func (d *Dialer) logUnavailable(
+func (d *Dialer) makeUnavailable(
 	collection *collection,
-	network *NetworkType,
-	err error,
 ) {
-	// Append timeout if there is any error or unexpected status code.
-	if err != nil {
-		if strings.HasSuffix(err.Error(), "network is unreachable") {
-			err = fmt.Errorf("network is unreachable")
-		} else if strings.HasSuffix(err.Error(), "no suitable address found") ||
-			strings.HasSuffix(err.Error(), "non-IPv4 address") {
-			err = fmt.Errorf("IPv%v is not supported", network.IpVersion)
-		}
-		log.WithFields(log.Fields{
-			"network": network.String(),
-			"node":    d.property.Name,
-			"err":     err.Error(),
-		}).Debugln("Connectivity Check Failed")
-	}
 	collection.Latencies10.AppendLatency(Timeout)
 	collection.MovingAverage = (collection.MovingAverage + Timeout) / 2
 	collection.Alive = false
@@ -575,12 +561,44 @@ func (d *Dialer) informDialerGroupUpdate(collection *collection) {
 	d.collectionFineMu.Unlock()
 }
 
+// Dialer -> Collection(networkType) -> AliveDialerSet -> NotifyLatencyChange -> NotifyKernel
+// TODO: 在 Collection 完成测速之前, AliveDialerSet 应该不提供 dialer, TCP/UDP应该忽略错误
+// TODO: 一轮测试完成后再启动 dae
+// TODO: Select in needAliveState = false?
+// TODO: ReportUnavailable in needAliveState = false?
+// 进一步的, 此时我们应该让kernel不路由流量
 func (d *Dialer) ReportUnavailable(typ *NetworkType, err error) {
 	collection := d.mustGetCollection(typ)
-	d.logUnavailable(collection, typ, err)
-	d.informDialerGroupUpdate(collection)
+
+	if !collection.Alive {
+		return
+	}
+
+	if len(collection.AliveDialerSetSet) == 0 {
+		return
+	}
+
+	if time.Since(collection.LastErrorTime) > 15*time.Second {
+		collection.ErrorCount = 0
+	}
+
+	collection.ErrorCount++
+	collection.LastErrorTime = time.Now()
+
+	log.WithFields(log.Fields{
+		"network":     typ.String(),
+		"node":        d.property.Name,
+		"err":         err.Error(),
+		"error_count": collection.ErrorCount,
+	}).Warnf("Connection Failed (Count: %d/3)", collection.ErrorCount)
+
+	if collection.ErrorCount >= 3 {
+		d.makeUnavailable(collection)
+		d.informDialerGroupUpdate(collection)
+	}
 }
 
+// TODO: Maybe we need multiple check to get fault
 func (d *Dialer) Check(opts *CheckOption) (ok bool, err error) {
 	ctx, cancel := context.WithTimeout(context.TODO(), Timeout)
 	defer cancel()
@@ -593,23 +611,57 @@ func (d *Dialer) Check(opts *CheckOption) (ok bool, err error) {
 		collection.Latencies10.AppendLatency(latency)
 		avg, _ := collection.Latencies10.AvgLatency()
 		collection.MovingAverage = (collection.MovingAverage + latency) / 2
+
+		if !collection.Alive {
+			log.WithFields(log.Fields{
+				"network": opts.networkType.String(),
+				"node":    d.property.Name,
+				"last":    latency.Truncate(time.Millisecond).String(),
+				"avg_10":  avg.Truncate(time.Millisecond),
+				"mov_avg": collection.MovingAverage.Truncate(time.Millisecond),
+			}).Infoln("Connectivity Check")
+		} else {
+			log.WithFields(log.Fields{
+				"network": opts.networkType.String(),
+				"node":    d.property.Name,
+				"last":    latency.Truncate(time.Millisecond).String(),
+				"avg_10":  avg.Truncate(time.Millisecond),
+				"mov_avg": collection.MovingAverage.Truncate(time.Millisecond),
+			}).Debugln("Connectivity Check")
+		}
 		collection.Alive = true
 
-		log.WithFields(log.Fields{
-			"network": opts.networkType.String(),
-			"node":    d.property.Name,
-			"last":    latency.Truncate(time.Millisecond).String(),
-			"avg_10":  avg.Truncate(time.Millisecond),
-			"mov_avg": collection.MovingAverage.Truncate(time.Millisecond),
-		}).Debugln("Connectivity Check")
+		// Reset error count.
+		if time.Since(collection.LastErrorTime) > 30*time.Second {
+			collection.ErrorCount = 0
+		}
 	} else {
-		d.logUnavailable(collection, opts.networkType, err)
+		if err == nil {
+			err = oops.Errorf("check func not working")
+		} else if strings.HasSuffix(err.Error(), "network is unreachable") { // Append timeout if there is any error or unexpected status code.
+			err = oops.Errorf("network is unreachable")
+		} else if strings.HasSuffix(err.Error(), "no suitable address found") ||
+			strings.HasSuffix(err.Error(), "non-IPv4 address") {
+			err = oops.Errorf("IPv%v is not supported", opts.networkType.IpVersion)
+		}
+		if collection.Alive {
+			log.WithFields(log.Fields{
+				"network": opts.networkType.String(),
+				"node":    d.property.Name,
+			}).Warnln(oops.Wrapf(err, "Connectivity Check Failed"))
+		} else {
+			log.WithFields(log.Fields{
+				"network": opts.networkType.String(),
+				"node":    d.property.Name,
+			}).Infoln(oops.Wrapf(err, "Connectivity Check Failed"))
+		}
+		d.makeUnavailable(collection)
 	}
 	d.informDialerGroupUpdate(collection)
 	return ok, err
 }
 
-func (d *Dialer) HttpCheck(ctx context.Context, u *netutils.URL, ip netip.Addr, method string, soMark uint32, mptcp bool) (ok bool, err error) {
+func (d *Dialer) HttpCheck(ctx context.Context, u *netutils.URL, ip netip.Addr, method string, network string) (ok bool, err error) {
 	// HTTP(S) check.
 	if method == "" {
 		method = http.MethodGet
@@ -618,7 +670,7 @@ func (d *Dialer) HttpCheck(ctx context.Context, u *netutils.URL, ip netip.Addr, 
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (c net.Conn, err error) {
 				// Force to dial "ip".
-				conn, err := d.Dialer.DialContext(ctx, common.MagicNetwork("tcp", soMark, mptcp), net.JoinHostPort(ip.String(), u.Port()))
+				conn, err := d.Dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), u.Port()))
 				if err != nil {
 					return nil, err
 				}
