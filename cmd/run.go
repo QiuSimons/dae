@@ -24,6 +24,7 @@ import (
 
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/protocol/direct"
+	"github.com/samber/oops"
 	"gopkg.in/natefinch/lumberjack.v2"
 
 	_ "net/http/pprof"
@@ -126,17 +127,19 @@ func Run(conf *config.Config, externGeoDataDirs []string) (err error) {
 	// Remove AbortFile at beginning.
 	_ = os.Remove(AbortFile)
 
-	// New ControlPlane.
-	c, err := newControlPlane(nil, nil, conf, externGeoDataDirs)
-	if err != nil {
-		return err
-	}
-
 	var pprofServer *http.Server
 	if conf.Global.PprofPort != 0 {
 		pprofAddr := fmt.Sprintf("localhost:%d", conf.Global.PprofPort)
 		pprofServer = &http.Server{Addr: pprofAddr, Handler: nil}
 		go pprofServer.ListenAndServe()
+		runtime.SetBlockProfileRate(1)
+		runtime.SetMutexProfileFraction(1)
+	}
+
+	// New ControlPlane.
+	c, err := newControlPlane(nil, conf, externGeoDataDirs)
+	if err != nil {
+		return err
 	}
 
 	// Serve tproxy TCP/UDP server util signals.
@@ -155,7 +158,7 @@ func Run(conf *config.Config, externGeoDataDirs []string) (err error) {
 		}()
 		control.GetDaeNetns().With(func() error {
 			if listener, err = c.ListenAndServe(readyChan, conf.Global.TproxyPort); err != nil {
-				log.Errorln("ListenAndServe:", err)
+				log.Errorf("%+v", oops.Wrapf(err, "ListenAndServe"))
 			}
 			return err
 		})
@@ -180,7 +183,7 @@ loop:
 				readyChan := make(chan bool, 1)
 				go func() {
 					if err := c.Serve(readyChan, listener); err != nil {
-						log.Errorln("ListenAndServe:", err)
+						log.Errorf("%+v", oops.Wrapf(err, "ListenAndServe"))
 					}
 					sigs <- nil
 				}()
@@ -233,9 +236,7 @@ loop:
 				var includes []string
 				newConf, includes, err = readConfig(cfgFile)
 				if err != nil {
-					log.WithFields(log.Fields{
-						"err": err,
-					}).Errorln("[Reload] Failed to reload")
+					log.Errorf("%+v", oops.Wrapf(err, "[Reload] Failed to reload"))
 					sdnotify.Ready()
 					_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+err.Error())...), 0644)
 					continue
@@ -247,27 +248,18 @@ loop:
 
 			// New control plane.
 			obj := c.EjectBpf()
-			var dnsCache map[string]*control.DnsCache
-			if conf.Dns.IpVersionPrefer == newConf.Dns.IpVersionPrefer {
-				// Only keep dns cache when ip version preference not change.
-				dnsCache = c.CloneDnsCache()
-			}
 			log.Warnln("[Reload] Load new control plane")
-			newC, err := newControlPlane(obj, dnsCache, newConf, externGeoDataDirs)
+			newC, err := newControlPlane(obj, newConf, externGeoDataDirs)
 			if err != nil {
 				reloadingErr = err
-				log.WithFields(log.Fields{
-					"err": err,
-				}).Errorln("[Reload] Failed to reload; try to roll back configuration")
+				log.Errorf("%+v", oops.Wrapf(err, "[Reload] Failed to reload; try to roll back configuration"))
 				// Load last config back.
-				newC, err = newControlPlane(obj, dnsCache, conf, externGeoDataDirs)
+				newC, err = newControlPlane(obj, conf, externGeoDataDirs)
 				if err != nil {
 					sdnotify.Stopping()
 					obj.Close()
 					c.Close()
-					log.WithFields(log.Fields{
-						"err": err,
-					}).Fatalln("[Reload] Failed to roll back configuration")
+					log.Errorf("%+v", oops.Wrapf(err, "[Reload] Failed to roll back configuration"))
 				}
 				newConf = conf
 				log.Errorln("[Reload] Last reload failed; rolled back configuration")
@@ -310,12 +302,12 @@ loop:
 	defer os.Remove(PidFilePath)
 	defer control.GetDaeNetns().Close()
 	if e := c.Close(); e != nil {
-		return fmt.Errorf("close control plane: %w", e)
+		return oops.Errorf("close control plane: %w", e)
 	}
 	return nil
 }
 
-func newControlPlane(bpf interface{}, dnsCache map[string]*control.DnsCache, conf *config.Config, externGeoDataDirs []string) (c *control.ControlPlane, err error) {
+func newControlPlane(bpf interface{}, conf *config.Config, externGeoDataDirs []string) (c *control.ControlPlane, err error) {
 	// Deep copy to prevent modification.
 	conf = deepcopy.Copy(conf).(*config.Config)
 
@@ -328,7 +320,7 @@ func newControlPlane(bpf interface{}, dnsCache map[string]*control.DnsCache, con
 	}
 
 	/// Init Direct Dialers.
-	direct.InitDirectDialers(conf.Global.FallbackResolver)
+	direct.InitDirectDialers(conf.Global.FallbackResolver, conf.Global.Mptcp)
 	netutils.FallbackDns = netip.MustParseAddrPort(conf.Global.FallbackResolver)
 
 	// Resolve subscriptions to nodes.
@@ -338,7 +330,7 @@ func newControlPlane(bpf interface{}, dnsCache map[string]*control.DnsCache, con
 		client := http.Client{
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, network, addr string) (c net.Conn, err error) {
-					conn, err := direct.SymmetricDirect.DialContext(ctx, common.MagicNetwork("tcp", conf.Global.SoMarkFromDae, conf.Global.Mptcp), addr)
+					conn, err := direct.SymmetricDirect.DialContext(ctx, common.MagicNetwork("tcp", conf.Global.SoMarkFromDae), addr)
 					if err != nil {
 						return nil, err
 					}
@@ -355,7 +347,7 @@ func newControlPlane(bpf interface{}, dnsCache map[string]*control.DnsCache, con
 		for i := 0; ; i++ {
 			resp, err := client.Get(CheckNetworkLinks[i%len(CheckNetworkLinks)])
 			if err != nil {
-				log.Debugln("CheckNetwork:", err)
+				log.Debugln("%+v", oops.Wrapf(err, "CheckNetwork"))
 				var neterr net.Error
 				if errors.As(err, &neterr) && neterr.Timeout() {
 					// Do not sleep.
@@ -379,7 +371,7 @@ func newControlPlane(bpf interface{}, dnsCache map[string]*control.DnsCache, con
 	client := http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (c net.Conn, err error) {
-				conn, err := direct.SymmetricDirect.DialContext(ctx, common.MagicNetwork("tcp", conf.Global.SoMarkFromDae, conf.Global.Mptcp), addr)
+				conn, err := direct.SymmetricDirect.DialContext(ctx, common.MagicNetwork("tcp", conf.Global.SoMarkFromDae), addr)
 				if err != nil {
 					return nil, err
 				}
@@ -436,7 +428,6 @@ func newControlPlane(bpf interface{}, dnsCache map[string]*control.DnsCache, con
 
 	c, err = control.NewControlPlane(
 		bpf,
-		dnsCache,
 		tagToNodeList,
 		conf.Group,
 		&conf.Routing,
@@ -460,7 +451,7 @@ func preprocessWanInterfaceAuto(params *config.Config) error {
 		if ifname == "auto" {
 			defaultIfs, err := common.GetDefaultIfnames()
 			if err != nil {
-				return fmt.Errorf("failed to convert 'auto': %w", err)
+				return oops.Errorf("failed to convert 'auto': %w", err)
 			}
 			ifs = append(ifs, defaultIfs...)
 		} else {

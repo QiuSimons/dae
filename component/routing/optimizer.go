@@ -160,7 +160,6 @@ type mmdbCache struct {
 	fieldCache map[string]map[string][]string // fieldName -> fieldValue -> subnets
 }
 
-// DatReaderOptimizer 添加缓存字段
 type DatReaderOptimizer struct {
 	LocationFinder  *assets.LocationFinder
 	mmdbCaches      map[string]mmdbCache // filename -> cache
@@ -268,6 +267,10 @@ func (o *DatReaderOptimizer) loadMMDB(filename string, field string, value strin
 		return nil, err
 	}
 	log.Debugf("Read mmdb \"%v:%v=%v\" from %v", filename, field, value, filePath)
+
+	if o.mmdbCaches == nil {
+		o.mmdbCaches = make(map[string]mmdbCache)
+	}
 
 	// 检查缓存中是否已有结果
 	o.mmdbCachesMutex.RLock()

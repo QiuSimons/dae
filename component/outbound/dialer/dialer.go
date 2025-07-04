@@ -39,6 +39,7 @@ type Dialer struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 
+	needAliveState bool
 	checkActivated bool
 }
 
@@ -73,10 +74,10 @@ func NewGlobalOption(global *config.Global) *GlobalOption {
 			TlsFragment:         global.TlsFragment,
 			TlsFragmentLength:   global.TlsFragmentLength,
 			TlsFragmentInterval: global.TlsFragmentInterval,
-			UDPHopInterval:    global.UDPHopInterval,
+			UDPHopInterval:      global.UDPHopInterval,
 		},
-		TcpCheckOptionRaw: TcpCheckOptionRaw{Raw: global.TcpCheckUrl, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae, global.Mptcp), Method: global.TcpCheckHttpMethod},
-		CheckDnsOptionRaw: CheckDnsOptionRaw{Raw: global.UdpCheckDns, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae, global.Mptcp), Somark: global.SoMarkFromDae},
+		TcpCheckOptionRaw: TcpCheckOptionRaw{Raw: global.TcpCheckUrl, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae), Method: global.TcpCheckHttpMethod, Somark: global.SoMarkFromDae},
+		CheckDnsOptionRaw: CheckDnsOptionRaw{Raw: global.UdpCheckDns, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae), Somark: global.SoMarkFromDae},
 		CheckInterval:     global.CheckInterval,
 		CheckTolerance:    global.CheckTolerance,
 		CheckDnsTcp:       true,
