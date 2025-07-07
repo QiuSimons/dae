@@ -21,6 +21,16 @@ type Ip46 struct {
 	Ip6 netip.Addr
 }
 
+func FromAddr(addr netip.Addr) (ip46 *Ip46) {
+	ip46 = new(Ip46)
+	if addr.Is4() || addr.Is4In6() {
+		ip46.Ip4 = addr
+	} else {
+		ip46.Ip6 = addr
+	}
+	return
+}
+
 func ResolveIp46(ctx context.Context, dialer netproxy.Dialer, dns netip.AddrPort, host string, network string, race bool) (ipv46 *Ip46, err4, err6 error) {
 	defer func() {
 		log.WithField("err4", err4).

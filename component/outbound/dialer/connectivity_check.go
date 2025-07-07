@@ -113,20 +113,23 @@ func (d *Dialer) MustGetAlive(typ *NetworkType) bool {
 	return d.mustGetCollection(typ).Alive
 }
 
-func parseIp46FromList(ip []string) *netutils.Ip46 {
-	ip46 := new(netutils.Ip46)
+func parseIp46FromList(ip []string) (ip46 *netutils.Ip46, err error) {
+	ip46 = new(netutils.Ip46)
 	for _, ip := range ip {
 		addr, err := netip.ParseAddr(ip)
 		if err != nil {
-			continue
+			return nil, oops.Errorf("invalid ip address: %w", err)
 		}
 		if addr.Is4() || addr.Is4In6() {
 			ip46.Ip4 = addr
 		} else if addr.Is6() {
 			ip46.Ip6 = addr
 		}
+		if ip46.Ip4.IsValid() && ip46.Ip6.IsValid() {
+			break
+		}
 	}
-	return ip46
+	return ip46, nil
 }
 
 type TcpCheckOption struct {
@@ -150,7 +153,7 @@ func ParseTcpCheckOption(ctx context.Context, rawURL []string, method string, re
 	}()
 
 	if len(rawURL) == 0 {
-		return nil, fmt.Errorf("ParseTcpCheckOption: bad format: empty")
+		return nil, oops.Errorf("ParseTcpCheckOption: bad format: empty")
 	}
 	u, err := url.Parse(rawURL[0])
 	if err != nil {
@@ -158,11 +161,14 @@ func ParseTcpCheckOption(ctx context.Context, rawURL []string, method string, re
 	}
 	var ip46 *netutils.Ip46
 	if len(rawURL) > 1 {
-		ip46 = parseIp46FromList(rawURL[1:])
+		ip46, err = parseIp46FromList(rawURL[1:])
+		if err != nil {
+			return nil, oops.Wrapf(err, "ParseTcpCheckOption: failed to parse ip from list")
+		}
 	} else {
 		ip46, _, _ = netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, u.Hostname(), resolverNetwork, false)
 		if !ip46.Ip4.IsValid() && !ip46.Ip6.IsValid() {
-			return nil, fmt.Errorf("ResolveIp46: no valid ip for %v", u.Hostname())
+			return nil, oops.Errorf("ResolveIp46: no valid ip for %v", u.Hostname())
 		}
 	}
 	return &TcpCheckOption{
@@ -190,24 +196,34 @@ func ParseCheckDnsOption(ctx context.Context, dnsHostPort []string, resolverNetw
 	}()
 
 	if len(dnsHostPort) == 0 {
-		return nil, fmt.Errorf("ParseCheckDnsOption: bad format: empty")
+		return nil, oops.Errorf("ParseCheckDnsOption: bad format: empty")
 	}
 
 	host, _port, err := net.SplitHostPort(dnsHostPort[0])
 	if err != nil {
-		return nil, err
+		return nil, oops.Wrapf(err, "ParseCheckDnsOption: failed to split host and port")
 	}
+	hostIP, err := netip.ParseAddr(host)
+	hostIsIP := err == nil
 	port, err := strconv.ParseUint(_port, 10, 16)
 	if err != nil {
-		return nil, fmt.Errorf("bad port: %v", err)
+		return nil, oops.Errorf("bad port: %v", err)
 	}
 	var ip46 *netutils.Ip46
-	if len(dnsHostPort) > 1 {
-		ip46 = parseIp46FromList(dnsHostPort[1:])
+	if hostIsIP {
+		if len(dnsHostPort) > 1 {
+			return nil, oops.Errorf("ParseCheckDnsOption: format error, format should be hostport,ip,ip6,...")
+		}
+		ip46 = netutils.FromAddr(hostIP)
+	} else if len(dnsHostPort) > 1 {
+		ip46, err = parseIp46FromList(dnsHostPort[1:])
+		if err != nil {
+			return nil, oops.Wrapf(err, "ParseCheckDnsOption: failed to parse ip from list")
+		}
 	} else {
 		ip46, _, _ = netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, host, resolverNetwork, false)
 		if !ip46.Ip4.IsValid() && !ip46.Ip6.IsValid() {
-			return nil, fmt.Errorf("ResolveIp46: no valid ip for %v", host)
+			return nil, oops.Errorf("ResolveIp46: no valid ip for %v", host)
 		}
 	}
 	return &CheckDnsOption{
