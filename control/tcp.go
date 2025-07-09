@@ -321,3 +321,36 @@ func RelayTCP(lConn, rConn netproxy.Conn) error {
 
 	return oops.Join(err, err2)
 }
+
+// RouteDialTcp is a compatibility wrapper for the refactored RouteDialOption.
+// It preserves the old API for dependent modules.
+func (c *ControlPlane) RouteDialTcp(p *RouteDialParam) (netproxy.Conn, error) {
+	networkType := &dialer.NetworkType{
+		L4Proto:   consts.L4ProtoStr_TCP,
+		IpVersion: consts.IpVersionFromAddr(p.Dest.Addr()),
+		IsDns:     false,
+	}
+	routingResult := &bpfRoutingResult{
+		Outbound: uint8(p.Outbound),
+		Mark:     p.Mark,
+		Mac:      p.Mac,
+		Pname:    p.ProcessName,
+		Ifindex:  p.Ifindex,
+		Dscp:     p.Dscp,
+	}
+	routeParam := &RouteParam{
+		routingResult: routingResult,
+		networkType:   networkType,
+		Domain:        p.Domain,
+		Src:           p.Src,
+		Dest:          p.Dest,
+	}
+	dialOption, err := c.RouteDialOption(routeParam)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
+	defer cancel()
+
+	return dialOption.Dialer.DialContext(ctx, common.MagicNetwork("tcp", dialOption.Mark), dialOption.DialTarget)
+}
