@@ -321,3 +321,55 @@ func RelayTCP(lConn, rConn netproxy.Conn) error {
 
 	return oops.Join(err, err2)
 }
+
+type RouteDialParam struct {
+    Outbound    consts.OutboundIndex
+    Domain      string
+    Mac         [6]uint8
+    Ifindex     uint32
+    Dscp        uint8
+    ProcessName [16]uint8
+    Src         netip.AddrPort
+    Dest        netip.AddrPort
+    Mark        uint32
+}
+
+func (c *ControlPlane) RouteDialTcp(p *RouteDialParam) (conn netproxy.Conn, err error) {
+	routingResult, err := c.core.RetrieveRoutingResult(p.Src, p.Dest, unix.IPPROTO_TCP)
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve target info %v: %v", p.Dest.String(), err)
+	}
+	
+	routingResult.Mark = p.Mark
+	routingResult.Mac = p.Mac
+	routingResult.Outbound = uint8(p.Outbound)
+	routingResult.Pname = p.ProcessName
+	routingResult.Dscp = p.Dscp
+	
+	networkType := &dialer.NetworkType{
+		L4Proto:   consts.L4ProtoStr_TCP,
+		IpVersion: consts.IpVersionFromAddr(p.Dest.Addr()),
+		IsDns:     false,
+	}
+	
+	dialOption, err := c.RouteDialOption(&RouteParam{
+		routingResult: routingResult,
+		networkType:   networkType,
+		Domain:        p.Domain,
+		Src:           p.Src,
+		Dest:          p.Dest,
+	})
+	if err != nil {
+		return nil, err
+	}
+	
+	ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
+	defer cancel()
+	
+	conn, err = dialOption.Dialer.DialContext(ctx, common.MagicNetwork("tcp", dialOption.Mark), dialOption.DialTarget)
+	if err != nil {
+		return nil, fmt.Errorf("failed to dial %v: %w", p.Dest, err)
+	}
+	
+	return conn, nil
+}
