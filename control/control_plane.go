@@ -449,7 +449,7 @@ func NewControlPlane(
 		}
 	}
 
-	wg.Wait()
+	// wg.Wait()
 
 	/// Bind to links. Binding should be advance of dialerGroups to avoid un-routable old connection.
 	// Bind to LAN
