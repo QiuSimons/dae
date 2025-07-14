@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -62,8 +61,6 @@ type DnsControllerOption struct {
 }
 
 type DnsController struct {
-	handling sync.Map
-
 	routing     *dns.Dns
 	qtypePrefer uint16
 
@@ -76,16 +73,9 @@ type DnsController struct {
 	timeoutExceedCallback func(dialArgument *dialArgument, err error)
 
 	fixedDomainTtl map[string]int
-	// mutex protects the dnsCache.
-	dnsCacheMu          sync.Mutex
-	dnsCache            map[string]*DnsCache
-	dnsForwarderCacheMu sync.Mutex
-	dnsForwarderCache   map[dnsForwarderKey]DnsForwarder
-}
-
-type handlingState struct {
-	mu  sync.Mutex
-	ref uint32
+	// 使用sync.Map替代mutex+map
+	dnsCache          sync.Map // map[string]*DnsCache
+	dnsForwarderCache sync.Map // map[dnsForwarderKey]*cachedForwarder
 }
 
 func parseIpVersionPreference(prefer int) (uint16, error) {
@@ -120,10 +110,7 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		timeoutExceedCallback: option.TimeoutExceedCallback,
 
 		fixedDomainTtl:      option.FixedDomainTtl,
-		dnsCacheMu:          sync.Mutex{},
-		dnsCache:            make(map[string]*DnsCache),
-		dnsForwarderCacheMu: sync.Mutex{},
-		dnsForwarderCache:   make(map[dnsForwarderKey]DnsForwarder),
+		// sync.Map无需初始化
 	}, nil
 }
 
@@ -133,33 +120,21 @@ func (c *DnsController) cacheKey(qname string, qtype uint16) string {
 }
 
 func (c *DnsController) RemoveDnsRespCache(cacheKey string) {
-	c.dnsCacheMu.Lock()
-	_, ok := c.dnsCache[cacheKey]
-	if ok {
-		delete(c.dnsCache, cacheKey)
-	}
-	c.dnsCacheMu.Unlock()
+	c.dnsCache.Delete(cacheKey)
 }
 func (c *DnsController) LookupDnsRespCache(cacheKey string, ignoreFixedTtl bool) (cache *DnsCache) {
-	c.dnsCacheMu.Lock()
-	cache, ok := c.dnsCache[cacheKey]
-	c.dnsCacheMu.Unlock()
+	cacheValue, ok := c.dnsCache.Load(cacheKey)
 	if !ok {
 		return nil
 	}
+	cache = cacheValue.(*DnsCache)
 	var deadline time.Time
 	if !ignoreFixedTtl {
 		deadline = cache.Deadline
 	} else {
 		deadline = cache.OriginalDeadline
 	}
-	// We should make sure the cache did not expire, or
-	// return nil and request a new lookup to refresh the cache.
-	if !deadline.After(time.Now()) {
-		return nil
-	}
-	if err := c.cacheAccessCallback(cache); err != nil {
-		c.log.Warnf("failed to BatchUpdateDomainRouting: %v", err)
+	if deadline.Before(time.Now()) {
 		return nil
 	}
 	return cache
@@ -287,22 +262,11 @@ func (c *DnsController) __updateDnsCacheDeadline(host string, dnsTyp uint16, ans
 	deadline, originalDeadline := deadlineFunc(now, host)
 
 	cacheKey := c.cacheKey(fqdn, dnsTyp)
-	c.dnsCacheMu.Lock()
-	cache, ok := c.dnsCache[cacheKey]
-	if ok {
-		cache.Answer = answers
-		cache.Deadline = deadline
-		cache.OriginalDeadline = originalDeadline
-		c.dnsCacheMu.Unlock()
-	} else {
-		cache, err = c.newCache(fqdn, answers, deadline, originalDeadline)
-		if err != nil {
-			c.dnsCacheMu.Unlock()
-			return err
-		}
-		c.dnsCache[cacheKey] = cache
-		c.dnsCacheMu.Unlock()
+	cache, err := c.newCache(fqdn, answers, deadline, originalDeadline)
+	if err != nil {
+		return err
 	}
+	c.dnsCache.Store(cacheKey, cache)
 	if err = c.cacheAccessCallback(cache); err != nil {
 		return err
 	}
@@ -355,6 +319,36 @@ type dialArgument struct {
 type dnsForwarderKey struct {
 	upstream     string
 	dialArgument dialArgument
+}
+
+// 简化的转发器缓存结构
+type cachedForwarder struct {
+	forwarder DnsForwarder
+	expires   time.Time
+}
+
+// 获取或创建DNS转发器
+func (c *DnsController) getOrCreateForwarder(upstream *dns.Upstream, dialArg dialArgument) (DnsForwarder, error) {
+	key := dnsForwarderKey{upstream: upstream.String(), dialArgument: dialArg}
+	if cached, ok := c.dnsForwarderCache.Load(key); ok {
+		cf := cached.(*cachedForwarder)
+		if time.Now().Before(cf.expires) {
+			return cf.forwarder, nil
+		}
+		c.dnsForwarderCache.Delete(key)
+	}
+	// 创建新的转发器
+	forwarder, err := newDnsForwarder(upstream, dialArg)
+	if err != nil {
+		return nil, err
+	}
+	// 缓存5分钟
+	cf := &cachedForwarder{
+		forwarder: forwarder,
+		expires:   time.Now().Add(5 * time.Minute),
+	}
+	c.dnsForwarderCache.Store(key, cf)
+	return forwarder, nil
 }
 
 func (c *DnsController) Handle_(dnsMessage *dnsmessage.Msg, req *udpRequest) (err error) {
@@ -577,24 +571,12 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 	ctxDial, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
 	defer cancel()
 
-	// get forwarder from cache
-	c.dnsForwarderCacheMu.Lock()
-	forwarder, ok := c.dnsForwarderCache[dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}]
-	if !ok {
-		forwarder, err = newDnsForwarder(upstream, *dialArgument)
-		if err != nil {
-			c.dnsForwarderCacheMu.Unlock()
-			return err
-		}
-		c.dnsForwarderCache[dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}] = forwarder
+	// 使用简化的转发器管理
+	forwarder, err := c.getOrCreateForwarder(upstream, *dialArgument)
+	if err != nil {
+		return err
 	}
-	c.dnsForwarderCacheMu.Unlock()
-
-	defer func() {
-		if !connClosed {
-			forwarder.Close()
-		}
-	}()
+	defer forwarder.Close()
 
 	if err != nil {
 		return err
@@ -690,4 +672,49 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		}
 	}
 	return nil
+}
+
+// 简化的请求去重处理
+type requestTracker struct {
+	processing sync.Map // map[string]chan struct{}
+}
+
+var globalRequestTracker = &requestTracker{}
+
+func (rt *requestTracker) processOrWait(key string, handler func() error) error {
+	done := make(chan struct{})
+	if actual, loaded := rt.processing.LoadOrStore(key, done); loaded {
+		<-actual.(chan struct{})
+		return nil
+	}
+	defer func() { close(done); rt.processing.Delete(key) }()
+	return handler()
+}
+
+// 补充getOrCreateForwarder的完整实现
+func (c *DnsController) getOrCreateForwarder(upstream *dns.Upstream, dialArg dialArgument) (DnsForwarder, error) {
+	key := dnsForwarderKey{upstream: upstream.String(), dialArgument: dialArg}
+	
+	if cached, ok := c.dnsForwarderCache.Load(key); ok {
+		cf := cached.(*cachedForwarder)
+		if time.Now().Before(cf.expires) {
+			return cf.forwarder, nil
+		}
+		c.dnsForwarderCache.Delete(key)
+	}
+	
+	// 创建新的转发器
+	forwarder, err := newDnsForwarder(upstream, dialArg)
+	if err != nil {
+		return nil, err
+	}
+	
+	// 缓存5分钟
+	cf := &cachedForwarder{
+		forwarder: forwarder,
+		expires:   time.Now().Add(5 * time.Minute),
+	}
+	c.dnsForwarderCache.Store(key, cf)
+	
+	return forwarder, nil
 }
