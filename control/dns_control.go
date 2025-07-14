@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -76,11 +75,8 @@ type DnsController struct {
 	timeoutExceedCallback func(dialArgument *dialArgument, err error)
 
 	fixedDomainTtl map[string]int
-	// mutex protects the dnsCache.
-	dnsCacheMu          sync.Mutex
-	dnsCache            map[string]*DnsCache
-	dnsForwarderCacheMu sync.Mutex
-	dnsForwarderCache   map[dnsForwarderKey]DnsForwarder
+	dnsCache          sync.Map // map[string]*DnsCache
+	dnsForwarderCache sync.Map // map[dnsForwarderKey]*cachedForwarder
 }
 
 type handlingState struct {
@@ -119,11 +115,7 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		bestDialerChooser:     option.BestDialerChooser,
 		timeoutExceedCallback: option.TimeoutExceedCallback,
 
-		fixedDomainTtl:      option.FixedDomainTtl,
-		dnsCacheMu:          sync.Mutex{},
-		dnsCache:            make(map[string]*DnsCache),
-		dnsForwarderCacheMu: sync.Mutex{},
-		dnsForwarderCache:   make(map[dnsForwarderKey]DnsForwarder),
+		fixedDomainTtl: option.FixedDomainTtl,
 	}, nil
 }
 
@@ -133,33 +125,21 @@ func (c *DnsController) cacheKey(qname string, qtype uint16) string {
 }
 
 func (c *DnsController) RemoveDnsRespCache(cacheKey string) {
-	c.dnsCacheMu.Lock()
-	_, ok := c.dnsCache[cacheKey]
-	if ok {
-		delete(c.dnsCache, cacheKey)
-	}
-	c.dnsCacheMu.Unlock()
+	c.dnsCache.Delete(cacheKey)
 }
 func (c *DnsController) LookupDnsRespCache(cacheKey string, ignoreFixedTtl bool) (cache *DnsCache) {
-	c.dnsCacheMu.Lock()
-	cache, ok := c.dnsCache[cacheKey]
-	c.dnsCacheMu.Unlock()
+	cacheValue, ok := c.dnsCache.Load(cacheKey)
 	if !ok {
 		return nil
 	}
+	cache = cacheValue.(*DnsCache)
 	var deadline time.Time
 	if !ignoreFixedTtl {
 		deadline = cache.Deadline
 	} else {
 		deadline = cache.OriginalDeadline
 	}
-	// We should make sure the cache did not expire, or
-	// return nil and request a new lookup to refresh the cache.
-	if !deadline.After(time.Now()) {
-		return nil
-	}
-	if err := c.cacheAccessCallback(cache); err != nil {
-		c.log.Warnf("failed to BatchUpdateDomainRouting: %v", err)
+	if time.Now().After(deadline) {
 		return nil
 	}
 	return cache
@@ -287,23 +267,16 @@ func (c *DnsController) __updateDnsCacheDeadline(host string, dnsTyp uint16, ans
 	deadline, originalDeadline := deadlineFunc(now, host)
 
 	cacheKey := c.cacheKey(fqdn, dnsTyp)
-	c.dnsCacheMu.Lock()
-	cache, ok := c.dnsCache[cacheKey]
-	if ok {
-		cache.Answer = answers
-		cache.Deadline = deadline
-		cache.OriginalDeadline = originalDeadline
-		c.dnsCacheMu.Unlock()
-	} else {
-		cache, err = c.newCache(fqdn, answers, deadline, originalDeadline)
-		if err != nil {
-			c.dnsCacheMu.Unlock()
-			return err
-		}
-		c.dnsCache[cacheKey] = cache
-		c.dnsCacheMu.Unlock()
-	}
-	if err = c.cacheAccessCallback(cache); err != nil {
+	c.dnsCache.Store(cacheKey, &DnsCache{
+		Answer:           answers,
+		Deadline:         deadline,
+		OriginalDeadline: originalDeadline,
+	})
+	if err = c.cacheAccessCallback(&DnsCache{
+		Answer:           answers,
+		Deadline:         deadline,
+		OriginalDeadline: originalDeadline,
+	}); err != nil {
 		return err
 	}
 
@@ -355,6 +328,11 @@ type dialArgument struct {
 type dnsForwarderKey struct {
 	upstream     string
 	dialArgument dialArgument
+}
+
+type cachedForwarder struct {
+	forwarder DnsForwarder
+	expires   time.Time
 }
 
 func (c *DnsController) Handle_(dnsMessage *dnsmessage.Msg, req *udpRequest) (err error) {
@@ -445,7 +423,7 @@ func (c *DnsController) handle_(
 	}
 
 	// Route request.
-	upstreamIndex, upstream, err := c.routing.RequestSelect(qname, qtype)
+	upstreamIndex, _, err := c.routing.RequestSelect(qname, qtype)
 	if err != nil {
 		return err
 	}
@@ -458,52 +436,9 @@ func (c *DnsController) handle_(
 		return c.sendReject_(dnsMessage, req)
 	}
 
-	// No parallel for the same lookup.
-	handlingState_, _ := c.handling.LoadOrStore(cacheKey, new(handlingState))
-	handlingState := handlingState_.(*handlingState)
-	atomic.AddUint32(&handlingState.ref, 1)
-	handlingState.mu.Lock()
-	defer func() {
-		handlingState.mu.Unlock()
-		atomic.AddUint32(&handlingState.ref, ^uint32(0))
-		if atomic.LoadUint32(&handlingState.ref) == 0 {
-			c.handling.Delete(cacheKey)
-		}
-	}()
-
-	if resp := c.LookupDnsRespCache_(dnsMessage, cacheKey, false); resp != nil {
-		// Send cache to client directly.
-		if needResp {
-			if err = sendPkt(c.log, resp, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
-				return fmt.Errorf("failed to write cached DNS resp: %w", err)
-			}
-		}
-		if c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Question) > 0 {
-			q := dnsMessage.Question[0]
-			c.log.Debugf("UDP(DNS) %v <-> Cache: %v %v",
-				RefineSourceToShow(req.realSrc, req.realDst.Addr()), strings.ToLower(q.Name), QtypeToString(q.Qtype),
-			)
-		}
-		return nil
-	}
-
-	if c.log.IsLevelEnabled(logrus.TraceLevel) {
-		upstreamName := upstreamIndex.String()
-		if upstream != nil {
-			upstreamName = upstream.String()
-		}
-		c.log.WithFields(logrus.Fields{
-			"question": dnsMessage.Question,
-			"upstream": upstreamName,
-		}).Traceln("Request to DNS upstream")
-	}
-
-	// Re-pack DNS packet.
-	data, err := dnsMessage.Pack()
-	if err != nil {
-		return fmt.Errorf("pack DNS packet: %w", err)
-	}
-	return c.dialSend(0, req, data, dnsMessage.Id, upstream, needResp)
+	return globalRequestTracker.processOrWait(cacheKey, func() error {
+		return c.doHandleRequest(dnsMessage, req, cacheKey, needResp)
+	})
 }
 
 // sendReject_ send empty answer.
@@ -572,42 +507,19 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 	// defer in a recursive call will delay Close(), thus we Close() before
 	// the next recursive call. However, a connection cannot be closed twice.
 	// We should set a connClosed flag to avoid it.
-	var connClosed bool
 
 	ctxDial, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
 	defer cancel()
 
-	// get forwarder from cache
-	c.dnsForwarderCacheMu.Lock()
-	forwarder, ok := c.dnsForwarderCache[dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}]
-	if !ok {
-		forwarder, err = newDnsForwarder(upstream, *dialArgument)
-		if err != nil {
-			c.dnsForwarderCacheMu.Unlock()
-			return err
-		}
-		c.dnsForwarderCache[dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}] = forwarder
-	}
-	c.dnsForwarderCacheMu.Unlock()
-
-	defer func() {
-		if !connClosed {
-			forwarder.Close()
-		}
-	}()
-
+	forwarder, err := c.getOrCreateForwarder(upstream, *dialArgument)
 	if err != nil {
 		return err
 	}
-
+	defer forwarder.Close()
 	respMsg, err = forwarder.ForwardDNS(ctxDial, data)
 	if err != nil {
 		return err
 	}
-
-	// Close conn before the recursive call.
-	forwarder.Close()
-	connClosed = true
 
 	// Route response.
 	upstreamIndex, nextUpstream, err := c.routing.ResponseSelect(respMsg, upstream)
@@ -690,4 +602,60 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 		}
 	}
 	return nil
+}
+
+type requestTracker struct {
+	processing sync.Map // map[string]chan struct{}
+}
+
+var globalRequestTracker = &requestTracker{}
+
+func (rt *requestTracker) processOrWait(key string, handler func() error) error {
+	done := make(chan struct{})
+	if actual, loaded := rt.processing.LoadOrStore(key, done); loaded {
+		<-actual.(chan struct{})
+		return nil
+	}
+	defer func() { close(done); rt.processing.Delete(key) }()
+	return handler()
+}
+
+// doHandleRequest
+func (c *DnsController) doHandleRequest(dnsMessage *dnsmessage.Msg, req *udpRequest, cacheKey string, needResp bool) error {
+	if resp := c.LookupDnsRespCache_(dnsMessage, cacheKey, false); resp != nil {
+		// Send cache to client directly.
+		if needResp {
+			if err := sendPkt(c.log, resp, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
+				return fmt.Errorf("failed to write cached DNS resp: %w", err)
+			}
+		}
+		return nil
+	}
+	data, err := dnsMessage.Pack()
+	if err != nil {
+		return fmt.Errorf("pack DNS packet: %w", err)
+	}
+	return c.dialSend(0, req, data, dnsMessage.Id, nil, needResp)
+}
+
+// getOrCreateForwarder
+func (c *DnsController) getOrCreateForwarder(upstream *dns.Upstream, dialArg dialArgument) (DnsForwarder, error) {
+	key := dnsForwarderKey{upstream: upstream.String(), dialArgument: dialArg}
+	if cached, ok := c.dnsForwarderCache.Load(key); ok {
+		cf := cached.(*cachedForwarder)
+		if time.Now().Before(cf.expires) {
+			return cf.forwarder, nil
+		}
+		c.dnsForwarderCache.Delete(key)
+	}
+	forwarder, err := newDnsForwarder(upstream, dialArg)
+	if err != nil {
+		return nil, err
+	}
+	cf := &cachedForwarder{
+		forwarder: forwarder,
+		expires:   time.Now().Add(5 * time.Minute),
+	}
+	c.dnsForwarderCache.Store(key, cf)
+	return forwarder, nil
 }
