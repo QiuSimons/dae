@@ -239,6 +239,10 @@ func (ns *DaeNetns) setupVeth() (err error) {
 	if err = netlink.LinkSetUp(ns.dae0); err != nil {
 		return fmt.Errorf("failed to set link dae0 up: %v", err)
 	}
+	// Set tx_queue_len for dae0peer to avoid zero misconfig
+	if err = netlink.LinkSetTxQLen(ns.dae0peer, 1000); err != nil {
+		return fmt.Errorf("failed to set tx queue length for dae0peer: %v", err)
+	}
 	return
 }
 
