@@ -11,7 +11,7 @@ import (
 )
 
 func NewFromLink(gOption *GlobalOption, iOption InstanceOption, link string, subscriptionTag string) (*Dialer, error) {
-	d, _p, err := D.NewNetproxyDialerFromLink(direct.SymmetricDirect, &gOption.ExtraOption, link)
+	d, _p, err := D.NewNetproxyDialerFromLink(direct.Direct, &gOption.ExtraOption, link)
 	if err != nil {
 		return nil, err
 	}

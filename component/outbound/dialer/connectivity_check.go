@@ -23,7 +23,6 @@ import (
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
-	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pkg/fastrand"
 	"github.com/daeuniverse/outbound/pool"
 	"github.com/daeuniverse/outbound/protocol/direct"
@@ -148,7 +147,7 @@ type TcpCheckOption struct {
 	Method string
 }
 
-func ParseTcpCheckOption(ctx context.Context, rawURL []string, method string, resolverNetwork string) (opt *TcpCheckOption, err error) {
+func ParseTcpCheckOption(ctx context.Context, rawURL []string, method string) (opt *TcpCheckOption, err error) {
 	if method == "" {
 		method = http.MethodGet
 	}
@@ -176,7 +175,7 @@ func ParseTcpCheckOption(ctx context.Context, rawURL []string, method string, re
 			return nil, oops.Wrapf(err, "ParseTcpCheckOption: failed to parse ip from list")
 		}
 	} else {
-		ip46, _, _ = netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, u.Hostname(), resolverNetwork, false)
+		ip46, _, _ = netutils.ResolveIp46(ctx, direct.Direct, systemDns, u.Hostname(), "udp", false)
 		if !ip46.Ip4.IsValid() && !ip46.Ip6.IsValid() {
 			return nil, oops.Errorf("ResolveIp46: no valid ip for %v", u.Hostname())
 		}
@@ -231,7 +230,7 @@ func ParseCheckDnsOption(ctx context.Context, dnsHostPort []string, resolverNetw
 			return nil, oops.Wrapf(err, "ParseCheckDnsOption: failed to parse ip from list")
 		}
 	} else {
-		ip46, _, _ = netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, host, resolverNetwork, false)
+		ip46, _, _ = netutils.ResolveIp46(ctx, direct.Direct, systemDns, host, resolverNetwork, false)
 		if !ip46.Ip4.IsValid() && !ip46.Ip6.IsValid() {
 			return nil, oops.Errorf("ResolveIp46: no valid ip for %v", host)
 		}
@@ -244,12 +243,10 @@ func ParseCheckDnsOption(ctx context.Context, dnsHostPort []string, resolverNetw
 }
 
 type TcpCheckOptionRaw struct {
-	opt             *TcpCheckOption
-	mu              sync.Mutex
-	Raw             []string
-	ResolverNetwork string
-	Method          string
-	Somark          uint32
+	opt    *TcpCheckOption
+	mu     sync.Mutex
+	Raw    []string
+	Method string
 }
 
 func (c *TcpCheckOptionRaw) Option() (opt *TcpCheckOption, err error) {
@@ -258,7 +255,7 @@ func (c *TcpCheckOptionRaw) Option() (opt *TcpCheckOption, err error) {
 	if c.opt == nil {
 		ctx, cancel := context.WithTimeout(context.TODO(), Timeout)
 		defer cancel()
-		tcpCheckOption, err := ParseTcpCheckOption(ctx, c.Raw, c.Method, c.ResolverNetwork)
+		tcpCheckOption, err := ParseTcpCheckOption(ctx, c.Raw, c.Method)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse tcp_check_url: %w", err)
 		}
@@ -268,11 +265,9 @@ func (c *TcpCheckOptionRaw) Option() (opt *TcpCheckOption, err error) {
 }
 
 type CheckDnsOptionRaw struct {
-	opt             *CheckDnsOption
-	mu              sync.Mutex
-	Raw             []string
-	ResolverNetwork string
-	Somark          uint32
+	opt *CheckDnsOption
+	mu  sync.Mutex
+	Raw []string
 }
 
 func (c *CheckDnsOptionRaw) Option() (opt *CheckDnsOption, err error) {
@@ -281,7 +276,7 @@ func (c *CheckDnsOptionRaw) Option() (opt *CheckDnsOption, err error) {
 	if c.opt == nil {
 		ctx, cancel := context.WithTimeout(context.TODO(), Timeout)
 		defer cancel()
-		udpCheckOption, err := ParseCheckDnsOption(ctx, c.Raw, c.ResolverNetwork)
+		udpCheckOption, err := ParseCheckDnsOption(ctx, c.Raw, "udp")
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse tcp_check_url: %w", err)
 		}
@@ -355,15 +350,6 @@ func (d *Dialer) createDnsCheckFunc(ipVersion consts.IpVersionStr, network strin
 
 // createCheckOptions 创建所有检查选项
 func (d *Dialer) createCheckOptions() []*CheckOption {
-	tcpNetwork := netproxy.MagicNetwork{
-		Network: "tcp",
-		Mark:    d.TcpCheckOptionRaw.Somark,
-	}.Encode()
-	udpNetwork := netproxy.MagicNetwork{
-		Network: "udp",
-		Mark:    d.CheckDnsOptionRaw.Somark,
-	}.Encode()
-
 	return []*CheckOption{
 		{
 			networkType: &NetworkType{
@@ -371,7 +357,7 @@ func (d *Dialer) createCheckOptions() []*CheckOption {
 				IpVersion: consts.IpVersionStr_4,
 				IsDns:     false,
 			},
-			CheckFunc: d.createTcpCheckFunc(consts.IpVersionStr_4, tcpNetwork),
+			CheckFunc: d.createTcpCheckFunc(consts.IpVersionStr_4, "tcp"),
 		},
 		{
 			networkType: &NetworkType{
@@ -379,7 +365,7 @@ func (d *Dialer) createCheckOptions() []*CheckOption {
 				IpVersion: consts.IpVersionStr_6,
 				IsDns:     false,
 			},
-			CheckFunc: d.createTcpCheckFunc(consts.IpVersionStr_6, tcpNetwork),
+			CheckFunc: d.createTcpCheckFunc(consts.IpVersionStr_6, "tcp"),
 		},
 		{
 			networkType: &NetworkType{
@@ -387,7 +373,7 @@ func (d *Dialer) createCheckOptions() []*CheckOption {
 				IpVersion: consts.IpVersionStr_4,
 				IsDns:     true,
 			},
-			CheckFunc: d.createDnsCheckFunc(consts.IpVersionStr_4, udpNetwork),
+			CheckFunc: d.createDnsCheckFunc(consts.IpVersionStr_4, "udp"),
 		},
 		{
 			networkType: &NetworkType{
@@ -395,7 +381,7 @@ func (d *Dialer) createCheckOptions() []*CheckOption {
 				IpVersion: consts.IpVersionStr_6,
 				IsDns:     true,
 			},
-			CheckFunc: d.createDnsCheckFunc(consts.IpVersionStr_6, udpNetwork),
+			CheckFunc: d.createDnsCheckFunc(consts.IpVersionStr_6, "udp"),
 		},
 		{
 			networkType: &NetworkType{
@@ -403,7 +389,7 @@ func (d *Dialer) createCheckOptions() []*CheckOption {
 				IpVersion: consts.IpVersionStr_4,
 				IsDns:     true,
 			},
-			CheckFunc: d.createDnsCheckFunc(consts.IpVersionStr_4, tcpNetwork),
+			CheckFunc: d.createDnsCheckFunc(consts.IpVersionStr_4, "tcp"),
 		},
 		{
 			networkType: &NetworkType{
@@ -411,7 +397,7 @@ func (d *Dialer) createCheckOptions() []*CheckOption {
 				IpVersion: consts.IpVersionStr_6,
 				IsDns:     true,
 			},
-			CheckFunc: d.createDnsCheckFunc(consts.IpVersionStr_6, tcpNetwork),
+			CheckFunc: d.createDnsCheckFunc(consts.IpVersionStr_6, "tcp"),
 		},
 	}
 }
@@ -543,9 +529,7 @@ func (d *Dialer) UnregisterAliveDialerSet(a *AliveDialerSet) {
 	}
 }
 
-func (d *Dialer) makeUnavailable(
-	collection *collection,
-) {
+func (d *Dialer) makeUnavailable(collection *collection) {
 	collection.Latencies10.AppendLatency(Timeout)
 	collection.MovingAverage = (collection.MovingAverage + Timeout) / 2
 	collection.Alive = false
@@ -578,7 +562,7 @@ func (d *Dialer) ReportUnavailable(typ *NetworkType, err error) {
 		return
 	}
 
-	if time.Since(collection.LastErrorTime) > 15*time.Second {
+	if time.Since(collection.LastErrorTime) > 10*time.Second {
 		collection.ErrorCount = 0
 	}
 
@@ -590,9 +574,9 @@ func (d *Dialer) ReportUnavailable(typ *NetworkType, err error) {
 		"node":        d.property.Name,
 		"err":         err.Error(),
 		"error_count": collection.ErrorCount,
-	}).Warnf("Connection Failed (Count: %d/3)", collection.ErrorCount)
+	}).Warnf("Connection Failed (Count: %d/5)", collection.ErrorCount)
 
-	if collection.ErrorCount >= 3 {
+	if collection.ErrorCount >= 5 {
 		d.makeUnavailable(collection)
 		d.informDialerGroupUpdate(collection)
 	}
@@ -674,11 +658,7 @@ func (d *Dialer) HttpCheck(ctx context.Context, u *netutils.URL, ip netip.Addr, 
 				if err != nil {
 					return nil, err
 				}
-				return &netproxy.FakeNetConn{
-					Conn:  conn,
-					LAddr: nil,
-					RAddr: nil,
-				}, nil
+				return conn, nil
 			},
 		},
 	}

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -177,7 +178,7 @@ func ResolveStream(stream io.ReadWriter, msg *dnsmessage.Msg, quic bool) error {
 	return nil
 }
 
-func ResolveUDP(conn netproxy.Conn, msg *dnsmessage.Msg) error {
+func ResolveUDP(conn net.Conn, msg *dnsmessage.Msg) error {
 	data, err := msg.Pack()
 	if err != nil {
 		return oops.Wrapf(err, "pack DNS packet")
@@ -295,11 +296,6 @@ func ResolveSOA(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host
 }
 
 func resolve(ctx context.Context, dialer netproxy.Dialer, server netip.AddrPort, host string, typ uint16, network string) (ans []dnsmessage.RR, err error) {
-	magicNetwork, err := netproxy.ParseMagicNetwork(network)
-	if err != nil {
-		return nil, oops.Wrapf(err, "parse magic network")
-	}
-
 	fqdn := dnsmessage.CanonicalName(host)
 	switch typ {
 	case dnsmessage.TypeA, dnsmessage.TypeAAAA:
@@ -352,7 +348,7 @@ func resolve(ctx context.Context, dialer netproxy.Dialer, server netip.AddrPort,
 		return nil, oops.Wrapf(err, "DialContext")
 	}
 
-	if magicNetwork.Network == "tcp" {
+	if network == "tcp" {
 		err = ResolveStream(conn, &msg, false)
 	} else {
 		err = ResolveUDP(conn, &msg)

@@ -12,7 +12,6 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/config"
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
@@ -75,8 +74,8 @@ func NewGlobalOption(global *config.Global) *GlobalOption {
 			TlsFragmentInterval: global.TlsFragmentInterval,
 			UDPHopInterval:      global.UDPHopInterval,
 		},
-		TcpCheckOptionRaw: TcpCheckOptionRaw{Raw: global.TcpCheckUrl, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae), Method: global.TcpCheckHttpMethod, Somark: global.SoMarkFromDae},
-		CheckDnsOptionRaw: CheckDnsOptionRaw{Raw: global.UdpCheckDns, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae), Somark: global.SoMarkFromDae},
+		TcpCheckOptionRaw: TcpCheckOptionRaw{Raw: global.TcpCheckUrl, Method: global.TcpCheckHttpMethod},
+		CheckDnsOptionRaw: CheckDnsOptionRaw{Raw: global.UdpCheckDns},
 		CheckInterval:     global.CheckInterval,
 		CheckTolerance:    global.CheckTolerance,
 		CheckDnsTcp:       true,

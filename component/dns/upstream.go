@@ -113,7 +113,8 @@ func NewUpstream(ctx context.Context, upstream *url.URL, resolverNetwork string)
 		}
 	}()
 
-	ip46, _, _ := netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, hostname, resolverNetwork, false)
+	// TODO: 应该用 netproxy 里面的非代理 resolver?
+	ip46, _, _ := netutils.ResolveIp46(ctx, direct.Direct, systemDns, hostname, "udp", false)
 	if !ip46.Ip4.IsValid() && !ip46.Ip6.IsValid() {
 		return nil, fmt.Errorf("dns_upstream %v has no record", upstream.String())
 	}

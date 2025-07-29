@@ -15,6 +15,7 @@ import (
 	"github.com/daeuniverse/outbound/netproxy"
 )
 
+var ErrNoDialer = fmt.Errorf("no dialer")
 var ErrNoAliveDialer = fmt.Errorf("no alive dialer")
 var ErrFixedDialerNotAlive = fmt.Errorf("fixed dialer is not alive")
 
@@ -164,18 +165,20 @@ func (d *DialerGroup) MustGetAliveDialerSet(typ *dialer.NetworkType) *dialer.Ali
 }
 
 // SelectFallbackIpVersion selects a dialer from group according to selectionPolicy. If 'strictIpVersion' is false and no alive dialer, it will fallback to another ipversion.
-func (g *DialerGroup) SelectFallbackIpVersion(networkType *dialer.NetworkType, strictIpVersion bool) (dialer *dialer.Dialer, latency time.Duration, err error) {
+func (g *DialerGroup) SelectFallbackIpVersion(networkType *dialer.NetworkType, strictIpVersion bool) (dialer *dialer.Dialer, latency time.Duration, fallback bool, err error) {
 	dialer, latency, err = g.Select(networkType)
 	if !strictIpVersion && errors.Is(err, ErrNoAliveDialer) {
 		networkType.IpVersion = (consts.IpVersion_X - networkType.IpVersion.ToIpVersionType()).ToIpVersionStr()
 		dialer, latency, err = g.Select(networkType)
+		fallback = true
 	}
 	return
 }
 
 func (g *DialerGroup) Select(networkType *dialer.NetworkType) (dialer *dialer.Dialer, latency time.Duration, err error) {
 	if len(g.Dialers) == 0 {
-		panic("no dialer in this group")
+		// panic(fmt.Sprintf("no dialer in this group: %s", g.Name))
+		return nil, time.Hour, ErrNoDialer
 	}
 	aliveDialerSet := g.MustGetAliveDialerSet(networkType)
 	switch g.selectionPolicy.Policy {

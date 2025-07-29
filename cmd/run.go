@@ -22,8 +22,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/protocol/direct"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/samber/oops"
 	"gopkg.in/natefinch/lumberjack.v2"
 
@@ -129,6 +129,7 @@ func Run(conf *config.Config, externGeoDataDirs []string) {
 	_ = os.Remove(AbortFile)
 
 	startPprofServer(conf.Global.PprofPort)
+	startPrometheusServer()
 
 	// New ControlPlane.
 	c, err := newControlPlane(nil, conf, externGeoDataDirs)
@@ -315,6 +316,11 @@ func startPprofServer(port uint16) {
 	}
 }
 
+func startPrometheusServer() {
+	http.Handle("/metrics", promhttp.Handler())
+	go http.ListenAndServe(":2112", nil)
+}
+
 func newControlPlane(bpf interface{}, conf *config.Config, externGeoDataDirs []string) (c *control.ControlPlane, err error) {
 	// Deep copy to prevent modification.
 	conf = deepcopy.Copy(conf).(*config.Config)
@@ -328,7 +334,7 @@ func newControlPlane(bpf interface{}, conf *config.Config, externGeoDataDirs []s
 	}
 
 	/// Init Direct Dialers.
-	direct.InitDirectDialers(conf.Global.FallbackResolver, conf.Global.Mptcp)
+	direct.InitDirectDialers(conf.Global.FallbackResolver, conf.Global.Mptcp, int(conf.Global.SoMarkFromDae))
 	netutils.FallbackDns = netip.MustParseAddrPort(conf.Global.FallbackResolver)
 
 	// Resolve subscriptions to nodes.
@@ -338,15 +344,11 @@ func newControlPlane(bpf interface{}, conf *config.Config, externGeoDataDirs []s
 		client := http.Client{
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, network, addr string) (c net.Conn, err error) {
-					conn, err := direct.SymmetricDirect.DialContext(ctx, common.MagicNetwork("tcp", conf.Global.SoMarkFromDae), addr)
+					conn, err := direct.Direct.DialContext(ctx, "tcp", addr)
 					if err != nil {
 						return nil, err
 					}
-					return &netproxy.FakeNetConn{
-						Conn:  conn,
-						LAddr: nil,
-						RAddr: nil,
-					}, nil
+					return conn, nil
 				},
 			},
 			Timeout: epo,
@@ -379,15 +381,11 @@ func newControlPlane(bpf interface{}, conf *config.Config, externGeoDataDirs []s
 	client := http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (c net.Conn, err error) {
-				conn, err := direct.SymmetricDirect.DialContext(ctx, common.MagicNetwork("tcp", conf.Global.SoMarkFromDae), addr)
+				conn, err := direct.Direct.DialContext(ctx, "tcp", addr)
 				if err != nil {
 					return nil, err
 				}
-				return &netproxy.FakeNetConn{
-					Conn:  conn,
-					LAddr: nil,
-					RAddr: nil,
-				}, nil
+				return conn, nil
 			},
 		},
 		Timeout: 30 * time.Second,

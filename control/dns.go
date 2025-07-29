@@ -13,12 +13,10 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/dns"
 	"github.com/daeuniverse/outbound/netproxy"
-	tc "github.com/daeuniverse/outbound/protocol/tuic/common"
 	"github.com/daeuniverse/quic-go"
 	"github.com/daeuniverse/quic-go/http3"
 	dnsmessage "github.com/miekg/dns"
@@ -97,15 +95,11 @@ func (d *DoH) getHttpRoundTripper() *http.Transport {
 			InsecureSkipVerify: false,
 		},
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			conn, err := d.dialArgument.bestDialer.DialContext(
-				ctx,
-				common.MagicNetwork("tcp", d.dialArgument.mark),
-				d.dialArgument.bestTarget.String(),
-			)
+			conn, err := d.dialArgument.bestDialer.DialContext(ctx, "tcp", d.dialArgument.bestTarget.String())
 			if err != nil {
 				return nil, err
 			}
-			return &netproxy.FakeNetConn{Conn: conn}, nil
+			return conn, nil
 		},
 	}
 
@@ -122,16 +116,11 @@ func (d *DoH) getHttp3RoundTripper() *http3.RoundTripper {
 		QUICConfig: &quic.Config{},
 		Dial: func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (quic.EarlyConnection, error) {
 			udpAddr := net.UDPAddrFromAddrPort(d.dialArgument.bestTarget)
-			conn, err := d.dialArgument.bestDialer.DialContext(
-				ctx,
-				common.MagicNetwork("udp", d.dialArgument.mark),
-				d.dialArgument.bestTarget.String(),
-			)
+			conn, err := d.dialArgument.bestDialer.ListenPacket(ctx, d.dialArgument.bestTarget.String())
 			if err != nil {
 				return nil, err
 			}
-			fakePkt := netproxy.NewFakeNetPacketConn(conn.(netproxy.PacketConn), net.UDPAddrFromAddrPort(tc.GetUniqueFakeAddrPort()), udpAddr)
-			c, e := quic.DialEarly(ctx, fakePkt, udpAddr, tlsCfg, cfg)
+			c, e := quic.DialEarly(ctx, conn, udpAddr, tlsCfg, cfg)
 			return c, e
 		},
 	}
@@ -159,24 +148,18 @@ func (d *DoQ) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
 }
 
 func (d *DoQ) createConnection(ctx context.Context) (quic.EarlyConnection, error) {
-	udpAddr := net.UDPAddrFromAddrPort(d.dialArgument.bestTarget)
-	conn, err := d.dialArgument.bestDialer.DialContext(
-		ctx,
-		common.MagicNetwork("udp", d.dialArgument.mark),
-		d.dialArgument.bestTarget.String(),
-	)
+	conn, err := d.dialArgument.bestDialer.ListenPacket(ctx, d.dialArgument.bestTarget.String())
 	if err != nil {
 		return nil, err
 	}
 
-	fakePkt := netproxy.NewFakeNetPacketConn(conn.(netproxy.PacketConn), net.UDPAddrFromAddrPort(tc.GetUniqueFakeAddrPort()), udpAddr)
 	tlsCfg := &tls.Config{
 		NextProtos:         []string{"doq"},
 		InsecureSkipVerify: false,
 		ServerName:         d.Upstream.Hostname,
 	}
 	addr := net.UDPAddrFromAddrPort(d.dialArgument.bestTarget)
-	qc, err := quic.DialEarly(ctx, fakePkt, addr, tlsCfg, nil)
+	qc, err := quic.DialEarly(ctx, conn, addr, tlsCfg, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -190,15 +173,11 @@ type DoTLS struct {
 }
 
 func (d *DoTLS) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
-	conn, err := d.dialArgument.bestDialer.DialContext(
-		ctx,
-		common.MagicNetwork("tcp", d.dialArgument.mark),
-		d.dialArgument.bestTarget.String(),
-	)
+	conn, err := d.dialArgument.bestDialer.DialContext(ctx, "tcp", d.dialArgument.bestTarget.String())
 	if err != nil {
 		return err
 	}
-	tlsConn := tls.Client(&netproxy.FakeNetConn{Conn: conn}, &tls.Config{
+	tlsConn := tls.Client(conn, &tls.Config{
 		InsecureSkipVerify: false,
 		ServerName:         d.Upstream.Hostname,
 	})
@@ -218,11 +197,7 @@ type DoTCP struct {
 
 // TODO: Connection reuse
 func (d *DoTCP) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
-	conn, err := d.dialArgument.bestDialer.DialContext(
-		ctx,
-		common.MagicNetwork("tcp", d.dialArgument.mark),
-		d.dialArgument.bestTarget.String(),
-	)
+	conn, err := d.dialArgument.bestDialer.DialContext(ctx, "tcp", d.dialArgument.bestTarget.String())
 	if err != nil {
 		return err
 	}
@@ -239,11 +214,7 @@ type DoUDP struct {
 
 // TODO: 在不导致放大的情况下尝试实现重传
 func (d *DoUDP) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
-	conn, err := d.dialArgument.bestDialer.DialContext(
-		ctx,
-		common.MagicNetwork("udp", d.dialArgument.mark),
-		d.dialArgument.bestTarget.String(),
-	)
+	conn, err := d.dialArgument.bestDialer.DialContext(ctx, "udp", d.dialArgument.bestTarget.String())
 	if err != nil {
 		return err
 	}

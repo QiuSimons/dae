@@ -10,8 +10,8 @@ import (
 	"github.com/daeuniverse/outbound/netproxy"
 )
 
-func NewDirectDialer(option *GlobalOption, fullcone bool) (netproxy.Dialer, *Property) {
-	d, _p := D.NewDirectDialer(&option.ExtraOption, fullcone)
+func NewDirectDialer(option *GlobalOption) (netproxy.Dialer, *Property) {
+	d, _p := D.NewDirectDialer(&option.ExtraOption)
 	return d, &Property{
 		Property:        *_p,
 		SubscriptionTag: "",

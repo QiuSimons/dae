@@ -17,15 +17,15 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, noConnect
 		if c.closed.Err() != nil {
 			return
 		}
-		// if c.log.IsLevelEnabled(logrus.TraceLevel) {
-		strAlive := "NOT ALIVE"
-		if alive {
-			strAlive = "ALIVE"
+		if log.IsLevelEnabled(log.DebugLevel) {
+			strAlive := "NOT ALIVE"
+			if alive {
+				strAlive = "ALIVE"
+			}
+			log.WithFields(log.Fields{
+				"outboundId": outbound,
+			}).Debugf("Outbound <%v> %v -> %v, notify the kernel program.", c.outboundId2Name[outbound], networkType.StringWithoutDns(), strAlive)
 		}
-		log.WithFields(log.Fields{
-			"outboundId": outbound,
-		}).Warnf("Outbound <%v> %v -> %v, notify the kernel program.", c.outboundId2Name[outbound], networkType.StringWithoutDns(), strAlive)
-		// }
 
 		// 0: go control plane
 		// 1: direct

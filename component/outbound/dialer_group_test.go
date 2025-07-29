@@ -25,9 +25,9 @@ var TestNetworkType = &dialer.NetworkType{
 	IsDns:     false,
 }
 
-func newDirectDialer(option *dialer.GlobalOption, fullcone bool) *dialer.Dialer {
-	_d, p := dialer.NewDirectDialer(option, true)
-	d := dialer.NewDialer(_d, option, dialer.InstanceOption{DisableCheck: false}, p, false)
+func newDirectDialer(option *dialer.GlobalOption) *dialer.Dialer {
+	_d, p := dialer.NewDirectDialer(option)
+	d := dialer.NewDialer(_d, option, dialer.InstanceOption{DisableCheck: false}, p)
 	return d
 }
 

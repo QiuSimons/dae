@@ -225,7 +225,7 @@ func (a *AliveDialerSet) getLatencyData(dialer *Dialer, networkType *NetworkType
 func (a *AliveDialerSet) updateDialerAliveState(dialer *Dialer, alive bool) {
 	if alive {
 		a.addAliveDialer(dialer)
-	} else if !alive {
+	} else {
 		a.removeAliveDialer(dialer)
 	}
 }
@@ -249,23 +249,14 @@ func (a *AliveDialerSet) addAliveDialer(dialer *Dialer) {
 
 func (a *AliveDialerSet) removeAliveDialer(dialer *Dialer) {
 	index := a.dialerToIndex[dialer]
-	if index < -Init {
-		return
-	}
-
 	if index == -Init {
 		log.WithFields(log.Fields{
 			"dialer": dialer.property.Name,
 			"group":  a.dialerGroupName,
 		}).Infof("[ALIVE --%v-> NOT ALIVE]", a.networkType.String())
-	} else {
-		log.WithFields(log.Fields{
-			"dialer": dialer.property.Name,
-			"group":  a.dialerGroupName,
-		}).Warnf("[ALIVE --%v-> NOT ALIVE]", a.networkType.String())
-
-		// TODO: Debug, for get which dialer still alive
-		a.printLatencies()
+	}
+	if index < 0 {
+		return
 	}
 
 	if index >= len(a.inorderedAliveDialerSet) {
@@ -273,10 +264,6 @@ func (a *AliveDialerSet) removeAliveDialer(dialer *Dialer) {
 	}
 
 	a.dialerToIndex[dialer] = -NotAlive
-
-	if index == -Init {
-		return
-	}
 
 	if index < len(a.inorderedAliveDialerSet)-1 {
 		// 将该元素与最后一个元素交换
@@ -292,6 +279,14 @@ func (a *AliveDialerSet) removeAliveDialer(dialer *Dialer) {
 
 	// 弹出最后一个元素
 	a.inorderedAliveDialerSet = a.inorderedAliveDialerSet[:len(a.inorderedAliveDialerSet)-1]
+
+	log.WithFields(log.Fields{
+		"dialer": dialer.property.Name,
+		"group":  a.dialerGroupName,
+	}).Warnf("[ALIVE --%v-> NOT ALIVE]", a.networkType.String())
+
+	// TODO: Debug, for get which dialer still alive
+	a.printLatencies()
 }
 
 func (a *AliveDialerSet) shouldUpdateMinLatency(dialer *Dialer, sortingLatency time.Duration, priority int) bool {

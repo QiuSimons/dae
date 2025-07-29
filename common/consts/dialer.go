@@ -82,13 +82,12 @@ func (v IpVersionStr) ToIpVersionType() IpVersionType {
 	panic("unsupported ipversion")
 }
 
-func IpVersionFromAddr(addr netip.Addr) IpVersionStr {
-	var ipversion IpVersionStr
+func IpVersionStrFromAddr(addr netip.Addr) (ipversion IpVersionStr) {
 	switch {
 	case addr.Is4() || addr.Is4In6():
 		ipversion = IpVersionStr_4
 	case addr.Is6():
 		ipversion = IpVersionStr_6
 	}
-	return ipversion
+	return
 }

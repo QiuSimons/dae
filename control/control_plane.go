@@ -36,7 +36,8 @@ import (
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	"github.com/daeuniverse/outbound/pool"
 	"github.com/daeuniverse/outbound/protocol/direct"
-	"github.com/daeuniverse/outbound/transport/grpc"
+
+	// "github.com/daeuniverse/outbound/transport/grpc"
 	"github.com/daeuniverse/outbound/transport/meek"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/samber/oops"
@@ -88,7 +89,7 @@ func NewControlPlane(
 	dnsConfig *config.Dns,
 	externGeoDataDirs []string,
 ) (*ControlPlane, error) {
-	// TODO: Some users reported that enabling GSO on the client would affect the performance of watching YouTube, so we disabled it by default.
+	// TODO: Some users reported that enabling GSO on the client wgrpcould affect the performance of watching YouTube, so we disabled it by default.
 	if _, ok := os.LookupEnv("QUIC_GO_DISABLE_GSO"); !ok {
 		os.Setenv("QUIC_GO_DISABLE_GSO", "1")
 	}
@@ -236,7 +237,7 @@ func NewControlPlane(
 		return nil, oops.Errorf("invalid no_connectivity_behavior: %v", global.NoConnectivityBehavior)
 	}
 
-	_direct, directProperty := dialer.NewDirectDialer(option, true)
+	_direct, directProperty := dialer.NewDirectDialer(option)
 	direct := dialer.NewDialer(_direct, option, dialer.InstanceOption{DisableCheck: true}, directProperty)
 	_block, blockProperty := dialer.NewBlockDialer(option, func() { /*Dialer Outbound*/ })
 	block := dialer.NewDialer(_block, option, dialer.InstanceOption{DisableCheck: true}, blockProperty)
@@ -257,7 +258,7 @@ func NewControlPlane(
 
 	// Filter out groups.
 	// FIXME: Ugly code here: reset grpc and meek clients manually.
-	grpc.CleanGlobalClientConnectionCache()
+	// grpc.CleanGlobalClientConnectionCache()
 	meek.CleanGlobalRoundTripperCache()
 	dialerSet := outbound.NewDialerSetFromLinks(option, tagToNodeList)
 	deferFuncs = append(deferFuncs, dialerSet.Close)
@@ -385,7 +386,7 @@ func NewControlPlane(
 	dnsUpstream, err := dns.New(dnsConfig, &dns.NewOption{
 		LocationFinder:          locationFinder,
 		UpstreamReadyCallback:   plane.dnsUpstreamReadyCallback,
-		UpstreamResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae),
+		UpstreamResolverNetwork: "udp",
 	})
 	if err != nil {
 		return nil, err
@@ -635,7 +636,7 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 					systemDns, err := netutils.SystemDns()
 					if err == nil {
 						// TODO: 这里可能需要考虑缓存的问题
-						if ip46, _, _ := netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, domain, common.MagicNetwork("udp", c.soMarkFromDae), true); ip46.Ip4.IsValid() || ip46.Ip6.IsValid() {
+						if ip46, _, _ := netutils.ResolveIp46(ctx, direct.Direct, systemDns, domain, "udp", true); ip46.Ip4.IsValid() || ip46.Ip6.IsValid() {
 							// Has A/AAAA records. It is a real domain.
 							dialMode = consts.DialMode_Domain
 							// Add it to real-domain set.

@@ -344,6 +344,10 @@ func (c *DnsController) handleDNSRequest(
 		}
 	}
 
+	// No parallel for the same lookup.
+	l := c.lookupKeyLocker.Lock(cacheKey)
+	defer c.lookupKeyLocker.Unlock(cacheKey, l)
+
 	// Dial and re-route
 	if log.IsLevelEnabled(log.DebugLevel) {
 		log.WithFields(log.Fields{
@@ -352,15 +356,10 @@ func (c *DnsController) handleDNSRequest(
 		}).Debugln("Request to DNS upstream")
 	}
 
-	var dialArgument *dialArgument
-
-	// No parallel for the same lookup.
-	l := c.lookupKeyLocker.Lock(cacheKey)
-	defer c.lookupKeyLocker.Unlock(cacheKey, l)
 Dial:
 	for invokingDepth := 1; invokingDepth <= MaxDnsLookupDepth; invokingDepth++ {
 		// Select best dial arguments (outbound, dialer, l4proto, ipversion, etc.)
-		dialArgument, err = c.bestDialerChooser(req, upstream)
+		dialArgument, err := c.bestDialerChooser(req, upstream)
 		if err != nil {
 			return err
 		}

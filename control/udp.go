@@ -7,17 +7,14 @@ package control
 
 import (
 	"context"
-	"errors"
 	"net"
 	"net/netip"
 
 	"time"
 
-	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/sniffing"
-	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pool"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/samber/oops"
@@ -70,10 +67,6 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 	dnsMessage, natTimeout := ChooseNatTimeout(data, dst.Port() == 53)
 	// We should cache DNS records and set record TTL to 0, in order to monitor the dns req and resp in real time.
 	isDns := dnsMessage != nil && routingResult.Must == 0 // Regard as plain traffic
-	// TODO: 重复逻辑
-	if routingResult.Mark == 0 {
-		routingResult.Mark = c.soMarkFromDae
-	}
 	if isDns {
 		return c.dnsController.Handle(dnsMessage, &udpRequest{
 			src:           src,
@@ -141,23 +134,9 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 	// TODO: Rewritten domain should not use full-cone (such as VMess Packet Addr).
 	// 		Maybe we should set up a mapping for UDP: Dialer + Target Domain => Remote Resolved IP.
 	//		However, games may not use QUIC for communication, thus we cannot use domain to dial, which is fine.
-
-	// Retry loop for UDP endpoint creation and writing
-	// for retry := 1; retry <= MaxRetry; retry++ {
-	// 	if retry > 0 {
-	// 		// Log retry atteWriteTompt
-	// 		if c.log.IsLevelEnabled(logrus.DebugLevel) {
-	// 			c.log.WithFields(logrus.Fields{
-	// 				"src":     RefineSourceToShow(realSrc, realDst.Addr()),
-	// 				"network": networkType.String(),
-	// 				"retry":   retry,
-	// 			}).Debugln("Retrying UDP endpoint creation/write...")
-	// 		}
-	// 	}
-
 	networkType := &dialer.NetworkType{
 		L4Proto:   consts.L4ProtoStr_UDP,
-		IpVersion: consts.IpVersionFromAddr(dst.Addr()),
+		IpVersion: consts.IpVersionStrFromAddr(dst.Addr()),
 		IsDns:     false,
 	}
 
@@ -202,22 +181,23 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 		// docker run --rm --name curl-http3 ymuski/curl-http3 curl --http3 -o /dev/null -v -L https://i.ytimg.com
 		ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
 		defer cancel()
-		udpConn, err := dialOption.Dialer.DialContext(ctx, common.MagicNetwork("udp", dialOption.Mark), dst.String())
+		udpConn, err := dialOption.Dialer.ListenPacket(ctx, dst.String())
 		if err != nil {
-			var netErr net.Error
-			if errors.As(err, &netErr) && !netErr.Temporary() {
-				err = oops.
-					In("DialContext").
-					With("Is NetError", errors.As(err, &netErr)).
-					With("Is Temporary", netErr != nil && netErr.Temporary()).
-					With("Is Timeout", netErr != nil && netErr.Timeout()).
-					With("Outbound", dialOption.Outbound.Name).
-					With("Dialer", dialOption.Dialer.Property().Name).
-					With("src", src.String()).
-					With("dst", dst.String()).
-					With("domain", domain).
-					With("routingResult", routingResult).
-					Wrapf(err, "failed to DialContext")
+			netErr, ok := IsNetError(err)
+			err = oops.
+				In("ListenPacket").
+				With("Is NetError", ok).
+				With("Is Temporary", netErr != nil && netErr.Temporary()).
+				With("Is Timeout", netErr != nil && netErr.Timeout()).
+				With("Outbound", dialOption.Outbound.Name).
+				With("Dialer", dialOption.Dialer.Property().Name).
+				With("src", src.String()).
+				With("dst", dst.String()).
+				With("domain", domain).
+				Wrapf(err, "failed to ListenPacket")
+			if !ok {
+				return err
+			} else if !netErr.Timeout() {
 				dialOption.Dialer.ReportUnavailable(networkType, err)
 				if !dialOption.OutboundIndex.IsReserved() {
 					return err
@@ -226,7 +206,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 			return nil
 		}
 		ue = DefaultUdpEndpointPool.Create(key, &UdpEndpointOptions{
-			PacketConn: udpConn.(netproxy.PacketConn),
+			PacketConn: udpConn,
 			Handler: func(data []byte, from netip.AddrPort) (err error) {
 				return sendPkt(data, from, src)
 			},
@@ -238,15 +218,17 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 			err = ue.run()
 			DefaultUdpEndpointPool.Remove(key)
 			if err != nil {
-				var netErr net.Error
-				if errors.As(err, &netErr) && !netErr.Temporary() && ue.dialer.MustGetAlive(networkType) {
-					err = oops.
-						In("UdpEndpoint r -> l relay").
-						With("Is NetError", errors.As(err, &netErr)).
-						With("Is Temporary", netErr != nil && netErr.Temporary()).
-						With("Is Timeout", netErr != nil && netErr.Timeout()).
-						With("Dialer", ue.dialer.Property().Name).
-						Wrap(err)
+				netErr, ok := IsNetError(err)
+				err = oops.
+					In("UdpEndpoint r -> l relay").
+					With("Is NetError", ok).
+					With("Is Temporary", netErr != nil && netErr.Temporary()).
+					With("Is Timeout", netErr != nil && netErr.Timeout()).
+					With("Dialer", ue.dialer.Property().Name).
+					Wrap(err)
+				if !ok {
+					log.Warnf("%+v", err)
+				} else if !netErr.Timeout() && ue.dialer.MustGetAlive(networkType) {
 					ue.dialer.ReportUnavailable(networkType, err)
 					if !dialOption.OutboundIndex.IsReserved() {
 						log.Warnf("%+v", err)
@@ -258,20 +240,20 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 
 	// TODO: What is realSrc/Dst?
 	// Try to write data
-	_, err = ue.WriteTo(data, dst.String())
+	_, err = ue.WriteTo(data, net.UDPAddrFromAddrPort(dst))
 	if err != nil {
-		_ = DefaultUdpEndpointPool.Remove(key)
-
-		var netErr net.Error
-		if errors.As(err, &netErr) && !netErr.Temporary() {
-			err = oops.
-				In("UdpEndpoint l -> r relay").
-				In("UDP WriteTo").
-				With("Is NetError", errors.As(err, &netErr)).
-				With("Is Temporary", netErr != nil && netErr.Temporary()).
-				With("Is Timeout", netErr != nil && netErr.Timeout()).
-				With("Dialer", ue.dialer.Property().Name).
-				Wrapf(err, "failed to write UDP packet")
+		DefaultUdpEndpointPool.Remove(key)
+		netErr, ok := IsNetError(err)
+		err = oops.
+			In("UdpEndpoint l -> r relay").
+			With("Is NetError", ok).
+			With("Is Temporary", netErr != nil && netErr.Temporary()).
+			With("Is Timeout", netErr != nil && netErr.Timeout()).
+			With("Dialer", ue.dialer.Property().Name).
+			Wrapf(err, "failed to write UDP packet")
+		if !ok {
+			return err
+		} else if !netErr.Timeout() {
 			ue.dialer.ReportUnavailable(networkType, err)
 			return err
 		}

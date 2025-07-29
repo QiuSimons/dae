@@ -7,6 +7,7 @@ package control
 
 import (
 	"context"
+	"net"
 	"net/netip"
 	"sync"
 	"time"
@@ -14,7 +15,6 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pool"
 	"github.com/samber/oops"
 )
@@ -22,7 +22,7 @@ import (
 type UdpHandler func(data []byte, from netip.AddrPort) error
 
 type UdpEndpoint struct {
-	conn netproxy.PacketConn
+	conn net.PacketConn
 	// mu protects deadlineTimer
 	mu            sync.Mutex
 	deadlineTimer *time.Timer
@@ -49,25 +49,25 @@ func (ue *UdpEndpoint) run() error {
 		ue.mu.Lock()
 		ue.deadlineTimer.Reset(ue.NatTimeout)
 		ue.mu.Unlock()
-		if err = ue.handler(buf[:n], from); err != nil {
+		if err = ue.handler(buf[:n], netip.MustParseAddrPort(from.String())); err != nil {
 			break
 		}
 	}
 	return nil
 }
 
-func (ue *UdpEndpoint) WriteTo(b []byte, addr string) (int, error) {
+func (ue *UdpEndpoint) WriteTo(b []byte, addr net.Addr) (int, error) {
 	return ue.conn.WriteTo(b, addr)
 }
 
 // Close should only called by UdpEndpointPool.Remove
 func (ue *UdpEndpoint) Close() error {
+	ue.cancel()
 	ue.mu.Lock()
 	if ue.deadlineTimer != nil {
 		ue.deadlineTimer.Stop()
 	}
 	ue.mu.Unlock()
-	ue.cancel()
 	return ue.conn.Close()
 }
 
@@ -78,7 +78,7 @@ type UdpEndpointPool struct {
 }
 
 type UdpEndpointOptions struct {
-	PacketConn netproxy.PacketConn
+	PacketConn net.PacketConn
 	Handler    UdpHandler
 	NatTimeout time.Duration
 
@@ -89,6 +89,8 @@ var DefaultUdpEndpointPool = UdpEndpointPool{}
 
 func (p *UdpEndpointPool) Remove(key UdpEndpointKey) (err error) {
 	if ue, ok := p.pool.LoadAndDelete(key); ok {
+		ActiveConnections.Dec()
+		ActiveConnectionsUDP.Dec()
 		ue.(*UdpEndpoint).Close()
 	}
 	return nil
@@ -108,6 +110,9 @@ func (p *UdpEndpointPool) Get(key UdpEndpointKey) (udpEndpoint *UdpEndpoint, ok 
 }
 
 func (p *UdpEndpointPool) Create(key UdpEndpointKey, createOption *UdpEndpointOptions) (udpEndpoint *UdpEndpoint) {
+	ActiveConnections.Inc()
+	ActiveConnectionsUDP.Inc()
+	TotalConnections.Inc()
 	ctx, cancel := context.WithCancel(context.Background())
 	udpEndpoint = &UdpEndpoint{
 		conn:       createOption.PacketConn,
