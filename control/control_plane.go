@@ -857,7 +857,7 @@ func (c *ControlPlane) chooseBestDnsDialer(
 		bestDialer   *dialer.Dialer
 		bestOutbound *outbound.DialerGroup
 		bestTarget   netip.AddrPort
-		dialMark     uint32
+		// dialMark     uint32
 	)
 	var networkType dialer.NetworkType
 	// Get the min latency path.
@@ -874,12 +874,10 @@ func (c *ControlPlane) chooseBestDnsDialer(
 			default:
 				return nil, oops.Errorf("unexpected ipversion: %v", ver)
 			}
-			outboundIndex, mark, _, err := c.Route(req.src, netip.AddrPortFrom(dAddr, dnsUpstream.Port), dnsUpstream.Hostname, proto.ToL4ProtoType(), req.routingResult)
+			// TODO: Mark
+			outboundIndex, _, _, err := c.Route(req.src, netip.AddrPortFrom(dAddr, dnsUpstream.Port), dnsUpstream.Hostname, proto.ToL4ProtoType(), req.routingResult)
 			if err != nil {
 				return nil, err
-			}
-			if mark == 0 {
-				mark = c.soMarkFromDae
 			}
 			if int(outboundIndex) >= len(c.outbounds) {
 				return nil, oops.Errorf("bad outbound index: %v", outboundIndex)
@@ -902,7 +900,7 @@ func (c *ControlPlane) chooseBestDnsDialer(
 			bestOutbound = dialerGroup
 			l4proto = proto
 			ipversion = ver
-			dialMark = mark
+			// dialMark = mark
 			break
 		}
 	}
@@ -927,11 +925,11 @@ func (c *ControlPlane) chooseBestDnsDialer(
 		}).Traceln("Choose DNS path")
 	}
 	return &dialArgument{
-		networkType:  networkType,
-		bestDialer:   bestDialer,
-		bestOutbound: bestOutbound,
-		bestTarget:   bestTarget,
-		mark:         dialMark,
+		networkType: networkType,
+		Dialer:      bestDialer,
+		Outbound:    bestOutbound,
+		Target:      bestTarget,
+		// mark:         dialMark,
 	}, nil
 }
 

@@ -181,11 +181,11 @@ type udpRequest struct {
 }
 
 type dialArgument struct {
-	networkType  dialer.NetworkType
-	bestDialer   *dialer.Dialer
-	bestOutbound *outbound.DialerGroup
-	bestTarget   netip.AddrPort
-	mark         uint32
+	networkType dialer.NetworkType
+	Dialer      *dialer.Dialer
+	Outbound    *outbound.DialerGroup
+	Target      netip.AddrPort
+	// mark        uint32
 }
 
 type dnsForwarderKey struct {
@@ -376,7 +376,7 @@ Dial:
 				With("Is Timeout", netErr != nil && netErr.Timeout()).
 				Wrapf(err, "DNS dialSend error")
 			if errors.As(err, &netErr) && !netErr.Temporary() {
-				dialArgument.bestDialer.ReportUnavailable(&dialArgument.networkType, err)
+				dialArgument.Dialer.ReportUnavailable(&dialArgument.networkType, err)
 			}
 			return err
 		}
@@ -390,9 +390,9 @@ Dial:
 			if log.IsLevelEnabled(log.InfoLevel) {
 				fields := log.Fields{
 					"network":  dialArgument.networkType.String(),
-					"outbound": dialArgument.bestOutbound.Name,
-					"policy":   dialArgument.bestOutbound.GetSelectionPolicy(),
-					"dialer":   dialArgument.bestDialer.Property().Name,
+					"outbound": dialArgument.Outbound.Name,
+					"policy":   dialArgument.Outbound.GetSelectionPolicy(),
+					"dialer":   dialArgument.Dialer.Property().Name,
 					"qname":    qname,
 					"qtype":    qtype,
 					"pid":      req.routingResult.Pid,
@@ -403,9 +403,9 @@ Dial:
 				}
 				switch ResponseIndex {
 				case consts.DnsResponseOutboundIndex_Accept:
-					log.WithFields(fields).Infof("[DNS] %v <-> %v", RefineSourceToShow(req.src, req.dst.Addr()), RefineAddrPortToShow(dialArgument.bestTarget))
+					log.WithFields(fields).Infof("[DNS] %v <-> %v", RefineSourceToShow(req.src, req.dst.Addr()), RefineAddrPortToShow(dialArgument.Target))
 				case consts.DnsResponseOutboundIndex_Reject:
-					log.WithFields(fields).Infof("[DNS] %v <-> %v", RefineSourceToShow(req.src, req.dst.Addr()), RefineAddrPortToShow(dialArgument.bestTarget))
+					log.WithFields(fields).Infof("[DNS] %v <-> %v", RefineSourceToShow(req.src, req.dst.Addr()), RefineAddrPortToShow(dialArgument.Target))
 				}
 			}
 			switch ResponseIndex {

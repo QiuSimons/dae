@@ -16,7 +16,6 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/dns"
-	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/quic-go"
 	"github.com/daeuniverse/quic-go/http3"
 	dnsmessage "github.com/miekg/dns"
@@ -33,22 +32,22 @@ func newDnsForwarder(upstream *dns.Upstream, dialArgument dialArgument) (DnsForw
 		case consts.L4ProtoStr_TCP:
 			switch upstream.Scheme {
 			case dns.UpstreamScheme_TCP, dns.UpstreamScheme_TCP_UDP:
-				return &DoTCP{Upstream: *upstream, Dialer: dialArgument.bestDialer, dialArgument: dialArgument}, nil
+				return &DoTCP{Upstream: *upstream, dialArgument: dialArgument}, nil
 			case dns.UpstreamScheme_TLS:
-				return &DoTLS{Upstream: *upstream, Dialer: dialArgument.bestDialer, dialArgument: dialArgument}, nil
+				return &DoTLS{Upstream: *upstream, dialArgument: dialArgument}, nil
 			case dns.UpstreamScheme_HTTPS:
-				return &DoH{Upstream: *upstream, Dialer: dialArgument.bestDialer, dialArgument: dialArgument, http3: false}, nil
+				return &DoH{Upstream: *upstream, dialArgument: dialArgument, http3: false}, nil
 			default:
 				return nil, fmt.Errorf("unexpected scheme: %v", upstream.Scheme)
 			}
 		case consts.L4ProtoStr_UDP:
 			switch upstream.Scheme {
 			case dns.UpstreamScheme_UDP, dns.UpstreamScheme_TCP_UDP:
-				return &DoUDP{Upstream: *upstream, Dialer: dialArgument.bestDialer, dialArgument: dialArgument}, nil
+				return &DoUDP{Upstream: *upstream, dialArgument: dialArgument}, nil
 			case dns.UpstreamScheme_QUIC:
-				return &DoQ{Upstream: *upstream, Dialer: dialArgument.bestDialer, dialArgument: dialArgument}, nil
+				return &DoQ{Upstream: *upstream, dialArgument: dialArgument}, nil
 			case dns.UpstreamScheme_H3:
-				return &DoH{Upstream: *upstream, Dialer: dialArgument.bestDialer, dialArgument: dialArgument, http3: true}, nil
+				return &DoH{Upstream: *upstream, dialArgument: dialArgument, http3: true}, nil
 			default:
 				return nil, fmt.Errorf("unexpected scheme: %v", upstream.Scheme)
 			}
@@ -64,7 +63,6 @@ func newDnsForwarder(upstream *dns.Upstream, dialArgument dialArgument) (DnsForw
 
 type DoH struct {
 	dns.Upstream
-	netproxy.Dialer
 	dialArgument dialArgument
 	http3        bool
 }
@@ -81,7 +79,7 @@ func (d *DoH) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
 	}
 	serverURL := &url.URL{
 		Scheme: "https",
-		Host:   d.dialArgument.bestTarget.String(),
+		Host:   d.dialArgument.Target.String(),
 		Path:   d.Upstream.Path,
 	}
 
@@ -95,7 +93,7 @@ func (d *DoH) getHttpRoundTripper() *http.Transport {
 			InsecureSkipVerify: false,
 		},
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			conn, err := d.dialArgument.bestDialer.DialContext(ctx, "tcp", d.dialArgument.bestTarget.String())
+			conn, err := d.dialArgument.Dialer.DialContext(ctx, "tcp", d.dialArgument.Target.String())
 			if err != nil {
 				return nil, err
 			}
@@ -115,8 +113,8 @@ func (d *DoH) getHttp3RoundTripper() *http3.RoundTripper {
 		},
 		QUICConfig: &quic.Config{},
 		Dial: func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (quic.EarlyConnection, error) {
-			udpAddr := net.UDPAddrFromAddrPort(d.dialArgument.bestTarget)
-			conn, err := d.dialArgument.bestDialer.ListenPacket(ctx, d.dialArgument.bestTarget.String())
+			udpAddr := net.UDPAddrFromAddrPort(d.dialArgument.Target)
+			conn, err := d.dialArgument.Dialer.ListenPacket(ctx, d.dialArgument.Target.String())
 			if err != nil {
 				return nil, err
 			}
@@ -129,7 +127,6 @@ func (d *DoH) getHttp3RoundTripper() *http3.RoundTripper {
 
 type DoQ struct {
 	dns.Upstream
-	netproxy.Dialer
 	dialArgument dialArgument
 }
 
@@ -148,7 +145,7 @@ func (d *DoQ) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
 }
 
 func (d *DoQ) createConnection(ctx context.Context) (quic.EarlyConnection, error) {
-	conn, err := d.dialArgument.bestDialer.ListenPacket(ctx, d.dialArgument.bestTarget.String())
+	conn, err := d.dialArgument.Dialer.ListenPacket(ctx, d.dialArgument.Target.String())
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +155,7 @@ func (d *DoQ) createConnection(ctx context.Context) (quic.EarlyConnection, error
 		InsecureSkipVerify: false,
 		ServerName:         d.Upstream.Hostname,
 	}
-	addr := net.UDPAddrFromAddrPort(d.dialArgument.bestTarget)
+	addr := net.UDPAddrFromAddrPort(d.dialArgument.Target)
 	qc, err := quic.DialEarly(ctx, conn, addr, tlsCfg, nil)
 	if err != nil {
 		return nil, err
@@ -168,12 +165,11 @@ func (d *DoQ) createConnection(ctx context.Context) (quic.EarlyConnection, error
 
 type DoTLS struct {
 	dns.Upstream
-	netproxy.Dialer
 	dialArgument dialArgument
 }
 
 func (d *DoTLS) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
-	conn, err := d.dialArgument.bestDialer.DialContext(ctx, "tcp", d.dialArgument.bestTarget.String())
+	conn, err := d.dialArgument.Dialer.DialContext(ctx, "tcp", d.dialArgument.Target.String())
 	if err != nil {
 		return err
 	}
@@ -191,13 +187,12 @@ func (d *DoTLS) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
 
 type DoTCP struct {
 	dns.Upstream
-	netproxy.Dialer
 	dialArgument dialArgument
 }
 
 // TODO: Connection reuse
 func (d *DoTCP) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
-	conn, err := d.dialArgument.bestDialer.DialContext(ctx, "tcp", d.dialArgument.bestTarget.String())
+	conn, err := d.dialArgument.Dialer.DialContext(ctx, "tcp", d.dialArgument.Target.String())
 	if err != nil {
 		return err
 	}
@@ -208,13 +203,12 @@ func (d *DoTCP) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
 
 type DoUDP struct {
 	dns.Upstream
-	netproxy.Dialer
 	dialArgument dialArgument
 }
 
 // TODO: 在不导致放大的情况下尝试实现重传
 func (d *DoUDP) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
-	conn, err := d.dialArgument.bestDialer.DialContext(ctx, "udp", d.dialArgument.bestTarget.String())
+	conn, err := d.dialArgument.Dialer.DialContext(ctx, "udp", d.dialArgument.Target.String())
 	if err != nil {
 		return err
 	}
