@@ -12,7 +12,6 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
-	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -32,7 +31,6 @@ import (
 	"github.com/daeuniverse/dae/cmd/internal"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/common/subscription"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
@@ -335,7 +333,6 @@ func newControlPlane(bpf interface{}, conf *config.Config, externGeoDataDirs []s
 
 	/// Init Direct Dialers.
 	direct.InitDirectDialers(conf.Global.FallbackResolver, conf.Global.Mptcp, int(conf.Global.SoMarkFromDae))
-	netutils.FallbackDns = netip.MustParseAddrPort(conf.Global.FallbackResolver)
 
 	// Resolve subscriptions to nodes.
 	resolvingfailed := false

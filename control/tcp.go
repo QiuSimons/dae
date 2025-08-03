@@ -60,7 +60,6 @@ func (c *ControlPlane) handleConn(lConn net.Conn) error {
 	networkType := &dialer.NetworkType{
 		L4Proto:   consts.L4ProtoStr_TCP,
 		IpVersion: consts.IpVersionStrFromAddr(dst.Addr()),
-		IsDns:     false,
 	}
 	dialOption, err := c.RouteDialOption(&RouteParam{
 		routingResult: routingResult,
@@ -127,7 +126,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) error {
 			Wrapf(err, "failed to RelayTCP")
 		if !ok {
 			return err
-		} else if !netErr.Timeout() && dialOption.Dialer.MustGetAlive(networkType) {
+		} else if !netErr.Timeout() {
 			dialOption.Dialer.ReportUnavailable(networkType, err)
 			if !dialOption.OutboundIndex.IsReserved() {
 				return err
@@ -159,8 +158,8 @@ func (c *ConnWithReadTimeout) Read(p []byte) (int, error) {
 func relayDirection(dst, src_ net.Conn) error {
 	// As `io.Copy` uses a 32KB buffer, we create a buffer of the same size.
 	// See https://cs.opensource.google/go/go/+/refs/tags/go1.21.5:src/io/io.go;l=419
-	bufPtr := pool.GetFullCap(1024 * 32) // 32KB
-	defer bufPtr.Put()
+	bufPtr := pool.GetBuffer(1024 * 32) // 32KB
+	defer pool.PutBuffer(bufPtr)
 
 	src := &ConnWithReadTimeout{Conn: src_}
 	_, err := io.CopyBuffer(dst, src, bufPtr)

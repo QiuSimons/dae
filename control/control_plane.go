@@ -35,7 +35,6 @@ import (
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	"github.com/daeuniverse/outbound/pool"
-	"github.com/daeuniverse/outbound/protocol/direct"
 
 	// "github.com/daeuniverse/outbound/transport/grpc"
 	"github.com/daeuniverse/outbound/transport/meek"
@@ -307,6 +306,7 @@ func NewControlPlane(
 			// We only activate check of nodes that have a group.
 			d.ActivateCheck(&wg)
 		}
+		// TODO: 打印延迟
 	}
 
 	/// Routing.
@@ -450,7 +450,7 @@ func NewControlPlane(
 		}
 	}
 
-	// wg.Wait()
+	wg.Wait()
 
 	/// Bind to links. Binding should be advance of dialerGroups to avoid un-routable old connection.
 	// Bind to LAN
@@ -630,23 +630,17 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 				} else {
 					c.muRealDomainSet.Unlock()
 					// Lookup A/AAAA to make sure it is a real domain.
-					ctx, cancel := context.WithTimeout(context.TODO(), 5*time.Second)
-					defer cancel()
-					// TODO: use DNS controller and re-route by control plane.
-					systemDns, err := netutils.SystemDns()
-					if err == nil {
-						// TODO: 这里可能需要考虑缓存的问题
-						if ip46, _, _ := netutils.ResolveIp46(ctx, direct.Direct, systemDns, domain, "udp", true); ip46.Ip4.IsValid() || ip46.Ip6.IsValid() {
-							// Has A/AAAA records. It is a real domain.
-							dialMode = consts.DialMode_Domain
-							// Add it to real-domain set.
-							c.muRealDomainSet.Lock()
-							c.realDomainSet.AddString(domain)
-							c.muRealDomainSet.Unlock()
+					// TODO: 这里可能可以直接使用正常的 DNS 解析流程, 从而可以得到缓存
+					if ip46, err := netutils.ResolveIp46(domain); err == nil && ip46.IsValid() {
+						// Has A/AAAA records. It is a real domain.
+						dialMode = consts.DialMode_Domain
+						// Add it to real-domain set.
+						c.muRealDomainSet.Lock()
+						c.realDomainSet.AddString(domain)
+						c.muRealDomainSet.Unlock()
 
-							// Should use this domain to reroute
-							shouldReroute = true
-						}
+						// Should use this domain to reroute
+						shouldReroute = true
 					}
 				}
 			}
@@ -766,10 +760,10 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 		}
 	}()
 	go func() {
-		buf := pool.GetFullCap(consts.EthernetMtu)
-		oob := pool.GetFullCap(120)
-		defer buf.Put()
-		defer oob.Put()
+		buf := pool.GetBuffer(consts.EthernetMtu)
+		oob := pool.GetBuffer(120)
+		defer pool.PutBuffer(buf)
+		defer pool.PutBuffer(oob)
 		for {
 			select {
 			case <-c.ctx.Done():
@@ -788,13 +782,13 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			convergeSrc := common.ConvergeAddrPort(src)
 			convergeDst := common.ConvergeAddrPort(dst)
 
-			data := pool.Get(n)
+			data := pool.GetBuffer(n)
 			copy(data, buf[:n])
 
 			// Debug:
 			// t := time.Now()
 			DefaultUdpTaskPool.EmitTask(convergeSrc.String(), func() {
-				defer data.Put()
+				defer pool.PutBuffer(data)
 				var routingResult *bpfRoutingResult
 				routingResult, err := c.core.RetrieveRoutingResult(src, dst, unix.IPPROTO_UDP)
 				if err != nil {
@@ -858,7 +852,6 @@ func (c *ControlPlane) chooseBestDnsDialer(
 	// Get available ipversions and l4protos for DNS upstream.
 	ipversions, l4protos := dnsUpstream.SupportedNetworks()
 	var (
-		bestLatency  time.Duration
 		l4proto      consts.L4ProtoStr
 		ipversion    consts.IpVersionStr
 		bestDialer   *dialer.Dialer
@@ -866,10 +859,8 @@ func (c *ControlPlane) chooseBestDnsDialer(
 		bestTarget   netip.AddrPort
 		dialMark     uint32
 	)
+	var networkType dialer.NetworkType
 	// Get the min latency path.
-	networkType := dialer.NetworkType{
-		IsDns: true,
-	}
 	for _, ver := range ipversions {
 		for _, proto := range l4protos {
 			networkType.L4Proto = proto
@@ -895,7 +886,7 @@ func (c *ControlPlane) chooseBestDnsDialer(
 			}
 			dialerGroup := c.outbounds[outboundIndex]
 			// DNS always dial IP.
-			d, latency, err := dialerGroup.Select(&networkType)
+			d, err := dialerGroup.Select(&networkType)
 			if err != nil {
 				continue
 			}
@@ -907,18 +898,12 @@ func (c *ControlPlane) chooseBestDnsDialer(
 			//		"outbound": dialerGroup.Name,
 			//	}).Traceln("Choice")
 			//}
-			if bestDialer == nil || latency < bestLatency {
-				bestDialer = d
-				bestOutbound = dialerGroup
-				bestLatency = latency
-				l4proto = proto
-				ipversion = ver
-				dialMark = mark
-
-				if bestLatency == 0 {
-					break
-				}
-			}
+			bestDialer = d
+			bestOutbound = dialerGroup
+			l4proto = proto
+			ipversion = ver
+			dialMark = mark
+			break
 		}
 	}
 	if bestDialer == nil {
@@ -942,11 +927,7 @@ func (c *ControlPlane) chooseBestDnsDialer(
 		}).Traceln("Choose DNS path")
 	}
 	return &dialArgument{
-		networkType: dialer.NetworkType{
-			L4Proto:   l4proto,
-			IpVersion: ipversion,
-			IsDns:     true,
-		},
+		networkType:  networkType,
 		bestDialer:   bestDialer,
 		bestOutbound: bestOutbound,
 		bestTarget:   bestTarget,

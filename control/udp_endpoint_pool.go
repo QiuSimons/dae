@@ -36,10 +36,10 @@ type UdpEndpoint struct {
 }
 
 func (ue *UdpEndpoint) run() error {
-	buf := pool.GetFullCap(consts.EthernetMtu)
-	defer pool.Put(buf)
+	buf := pool.GetBuffer(consts.EthernetMtu)
+	defer pool.PutBuffer(buf)
 	for {
-		n, from, err := ue.conn.ReadFrom(buf[:])
+		n, from, err := ue.conn.ReadFrom(buf)
 		if err != nil {
 			if ue.ctx.Err() != nil {
 				break

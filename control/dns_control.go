@@ -346,7 +346,9 @@ func (c *DnsController) handleDNSRequest(
 
 	// No parallel for the same lookup.
 	l := c.lookupKeyLocker.Lock(cacheKey)
-	defer c.lookupKeyLocker.Unlock(cacheKey, l)
+	defer func() {
+		c.lookupKeyLocker.Unlock(cacheKey, l)
+	}()
 
 	// Dial and re-route
 	if log.IsLevelEnabled(log.DebugLevel) {
@@ -474,6 +476,7 @@ func (c *DnsController) reject(msg *dnsmessage.Msg) {
 	msg.Truncated = false
 }
 
+// TODO: 在这里实现分upstream缓存逻辑, 而不是全局缓存
 func (c *DnsController) dialSend(msg *dnsmessage.Msg, upstream *dns.Upstream, dialArgument *dialArgument) error {
 	// Dial and send.
 	// defer in a recursive call will delay Close(), thus we Close() before

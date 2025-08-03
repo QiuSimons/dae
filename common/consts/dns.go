@@ -22,8 +22,9 @@ const (
 
 	DnsRequestOutboundIndex_UserDefinedMax = DnsRequestOutboundIndex_Reject - 1
 
-	DefaultDNSTimeout    = 5 * time.Second
-	DefaultRetryInterval = 1 * time.Second
+	DefaultDNSRetryInterval = 5 * time.Second
+	DefaultDNSRetryCount    = 3
+	DefaultDNSTimeout       = DefaultDNSRetryInterval * DefaultDNSRetryCount
 )
 
 func (i DnsRequestOutboundIndex) String() string {

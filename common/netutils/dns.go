@@ -16,7 +16,6 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
-	"sync"
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -28,69 +27,8 @@ import (
 )
 
 var (
-	systemDnsMu              sync.Mutex
-	systemDns                netip.AddrPort
-	systemDnsNextUpdateAfter time.Time
-
 	ErrBadDnsAns = fmt.Errorf("bad dns answer")
-
-	FallbackDns netip.AddrPort
 )
-
-func TryUpdateSystemDns() (err error) {
-	systemDnsMu.Lock()
-	err = tryUpdateSystemDns()
-	systemDnsMu.Unlock()
-	return err
-}
-
-// TryUpdateSystemDnsElapse will update system DNS if duration has elapsed since the last TryUpdateSystemDns1s call.
-func TryUpdateSystemDnsElapse(k time.Duration) (err error) {
-	systemDnsMu.Lock()
-	defer systemDnsMu.Unlock()
-	return tryUpdateSystemDnsElapse(k)
-}
-
-func tryUpdateSystemDnsElapse(k time.Duration) (err error) {
-	if time.Now().Before(systemDnsNextUpdateAfter) {
-		return fmt.Errorf("update too quickly")
-	}
-	err = tryUpdateSystemDns()
-	if err != nil {
-		return err
-	}
-	systemDnsNextUpdateAfter = time.Now().Add(k)
-	return nil
-}
-
-func tryUpdateSystemDns() (err error) {
-	dnsConf := dnsReadConfig("/etc/resolv.conf")
-	systemDns = netip.AddrPort{}
-	for _, s := range dnsConf.servers {
-		ipPort := netip.MustParseAddrPort(s)
-		if !ipPort.Addr().IsLoopback() {
-			systemDns = ipPort
-			break
-		}
-	}
-	if !systemDns.IsValid() {
-		systemDns = FallbackDns
-	}
-	return nil
-}
-
-func SystemDns() (dns netip.AddrPort, err error) {
-	systemDnsMu.Lock()
-	defer systemDnsMu.Unlock()
-	if !systemDns.IsValid() {
-		if err = tryUpdateSystemDns(); err != nil {
-			return netip.AddrPort{}, err
-		}
-	}
-	// To avoid environment changing.
-	_ = tryUpdateSystemDnsElapse(5 * time.Second)
-	return systemDns, nil
-}
 
 func ResolveHttp(client *http.Client, url *url.URL, msg *dnsmessage.Msg) error {
 	// disable redirect https://github.com/daeuniverse/dae/pull/649#issuecomment-2379577896
@@ -143,8 +81,8 @@ func ResolveStream(stream io.ReadWriter, msg *dnsmessage.Msg, quic bool) error {
 		binary.BigEndian.PutUint16(data[0:2], 0)
 	}
 	// We should write two byte length in the front of stream DNS request.
-	buf := pool.Get(2 + len(data))
-	defer buf.Put()
+	buf := pool.GetBuffer(2 + len(data))
+	defer pool.PutBuffer(buf)
 	binary.BigEndian.PutUint16(buf, uint16(len(data)))
 	copy(buf[2:], data)
 	_, err = stream.Write(buf)
@@ -158,21 +96,14 @@ func ResolveStream(stream io.ReadWriter, msg *dnsmessage.Msg, quic bool) error {
 	}
 	n := int(binary.BigEndian.Uint16(buf))
 	// Try to reuse the buf.
-	// if len(buf) < n {
-	// 	buf.Put()
-	// 	buf = pool.Get(n)
-	// }
-	var respBuf pool.PB
 	if len(buf) < n {
-		respBuf = pool.Get(n)
-		defer respBuf.Put()
-	} else {
-		respBuf = buf
+		pool.PutBuffer(buf)
+		buf = pool.GetBuffer(n)
 	}
-	if _, err = io.ReadFull(stream, respBuf[:n]); err != nil {
+	if _, err = io.ReadFull(stream, buf[:n]); err != nil {
 		return oops.Wrapf(err, "failed to read DNS resp payload")
 	}
-	if err = msg.Unpack(respBuf[:n]); err != nil {
+	if err = msg.Unpack(buf[:n]); err != nil {
 		return err
 	}
 	return nil
@@ -184,30 +115,31 @@ func ResolveUDP(conn net.Conn, msg *dnsmessage.Msg) error {
 		return oops.Wrapf(err, "pack DNS packet")
 	}
 
-	_ = conn.SetDeadline(time.Now().Add(consts.DefaultDNSTimeout))
-	reqCtx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDNSTimeout)
+	// TODO: SetReadDeadline 无法生效的情况下, 这里就会stuck
+	// TODO: SetDeadline 可能会不被支持, 特别是 SetWriteDeadline
+	conn.SetDeadline(time.Now().Add(consts.DefaultDNSTimeout))
+	ctx, cancel := context.WithCancel(context.TODO())
 
 	errCh := make(chan error, 1)
 	go func() {
-		// Send DNS request every seconds.
-		for {
+		for i := 0; i < consts.DefaultDNSRetryCount; i++ {
 			_, err := conn.Write(data)
 			if err != nil {
 				errCh <- err
 				return
 			}
 			select {
-			case <-reqCtx.Done():
+			case <-ctx.Done():
 				errCh <- nil
 				return
-			case <-time.After(consts.DefaultRetryInterval):
+			case <-time.After(consts.DefaultDNSRetryInterval):
 			}
 		}
 	}()
 
 	// Wait for response.
-	respBuf := pool.GetFullCap(consts.EthernetMtu)
-	defer respBuf.Put()
+	respBuf := pool.GetBuffer(consts.EthernetMtu)
+	defer pool.PutBuffer(respBuf)
 	n, err := conn.Read(respBuf)
 	cancel()
 	if err != nil {
@@ -222,8 +154,8 @@ func ResolveUDP(conn net.Conn, msg *dnsmessage.Msg) error {
 	return nil
 }
 
-func ResolveNetip(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host string, typ uint16, network string) (addrs []netip.Addr, err error) {
-	resources, err := resolve(ctx, d, dns, host, typ, network)
+func ResolveNetip(d netproxy.Dialer, dns netip.AddrPort, host string, typ uint16, network string) (addrs []netip.Addr, err error) {
+	resources, err := resolve(d, dns, host, typ, network)
 	if err != nil {
 		return nil, err
 	}
@@ -257,9 +189,9 @@ func ResolveNetip(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, ho
 	return addrs, nil
 }
 
-func ResolveNS(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host string, network string) (records []string, err error) {
+func ResolveNS(d netproxy.Dialer, dns netip.AddrPort, host string, network string) (records []string, err error) {
 	typ := dnsmessage.TypeNS
-	resources, err := resolve(ctx, d, dns, host, typ, network)
+	resources, err := resolve(d, dns, host, typ, network)
 	if err != nil {
 		return nil, err
 	}
@@ -276,9 +208,9 @@ func ResolveNS(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host 
 	return records, nil
 }
 
-func ResolveSOA(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host string, network string) (records []string, err error) {
+func ResolveSOA(d netproxy.Dialer, dns netip.AddrPort, host string, network string) (records []string, err error) {
 	typ := dnsmessage.TypeSOA
-	resources, err := resolve(ctx, d, dns, host, typ, network)
+	resources, err := resolve(d, dns, host, typ, network)
 	if err != nil {
 		return nil, err
 	}
@@ -295,7 +227,7 @@ func ResolveSOA(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host
 	return records, nil
 }
 
-func resolve(ctx context.Context, dialer netproxy.Dialer, server netip.AddrPort, host string, typ uint16, network string) (ans []dnsmessage.RR, err error) {
+func resolve(dialer netproxy.Dialer, server netip.AddrPort, host string, typ uint16, network string) (ans []dnsmessage.RR, err error) {
 	fqdn := dnsmessage.CanonicalName(host)
 	switch typ {
 	case dnsmessage.TypeA, dnsmessage.TypeAAAA:
@@ -343,6 +275,8 @@ func resolve(ctx context.Context, dialer netproxy.Dialer, server netip.AddrPort,
 	}
 	msg.SetQuestion(fqdn, typ)
 
+	ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
+	defer cancel()
 	conn, err := dialer.DialContext(ctx, network, server.String())
 	if err != nil {
 		return nil, oops.Wrapf(err, "DialContext")

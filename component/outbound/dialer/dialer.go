@@ -23,14 +23,18 @@ var (
 	InvalidParameterErr = fmt.Errorf("invalid parameters")
 )
 
+type AliveDialerSetSet map[*AliveDialerSet]int
+
 type Dialer struct {
 	*GlobalOption
 	InstanceOption
 	netproxy.Dialer
 	property *Property
 
-	collectionFineMu sync.Mutex
-	collections      [6]*collection
+	collection          *collection
+	supported           [4]bool
+	mu                  sync.Mutex
+	registeredAliveSets AliveDialerSetSet
 
 	tickerMu sync.Mutex
 	ticker   *time.Ticker
@@ -59,8 +63,6 @@ type Property struct {
 	SubscriptionTag string
 }
 
-type AliveDialerSetSet map[*AliveDialerSet]int
-
 func NewGlobalOption(global *config.Global) *GlobalOption {
 	return &GlobalOption{
 		ExtraOption: D.ExtraOption{
@@ -84,23 +86,19 @@ func NewGlobalOption(global *config.Global) *GlobalOption {
 
 // NewDialer is for register in general.
 func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOption, property *Property) *Dialer {
-	var collections [6]*collection
-	for i := range collections {
-		collections[i] = newCollection()
-	}
 	ctx, cancel := context.WithCancel(context.Background())
 	d := &Dialer{
-		GlobalOption:     option,
-		InstanceOption:   iOption,
-		Dialer:           dialer,
-		property:         property,
-		collectionFineMu: sync.Mutex{},
-		collections:      collections,
-		tickerMu:         sync.Mutex{},
-		ticker:           nil,
-		checkCh:          make(chan time.Time, 1),
-		ctx:              ctx,
-		cancel:           cancel,
+		GlobalOption:        option,
+		InstanceOption:      iOption,
+		Dialer:              dialer,
+		property:            property,
+		collection:          newCollection(),
+		registeredAliveSets: make(AliveDialerSetSet),
+		tickerMu:            sync.Mutex{},
+		ticker:              nil,
+		checkCh:             make(chan time.Time, 1),
+		ctx:                 ctx,
+		cancel:              cancel,
 	}
 	log.WithField("dialer", d.Property().Name).
 		WithField("p", unsafe.Pointer(d)).

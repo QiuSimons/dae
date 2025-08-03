@@ -15,7 +15,6 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/sniffing"
-	"github.com/daeuniverse/outbound/pool"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
@@ -116,10 +115,10 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 				defer func() {
 					if err == nil {
 						for _, d := range toRehandle {
-							dCopy := pool.Get(len(d))
-							copy(dCopy, d)
-							go c.handlePkt(lConn, dCopy, src, dst, routingResult, true)
-							// TODO: error?
+							err := c.handlePkt(lConn, d, src, dst, routingResult, true)
+							if err != nil {
+								log.Warnf("%+v", oops.Wrapf(err, "rehandlePkt"))
+							}
 						}
 					}
 				}()
@@ -137,7 +136,6 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 	networkType := &dialer.NetworkType{
 		L4Proto:   consts.L4ProtoStr_UDP,
 		IpVersion: consts.IpVersionStrFromAddr(dst.Addr()),
-		IsDns:     false,
 	}
 
 	l := DefaultUdpEndpointPool.UdpEndpointKeyLocker.Lock(key)
@@ -148,7 +146,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 	// If the udp endpoint has been not alive, remove it from pool and retry
 	// UDP 不是面向连接的, 在 tcp 中, 一个连接失败, 我们会重置中继它, 等待一个新的连接
 	// 在 UDP 中, l -> r继续中继到新的节点, 并在新的节点上进行 r -> l 中继
-	if ok && !ue.dialer.MustGetAlive(networkType) {
+	if ok && !ue.dialer.GetAlive() {
 		if log.IsLevelEnabled(log.DebugLevel) {
 			log.WithFields(log.Fields{
 				"src":     RefineSourceToShow(src, dst.Addr()),
@@ -228,7 +226,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 					Wrap(err)
 				if !ok {
 					log.Warnf("%+v", err)
-				} else if !netErr.Timeout() && ue.dialer.MustGetAlive(networkType) {
+				} else if !netErr.Timeout() {
 					ue.dialer.ReportUnavailable(networkType, err)
 					if !dialOption.OutboundIndex.IsReserved() {
 						log.Warnf("%+v", err)

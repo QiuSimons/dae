@@ -16,7 +16,7 @@ import (
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
-	"github.com/daeuniverse/outbound/protocol/direct"
+	"github.com/samber/oops"
 )
 
 var (
@@ -103,20 +103,12 @@ func NewUpstream(ctx context.Context, upstream *url.URL, resolverNetwork string)
 		return nil, fmt.Errorf("%w: %v", ErrFormat, err)
 	}
 
-	systemDns, err := netutils.SystemDns()
+	ip46, err := netutils.ResolveIp46(hostname)
 	if err != nil {
-		return nil, err
+		return nil, oops.Wrapf(err, "failed to resolve dns_upstream %v", upstream.String())
 	}
-	defer func() {
-		if err != nil {
-			_ = netutils.TryUpdateSystemDnsElapse(time.Second)
-		}
-	}()
-
-	// TODO: 应该用 netproxy 里面的非代理 resolver?
-	ip46, _, _ := netutils.ResolveIp46(ctx, direct.Direct, systemDns, hostname, "udp", false)
-	if !ip46.Ip4.IsValid() && !ip46.Ip6.IsValid() {
-		return nil, fmt.Errorf("dns_upstream %v has no record", upstream.String())
+	if !ip46.IsValid() {
+		return nil, oops.Errorf("dns_upstream %v has no record", upstream.String())
 	}
 
 	return &Upstream{

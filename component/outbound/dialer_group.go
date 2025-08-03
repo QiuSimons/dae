@@ -8,7 +8,6 @@ package outbound
 import (
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
@@ -25,7 +24,7 @@ type DialerGroup struct {
 	Name string
 
 	Dialers         []*dialer.Dialer
-	aliveDialerSets [6]*dialer.AliveDialerSet
+	aliveDialerSet  *dialer.AliveDialerSet
 	selectionPolicy *dialer.DialerSelectionPolicy
 }
 
@@ -38,79 +37,27 @@ func NewDialerGroup(
 	needAliveState bool,
 	aliveChangeCallback func(alive bool, networkType *dialer.NetworkType),
 ) *DialerGroup {
-	var aliveDnsTcp4DialerSet *dialer.AliveDialerSet
-	var aliveDnsTcp6DialerSet *dialer.AliveDialerSet
-	var aliveTcp4DialerSet *dialer.AliveDialerSet
-	var aliveTcp6DialerSet *dialer.AliveDialerSet
-	var aliveDnsUdp4DialerSet *dialer.AliveDialerSet
-	var aliveDnsUdp6DialerSet *dialer.AliveDialerSet
+	var aliveDialerSet *dialer.AliveDialerSet
 
 	if needAliveState {
-		if option.CheckDnsTcp {
-			aliveDnsTcp4DialerSet = dialer.NewAliveDialerSet(name, &dialer.NetworkType{
-				L4Proto:   consts.L4ProtoStr_TCP,
-				IpVersion: consts.IpVersionStr_4,
-				IsDns:     true,
-			}, option.CheckTolerance, selectionPolicy, dialers, dialersAnnotations, func(alive bool, networkType *dialer.NetworkType) {})
+		aliveDialerSet = dialer.NewAliveDialerSet(name, option.CheckTolerance, selectionPolicy, dialers, dialersAnnotations, aliveChangeCallback)
 
-			aliveDnsTcp6DialerSet = dialer.NewAliveDialerSet(name, &dialer.NetworkType{
-				L4Proto:   consts.L4ProtoStr_TCP,
-				IpVersion: consts.IpVersionStr_6,
-				IsDns:     true,
-			}, option.CheckTolerance, selectionPolicy, dialers, dialersAnnotations, func(alive bool, networkType *dialer.NetworkType) {})
+		for _, d := range dialers {
+			d.RegisterAliveDialerSet(aliveDialerSet)
 		}
-
-		aliveTcp4DialerSet = dialer.NewAliveDialerSet(name, &dialer.NetworkType{
-			L4Proto:   consts.L4ProtoStr_TCP,
-			IpVersion: consts.IpVersionStr_4,
-			IsDns:     false,
-		}, option.CheckTolerance, selectionPolicy, dialers, dialersAnnotations, aliveChangeCallback)
-		aliveTcp6DialerSet = dialer.NewAliveDialerSet(name, &dialer.NetworkType{
-			L4Proto:   consts.L4ProtoStr_TCP,
-			IpVersion: consts.IpVersionStr_6,
-			IsDns:     false,
-		}, option.CheckTolerance, selectionPolicy, dialers, dialersAnnotations, aliveChangeCallback)
-		aliveDnsUdp4DialerSet = dialer.NewAliveDialerSet(name, &dialer.NetworkType{
-			L4Proto:   consts.L4ProtoStr_UDP,
-			IpVersion: consts.IpVersionStr_4,
-			IsDns:     true,
-		}, option.CheckTolerance, selectionPolicy, dialers, dialersAnnotations, aliveChangeCallback)
-		aliveDnsUdp6DialerSet = dialer.NewAliveDialerSet(name, &dialer.NetworkType{
-			L4Proto:   consts.L4ProtoStr_UDP,
-			IpVersion: consts.IpVersionStr_6,
-			IsDns:     true,
-		}, option.CheckTolerance, selectionPolicy, dialers, dialersAnnotations, aliveChangeCallback)
-	}
-
-	for _, d := range dialers {
-		d.RegisterAliveDialerSet(aliveTcp4DialerSet)
-		d.RegisterAliveDialerSet(aliveTcp6DialerSet)
-		d.RegisterAliveDialerSet(aliveDnsTcp4DialerSet)
-		d.RegisterAliveDialerSet(aliveDnsTcp6DialerSet)
-		d.RegisterAliveDialerSet(aliveDnsUdp4DialerSet)
-		d.RegisterAliveDialerSet(aliveDnsUdp6DialerSet)
 	}
 
 	return &DialerGroup{
-		Name:    name,
-		Dialers: dialers,
-		aliveDialerSets: [6]*dialer.AliveDialerSet{
-			aliveDnsTcp4DialerSet,
-			aliveDnsTcp6DialerSet,
-			aliveDnsUdp4DialerSet,
-			aliveDnsUdp6DialerSet,
-			aliveTcp4DialerSet,
-			aliveTcp6DialerSet,
-		},
+		Name:            name,
+		Dialers:         dialers,
+		aliveDialerSet:  aliveDialerSet,
 		selectionPolicy: &selectionPolicy,
 	}
 }
 
 func (g *DialerGroup) Close() error {
 	for _, d := range g.Dialers {
-		for _, a := range g.aliveDialerSets {
-			d.UnregisterAliveDialerSet(a)
-		}
+		d.UnregisterAliveDialerSet(g.aliveDialerSet)
 	}
 	return nil
 }
@@ -124,85 +71,43 @@ func (g *DialerGroup) GetSelectionPolicy() (policy consts.DialerSelectionPolicy)
 	return g.selectionPolicy.Policy
 }
 
-func (d *DialerGroup) MustGetAliveDialerSet(typ *dialer.NetworkType) *dialer.AliveDialerSet {
-	if typ.IsDns {
-		switch typ.L4Proto {
-		case consts.L4ProtoStr_TCP:
-			switch typ.IpVersion {
-			case consts.IpVersionStr_4:
-				return d.aliveDialerSets[0]
-			case consts.IpVersionStr_6:
-				return d.aliveDialerSets[1]
-			}
-		case consts.L4ProtoStr_UDP:
-			switch typ.IpVersion {
-			case consts.IpVersionStr_4:
-				return d.aliveDialerSets[2]
-			case consts.IpVersionStr_6:
-				return d.aliveDialerSets[3]
-			}
-		}
-	} else {
-		switch typ.L4Proto {
-		case consts.L4ProtoStr_TCP:
-			switch typ.IpVersion {
-			case consts.IpVersionStr_4:
-				return d.aliveDialerSets[4]
-			case consts.IpVersionStr_6:
-				return d.aliveDialerSets[5]
-			}
-		case consts.L4ProtoStr_UDP:
-			// UDP share the DNS check result.
-			switch typ.IpVersion {
-			case consts.IpVersionStr_4:
-				return d.aliveDialerSets[2]
-			case consts.IpVersionStr_6:
-				return d.aliveDialerSets[3]
-			}
-		}
-	}
-	panic("invalid param")
-}
-
 // SelectFallbackIpVersion selects a dialer from group according to selectionPolicy. If 'strictIpVersion' is false and no alive dialer, it will fallback to another ipversion.
-func (g *DialerGroup) SelectFallbackIpVersion(networkType *dialer.NetworkType, strictIpVersion bool) (dialer *dialer.Dialer, latency time.Duration, fallback bool, err error) {
-	dialer, latency, err = g.Select(networkType)
+func (g *DialerGroup) SelectFallbackIpVersion(networkType *dialer.NetworkType, strictIpVersion bool) (dialer *dialer.Dialer, fallback bool, err error) {
+	dialer, err = g.Select(networkType)
 	if !strictIpVersion && errors.Is(err, ErrNoAliveDialer) {
 		networkType.IpVersion = (consts.IpVersion_X - networkType.IpVersion.ToIpVersionType()).ToIpVersionStr()
-		dialer, latency, err = g.Select(networkType)
+		dialer, err = g.Select(networkType)
 		fallback = true
 	}
 	return
 }
 
-func (g *DialerGroup) Select(networkType *dialer.NetworkType) (dialer *dialer.Dialer, latency time.Duration, err error) {
+func (g *DialerGroup) Select(networkType *dialer.NetworkType) (dialer *dialer.Dialer, err error) {
 	if len(g.Dialers) == 0 {
 		// panic(fmt.Sprintf("no dialer in this group: %s", g.Name))
-		return nil, time.Hour, ErrNoDialer
+		return nil, ErrNoDialer
 	}
-	aliveDialerSet := g.MustGetAliveDialerSet(networkType)
 	switch g.selectionPolicy.Policy {
 	case consts.DialerSelectionPolicy_Fixed:
 		dialer = g.Dialers[g.selectionPolicy.FixedIndex]
-		latency = 0
-	case consts.DialerSelectionPolicy_Random:
-		dialer = aliveDialerSet.GetRand()
-		latency = 0
+	// case consts.DialerSelectionPolicy_Random:
+	// 	dialer = aliveDialerSet.GetRand()
+	// 	latency = 0
 	case consts.DialerSelectionPolicy_MinLastLatency,
 		consts.DialerSelectionPolicy_MinAverage10Latencies,
 		consts.DialerSelectionPolicy_MinMovingAverageLatencies:
-		dialer, latency = aliveDialerSet.GetMinLatency()
+		dialer = g.aliveDialerSet.GetDialer(networkType)
 	default:
 		panic(fmt.Sprintf("unsupported DialerSelectionPolicy: %v", g.selectionPolicy))
 	}
 
 	if dialer == nil {
 		// No alive dialer.
-		return nil, time.Hour, ErrNoAliveDialer
+		return nil, ErrNoAliveDialer
 	}
-	if aliveDialerSet != nil && !dialer.MustGetAlive(networkType) {
-		return nil, time.Hour, ErrFixedDialerNotAlive
+	if g.aliveDialerSet != nil && !dialer.GetAlive() {
+		return nil, ErrFixedDialerNotAlive
 	}
 
-	return dialer, latency, nil
+	return dialer, nil
 }

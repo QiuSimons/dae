@@ -95,10 +95,10 @@ func (c *ControlPlane) RouteDialOption(p *RouteParam) (dialOption *DialOption, e
 		dialIp = false
 	}
 	// TODO: Fallback 时 IP 仍会显示之前的地址, 应该单独处理日志
-	dialer, _, fallbackIpVersion, err := outbound.SelectFallbackIpVersion(p.networkType, dialIp)
+	dialer, fallback, err := outbound.SelectFallbackIpVersion(p.networkType, !dialIp)
 	fallbackDialer := false
 	if err != nil {
-		dialer, _, err = c.outbounds[c.noConnectivityOutbound].Select(p.networkType)
+		dialer, err = c.outbounds[c.noConnectivityOutbound].Select(p.networkType)
 		if err != nil {
 			panic(fmt.Sprintf("fail to get fallback dialer %v(%v): %v", c.outbounds[c.noConnectivityOutbound], c.noConnectivityOutbound, err))
 		}
@@ -109,7 +109,7 @@ func (c *ControlPlane) RouteDialOption(p *RouteParam) (dialOption *DialOption, e
 		Dialer:            dialer,
 		Outbound:          outbound,
 		OutboundIndex:     outboundIndex,
-		FallbackIpVersion: fallbackIpVersion,
+		FallbackIpVersion: fallback,
 		FallbackDialer:    fallbackDialer,
 		// Mark:          mark,
 	}, nil
@@ -136,7 +136,7 @@ func LogDial(src, dst netip.AddrPort, domain string, dialOption *DialOption, net
 			}).Infof("[%v] %v <-(fallback)-> %v", networkTypeStr, RefineSourceToShow(src, dst.Addr()), dialOption.DialTarget)
 		} else {
 			log.WithFields(log.Fields{
-				"network":  networkType.StringWithoutDns(),
+				"network":  networkType.String(),
 				"outbound": dialOption.Outbound.Name,
 				"policy":   dialOption.Outbound.GetSelectionPolicy(),
 				"dialer":   dialOption.Dialer.Property().Name,
