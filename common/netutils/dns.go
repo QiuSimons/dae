@@ -74,36 +74,35 @@ func ResolveStream(stream io.ReadWriter, msg *dnsmessage.Msg, quic bool) error {
 	if err != nil {
 		return oops.Wrapf(err, "pack DNS packet")
 	}
+	buf := pool.GetBytesBuffer()
+	defer pool.PutBytesBuffer(buf)
 	if quic {
 		// According https://datatracker.ietf.org/doc/html/rfc9250#section-4.2.1
 		// msg id should set to 0 when transport over QUIC.
 		// thanks https://github.com/natesales/q/blob/1cb2639caf69bd0a9b46494a3c689130df8fb24a/transport/quic.go#L97
-		binary.BigEndian.PutUint16(data[0:2], 0)
+		binary.Write(buf, binary.BigEndian, uint16(0))
+	} else {
+		// We should write two byte length in the front of stream DNS request.
+		binary.Write(buf, binary.BigEndian, uint16(len(data)))
 	}
-	// We should write two byte length in the front of stream DNS request.
-	buf := pool.GetBuffer(2 + len(data))
-	defer pool.PutBuffer(buf)
-	binary.BigEndian.PutUint16(buf, uint16(len(data)))
-	copy(buf[2:], data)
-	_, err = stream.Write(buf)
+	buf.Write(data)
+	_, err = stream.Write(buf.Bytes())
 	if err != nil {
 		return oops.Wrapf(err, "failed to write DNS req")
 	}
 
+	lenBuf := pool.GetBuffer(2)
+	defer pool.PutBuffer(lenBuf)
 	// Read two byte length.
-	if _, err = io.ReadFull(stream, buf[:2]); err != nil {
+	if _, err = io.ReadFull(stream, lenBuf); err != nil {
 		return oops.Wrapf(err, "failed to read DNS resp payload length")
 	}
-	n := int(binary.BigEndian.Uint16(buf))
-	// Try to reuse the buf.
-	if len(buf) < n {
-		pool.PutBuffer(buf)
-		buf = pool.GetBuffer(n)
-	}
-	if _, err = io.ReadFull(stream, buf[:n]); err != nil {
+	respBuf := pool.GetBuffer(int(binary.BigEndian.Uint16(lenBuf)))
+	defer pool.PutBuffer(respBuf)
+	if _, err = io.ReadFull(stream, respBuf); err != nil {
 		return oops.Wrapf(err, "failed to read DNS resp payload")
 	}
-	if err = msg.Unpack(buf[:n]); err != nil {
+	if err = msg.Unpack(respBuf); err != nil {
 		return err
 	}
 	return nil

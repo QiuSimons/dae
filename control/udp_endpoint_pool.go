@@ -91,6 +91,8 @@ func (p *UdpEndpointPool) Remove(key UdpEndpointKey) (err error) {
 	if ue, ok := p.pool.LoadAndDelete(key); ok {
 		ActiveConnections.Dec()
 		ActiveConnectionsUDP.Dec()
+		ue.(*UdpEndpoint).dialer.ActiveConnections.Dec()
+		ue.(*UdpEndpoint).dialer.ActiveConnectionsUDP.Dec()
 		ue.(*UdpEndpoint).Close()
 	}
 	return nil
@@ -110,9 +112,12 @@ func (p *UdpEndpointPool) Get(key UdpEndpointKey) (udpEndpoint *UdpEndpoint, ok 
 }
 
 func (p *UdpEndpointPool) Create(key UdpEndpointKey, createOption *UdpEndpointOptions) (udpEndpoint *UdpEndpoint) {
+	TotalConnections.Inc()
 	ActiveConnections.Inc()
 	ActiveConnectionsUDP.Inc()
-	TotalConnections.Inc()
+	createOption.Dialer.TotalConnections.Inc()
+	createOption.Dialer.ActiveConnections.Inc()
+	createOption.Dialer.ActiveConnectionsUDP.Inc()
 	ctx, cancel := context.WithCancel(context.Background())
 	udpEndpoint = &UdpEndpoint{
 		conn:       createOption.PacketConn,

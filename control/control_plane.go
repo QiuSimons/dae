@@ -36,7 +36,7 @@ import (
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	"github.com/daeuniverse/outbound/pool"
 
-	// "github.com/daeuniverse/outbound/transport/grpc"
+	"github.com/daeuniverse/outbound/transport/grpc"
 	"github.com/daeuniverse/outbound/transport/meek"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/samber/oops"
@@ -257,7 +257,7 @@ func NewControlPlane(
 
 	// Filter out groups.
 	// FIXME: Ugly code here: reset grpc and meek clients manually.
-	// grpc.CleanGlobalClientConnectionCache()
+	grpc.CleanGlobalClientConnectionCache()
 	meek.CleanGlobalRoundTripperCache()
 	dialerSet := outbound.NewDialerSetFromLinks(option, tagToNodeList)
 	deferFuncs = append(deferFuncs, dialerSet.Close)
@@ -385,7 +385,6 @@ func NewControlPlane(
 	/// DNS upstream.
 	dnsUpstream, err := dns.New(dnsConfig, &dns.NewOption{
 		LocationFinder:          locationFinder,
-		UpstreamReadyCallback:   plane.dnsUpstreamReadyCallback,
 		UpstreamResolverNetwork: "udp",
 	})
 	if err != nil {
@@ -403,27 +402,19 @@ func NewControlPlane(
 		return nil, err
 	}
 	if plane.dnsController, err = NewDnsController(dnsUpstream, &DnsControllerOption{
-		NewLookupCache: func(fqdn string, answers []dnsmessage.RR, deadline time.Time) (cache *LookupCache, err error) {
-			cache = &LookupCache{
-				// Bitmap of builder.simulatedDomainSet
-				DomainBitmap: plane.routingMatcher.domainMatcher.MatchDomainBitmap(fqdn),
-				DnsCache: DnsCache{
-					Answer:   answers,
-					Deadline: deadline,
-				},
-			}
+		NewLookupCache: func(cache *DnsCache) error {
+			domainBitmap := plane.routingMatcher.domainMatcher.MatchDomainBitmap(cache.Fqdn)
 			// Write mappings into eBPF map:
 			// IP record (from dns lookup) -> domain routing
-			if err = core.BatchNewDomain(cache, builder); err != nil {
-				return cache, oops.Errorf("BatchNewDomain: %w", err)
+			if err = core.BatchNewDomain(cache, domainBitmap); err != nil {
+				return oops.Wrapf(err, "BatchNewDomain")
 			}
-			return cache, nil
+			return nil
 		},
-		LookupCacheTimeout: func(cache *LookupCache) (err error) {
-			// Write mappings into eBPF map:
-			// IP record (from dns lookup) -> domain routing
-			if err = core.BatchRemoveDomain(cache); err != nil {
-				return oops.Errorf("BatchRemoveDomain: %w", err)
+		LookupCacheTimeout: func(cache *DnsCache) error {
+			domainBitmap := plane.routingMatcher.domainMatcher.MatchDomainBitmap(cache.Fqdn)
+			if err = core.BatchRemoveDomain(cache, domainBitmap); err != nil {
+				return oops.Wrapf(err, "BatchRemoveDomain")
 			}
 			return nil
 		},
@@ -433,6 +424,7 @@ func NewControlPlane(
 	}); err != nil {
 		return nil, err
 	}
+	deferFuncs = append(deferFuncs, plane.dnsController.Close)
 	// TODO: 保留 LookupCache?
 	// TODO: 在 DNS Config 不变的情况下，保留 DNSCache
 	// Lookup Cache 存储任何 lookup 所产生的记录, 这些记录是否需要GC?
@@ -552,66 +544,13 @@ func (c *ControlPlane) InjectBpf(bpf *bpfObjects) {
 	c.core.InjectBpf(bpf)
 }
 
-func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err error) {
-	// Waiting for ready.
-	select {
-	case <-c.ctx.Done():
-		return nil
-	case <-c.ready:
-	}
-
-	if dnsUpstream == nil {
-		return nil
-	}
-
-	/// Updates dns cache to support domain routing for hostname of dns_upstream.
-	// Ten years later.
-	deadline := time.Now().Add(time.Hour * 24 * 365 * 10)
-	fqdn := dnsmessage.CanonicalName(dnsUpstream.Hostname)
-
-	if dnsUpstream.Ip4.IsValid() {
-		typ := dnsmessage.TypeA
-		answers := []dnsmessage.RR{&dnsmessage.A{
-			Hdr: dnsmessage.RR_Header{
-				Name:   fqdn,
-				Rrtype: typ,
-				Class:  dnsmessage.ClassINET,
-				Ttl:    0, // Must be zero.
-			},
-			A: dnsUpstream.Ip4.AsSlice(),
-		}}
-		cacheKey := c.dnsController.cacheKey(fqdn, typ)
-		if err = c.dnsController.UpdateDnsCacheDeadline(dnsUpstream.Hostname, cacheKey, answers, deadline); err != nil {
-			return err
-		}
-	}
-
-	if dnsUpstream.Ip6.IsValid() {
-		typ := dnsmessage.TypeAAAA
-		answers := []dnsmessage.RR{&dnsmessage.AAAA{
-			Hdr: dnsmessage.RR_Header{
-				Name:   fqdn,
-				Rrtype: typ,
-				Class:  dnsmessage.ClassINET,
-				Ttl:    0, // Must be zero.
-			},
-			AAAA: dnsUpstream.Ip6.AsSlice(),
-		}}
-		cacheKey := c.dnsController.cacheKey(fqdn, typ)
-		if err = c.dnsController.UpdateDnsCacheDeadline(dnsUpstream.Hostname, cacheKey, answers, deadline); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip.AddrPort, domain string) (dialTarget string, shouldReroute bool, dialIp bool) {
 	dialMode := consts.DialMode_Ip
 
 	if !outbound.IsReserved() && domain != "" {
 		switch c.dialMode {
 		case consts.DialMode_Domain:
-			if c.dnsController.lookupCache.Get(c.dnsController.cacheKey(domain, common.AddrToDnsType(dst.Addr()))) != nil {
+			if c.dnsController.lookupCache.Get(queryInfo{qname: domain, qtype: common.AddrToDnsType(dst.Addr())}) != nil {
 				// Has Cached A/AAAA records. It is a real domain.
 				// For this case, It should be able to handle domain match set directly in kernel
 				dialMode = consts.DialMode_Domain

@@ -21,9 +21,9 @@ import (
 	dnsmessage "github.com/miekg/dns"
 )
 
-// TODO: 现在的 ctx 是 dialCtx, 而不是完成 forward 流程的 ctx
+// TODO: Connection reuse
 type DnsForwarder interface {
-	ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error
+	ForwardDNS(msg *dnsmessage.Msg) error
 }
 
 func newDnsForwarder(upstream *dns.Upstream, dialArgument dialArgument) (DnsForwarder, error) {
@@ -67,7 +67,7 @@ type DoH struct {
 	http3        bool
 }
 
-func (d *DoH) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
+func (d *DoH) ForwardDNS(msg *dnsmessage.Msg) error {
 	var roundTripper http.RoundTripper
 	if d.http3 {
 		roundTripper = d.getHttp3RoundTripper()
@@ -128,20 +128,40 @@ func (d *DoH) getHttp3RoundTripper() *http3.RoundTripper {
 type DoQ struct {
 	dns.Upstream
 	dialArgument dialArgument
+	conn         quic.Connection
 }
 
-func (d *DoQ) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
-	qc, err := d.createConnection(ctx)
-	if err != nil {
-		return err
+func (d *DoQ) ForwardDNS(msg *dnsmessage.Msg) (err error) {
+	if d.conn == nil || d.conn.Context().Err() != nil {
+		ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
+		defer cancel()
+		d.conn, err = d.createConnection(ctx)
+		if err != nil {
+			return
+		}
 	}
-	stream, err := qc.OpenStreamSync(ctx)
+
+	defer func() {
+		if err != nil {
+			d.Close()
+		}
+	}()
+
+	stream, err := d.conn.OpenStream()
 	if err != nil {
-		return err
+		return
 	}
 
 	defer stream.Close()
-	return netutils.ResolveStream(stream, msg, true)
+	err = netutils.ResolveStream(stream, msg, true)
+	return
+}
+
+func (c *DoQ) Close() error {
+	if c.conn != nil {
+		c.conn.CloseWithError(0x101, "")
+	}
+	return nil
 }
 
 func (d *DoQ) createConnection(ctx context.Context) (quic.EarlyConnection, error) {
@@ -156,11 +176,7 @@ func (d *DoQ) createConnection(ctx context.Context) (quic.EarlyConnection, error
 		ServerName:         d.Upstream.Hostname,
 	}
 	addr := net.UDPAddrFromAddrPort(d.dialArgument.Target)
-	qc, err := quic.DialEarly(ctx, conn, addr, tlsCfg, nil)
-	if err != nil {
-		return nil, err
-	}
-	return qc, nil
+	return quic.DialEarly(ctx, conn, addr, tlsCfg, nil)
 }
 
 type DoTLS struct {
@@ -168,7 +184,9 @@ type DoTLS struct {
 	dialArgument dialArgument
 }
 
-func (d *DoTLS) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
+func (d *DoTLS) ForwardDNS(msg *dnsmessage.Msg) error {
+	ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
+	defer cancel()
 	conn, err := d.dialArgument.Dialer.DialContext(ctx, "tcp", d.dialArgument.Target.String())
 	if err != nil {
 		return err
@@ -191,7 +209,9 @@ type DoTCP struct {
 }
 
 // TODO: Connection reuse
-func (d *DoTCP) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
+func (d *DoTCP) ForwardDNS(msg *dnsmessage.Msg) error {
+	ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
+	defer cancel()
 	conn, err := d.dialArgument.Dialer.DialContext(ctx, "tcp", d.dialArgument.Target.String())
 	if err != nil {
 		return err
@@ -206,8 +226,9 @@ type DoUDP struct {
 	dialArgument dialArgument
 }
 
-// TODO: 在不导致放大的情况下尝试实现重传
-func (d *DoUDP) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
+func (d *DoUDP) ForwardDNS(msg *dnsmessage.Msg) error {
+	ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
+	defer cancel()
 	conn, err := d.dialArgument.Dialer.DialContext(ctx, "udp", d.dialArgument.Target.String())
 	if err != nil {
 		return err

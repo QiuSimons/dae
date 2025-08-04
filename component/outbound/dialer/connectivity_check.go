@@ -329,20 +329,7 @@ func (d *Dialer) createDnsCheckFunc(ipVersion consts.IpVersionStr, network strin
 
 func (d *Dialer) createCheckOptions() []*CheckOption {
 	return []*CheckOption{
-		{
-			networkType: &NetworkType{
-				L4Proto:   consts.L4ProtoStr_UDP,
-				IpVersion: consts.IpVersionStr_6,
-			},
-			CheckFunc: d.createDnsCheckFunc(consts.IpVersionStr_6, "udp"),
-		},
-		{
-			networkType: &NetworkType{
-				L4Proto:   consts.L4ProtoStr_UDP,
-				IpVersion: consts.IpVersionStr_4,
-			},
-			CheckFunc: d.createDnsCheckFunc(consts.IpVersionStr_4, "udp"),
-		},
+		// 优先 TCP, 因为 TCP 可以避免长时间占用 NAT 端口
 		{
 			networkType: &NetworkType{
 				L4Proto:   consts.L4ProtoStr_TCP,
@@ -356,6 +343,20 @@ func (d *Dialer) createCheckOptions() []*CheckOption {
 				IpVersion: consts.IpVersionStr_4,
 			},
 			CheckFunc: d.createDnsCheckFunc(consts.IpVersionStr_4, "tcp"),
+		},
+		{
+			networkType: &NetworkType{
+				L4Proto:   consts.L4ProtoStr_UDP,
+				IpVersion: consts.IpVersionStr_6,
+			},
+			CheckFunc: d.createDnsCheckFunc(consts.IpVersionStr_6, "udp"),
+		},
+		{
+			networkType: &NetworkType{
+				L4Proto:   consts.L4ProtoStr_UDP,
+				IpVersion: consts.IpVersionStr_4,
+			},
+			CheckFunc: d.createDnsCheckFunc(consts.IpVersionStr_4, "udp"),
 		},
 	}
 }

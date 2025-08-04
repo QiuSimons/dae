@@ -15,6 +15,7 @@ import (
 	"github.com/daeuniverse/dae/config"
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/prometheus/client_golang/prometheus"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -43,6 +44,53 @@ type Dialer struct {
 	cancel   context.CancelFunc
 
 	checkActivated bool
+
+	DialerPrometheus
+}
+
+type DialerPrometheus struct {
+	TotalConnections                                              prometheus.Counter
+	ActiveConnections, ActiveConnectionsTCP, ActiveConnectionsUDP prometheus.Gauge
+	DialLatency                                                   prometheus.Histogram
+}
+
+func (d *DialerPrometheus) initPrometheus(name string) {
+	d.ActiveConnections = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: fmt.Sprintf("dae_active_connections_%s", name),
+			Help: fmt.Sprintf("Number of active connections in %s", name),
+		},
+	)
+	d.ActiveConnectionsTCP = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: fmt.Sprintf("dae_active_connections_%s_tcp", name),
+			Help: fmt.Sprintf("Number of active TCP connections in %s", name),
+		},
+	)
+	d.ActiveConnectionsUDP = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: fmt.Sprintf("dae_active_connections_%s_udp", name),
+			Help: fmt.Sprintf("Number of active UDP connections in %s", name),
+		},
+	)
+	d.TotalConnections = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: fmt.Sprintf("dae_total_connections_%s", name),
+			Help: fmt.Sprintf("Total number of connections handled in %s", name),
+		},
+	)
+	d.DialLatency = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    fmt.Sprintf("dae_dial_latency_seconds_%s", name),
+			Help:    fmt.Sprintf("Dial latency in seconds in %s", name),
+			Buckets: prometheus.ExponentialBuckets(0.001, 2, 15), // 1ms ~ ~16s
+		},
+	)
+	prometheus.MustRegister(d.TotalConnections)
+	prometheus.MustRegister(d.ActiveConnections)
+	prometheus.MustRegister(d.ActiveConnectionsTCP)
+	prometheus.MustRegister(d.ActiveConnectionsUDP)
+	prometheus.MustRegister(d.DialLatency)
 }
 
 type GlobalOption struct {
@@ -100,6 +148,7 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOpt
 		ctx:                 ctx,
 		cancel:              cancel,
 	}
+	d.initPrometheus(d.Property().Name)
 	log.WithField("dialer", d.Property().Name).
 		WithField("p", unsafe.Pointer(d)).
 		Traceln("NewDialer")

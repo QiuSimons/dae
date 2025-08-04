@@ -663,7 +663,7 @@ func getBit(bitmap []uint32, index int) uint32 {
 }
 
 // BatchNewDomain update bpf map domain_bump and domain_routing. This function should be invoked every new cache.
-func (c *controlPlaneCore) BatchNewDomain(cache *LookupCache, b *RoutingMatcherBuilder) error {
+func (c *controlPlaneCore) BatchNewDomain(cache *DnsCache, domainBitmap []uint32) error {
 	ips := getIPs(cache.Answer)
 	if len(ips) == 0 {
 		return nil
@@ -680,7 +680,7 @@ func (c *controlPlaneCore) BatchNewDomain(cache *LookupCache, b *RoutingMatcherB
 
 	r := bpfDomainRouting{}
 
-	if consts.MaxMatchSetLen/32 != len(r.Bitmap) || len(cache.DomainBitmap) != len(r.Bitmap) {
+	if consts.MaxMatchSetLen/32 != len(r.Bitmap) || len(domainBitmap) != len(r.Bitmap) {
 		return oops.Errorf("domain bitmap length not sync with kern program")
 	}
 
@@ -693,7 +693,7 @@ func (c *controlPlaneCore) BatchNewDomain(cache *LookupCache, b *RoutingMatcherB
 			newBumpMap = make([]uint32, consts.MaxMatchSetLen)
 		}
 		for index := 0; index < consts.MaxMatchSetLen; index++ {
-			newBumpMap[index] += getBit(cache.DomainBitmap, index)
+			newBumpMap[index] += getBit(domainBitmap, index)
 		}
 		c.domainBumpMap[ip] = newBumpMap
 
@@ -707,14 +707,14 @@ func (c *controlPlaneCore) BatchNewDomain(cache *LookupCache, b *RoutingMatcherB
 
 		if !exists {
 			// New IP, init routingMap
-			c.domainRoutingMap[ip] = slices.Clone(cache.DomainBitmap)
+			c.domainRoutingMap[ip] = slices.Clone(domainBitmap)
 		} else {
 			// Old IP, Update routingMap
 			for index := 0; index < consts.MaxMatchSetLen; index++ {
 				// If this domain matches the current rule, all previous domains also match the current rule, then it still matches, so no need to update
 				// If previous domains not match the current rule, then it still not match, so no need to update
 				// If previous domains match the current rule, but current domain not match, then it does not match, so need to update
-				if getBit(c.domainRoutingMap[ip], index) == 1 && getBit(cache.DomainBitmap, index) != 1 {
+				if getBit(c.domainRoutingMap[ip], index) == 1 && getBit(domainBitmap, index) != 1 {
 					c.domainRoutingMap[ip][index/32] &^= 1 << (index % 32)
 				}
 			}
@@ -736,7 +736,7 @@ func (c *controlPlaneCore) BatchNewDomain(cache *LookupCache, b *RoutingMatcherB
 }
 
 // BatchRemoveDomainBump update or remove bpf map domain_bump and domain_routing.
-func (c *controlPlaneCore) BatchRemoveDomain(cache *LookupCache) error {
+func (c *controlPlaneCore) BatchRemoveDomain(cache *DnsCache, domainBitmap []uint32) error {
 	ips := getIPs(cache.Answer)
 	if len(ips) == 0 {
 		return nil
@@ -756,7 +756,7 @@ func (c *controlPlaneCore) BatchRemoveDomain(cache *LookupCache) error {
 		ip6 := ip.As16()
 		newBumpMapVal := c.domainBumpMap[ip]
 		for index := 0; index < consts.MaxMatchSetLen; index++ {
-			newBumpMapVal[index] -= cache.DomainBitmap[index/32] >> (index % 32) & 1
+			newBumpMapVal[index] -= domainBitmap[index/32] >> (index % 32) & 1
 		}
 
 		bumpMap := bpfDomainRouting{}

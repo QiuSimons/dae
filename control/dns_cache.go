@@ -15,12 +15,8 @@ import (
 	"github.com/mohae/deepcopy"
 )
 
-type LookupCache struct {
-	DomainBitmap []uint32
-	DnsCache
-}
-
 type DnsCache struct {
+	Fqdn     string
 	Answer   []dnsmessage.RR
 	Deadline time.Time
 }
@@ -65,58 +61,38 @@ func (c *DnsCache) IncludeAnyIp() bool {
 	return false
 }
 
-type DnsCacheEntry interface {
-	SetAnswer([]dnsmessage.RR)
-	SetDeadline(time.Time)
-	GetDeadline() time.Time
-	FillInto(req *dnsmessage.Msg)
+type lruEntry[K comparable] struct {
+	key   K
+	value *DnsCache
 }
 
-func (c *DnsCache) SetAnswer(a []dnsmessage.RR) { c.Answer = a }
-func (c *DnsCache) SetDeadline(t time.Time)     { c.Deadline = t }
-func (c *DnsCache) GetDeadline() time.Time      { return c.Deadline }
-
-var _ DnsCacheEntry = (*DnsCache)(nil)
-var _ DnsCacheEntry = (*LookupCache)(nil)
-
-const (
-	DnsCacheMaxSize = 16384
-)
-
-type lruEntry struct {
-	key   string
-	value DnsCacheEntry
+type commonDnsCache[K comparable] struct {
+	cache   map[K]*list.Element
+	lruList *list.List
+	mu      sync.Mutex
+	maxSize int
 }
 
-type commonDnsCache struct {
-	cache         map[string]*list.Element
-	lruList       *list.List
-	mu            sync.Mutex
-	newCacheEntry func(fqdn string, answers []dnsmessage.RR, deadline time.Time) (DnsCacheEntry, error)
-}
-
-func newCommonDnsCache(
-	newCacheEntry func(fqdn string, answers []dnsmessage.RR, deadline time.Time) (DnsCacheEntry, error),
-) *commonDnsCache {
-	return &commonDnsCache{
-		cache:         make(map[string]*list.Element),
-		lruList:       list.New(),
-		newCacheEntry: newCacheEntry,
+func newCommonDnsCache[K comparable](maxSize int) *commonDnsCache[K] {
+	return &commonDnsCache[K]{
+		cache:   make(map[K]*list.Element),
+		lruList: list.New(),
+		maxSize: maxSize,
 	}
 }
 
-func (c *commonDnsCache) Get(cacheKey string) DnsCacheEntry {
+func (c *commonDnsCache[K]) Get(cacheKey K) *DnsCache {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if elem, ok := c.cache[cacheKey]; ok {
-		cache := elem.Value.(*lruEntry).value
+		cache := elem.Value.(*lruEntry[K]).value
 		c.lruList.MoveToFront(elem)
 		return cache
 	}
 	return nil
 }
 
-func (c *commonDnsCache) Delete(cacheKey string) {
+func (c *commonDnsCache[K]) Delete(cacheKey K) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if elem, ok := c.cache[cacheKey]; ok {
@@ -127,14 +103,14 @@ func (c *commonDnsCache) Delete(cacheKey string) {
 
 // TODO: Delete callback
 // gc must be called under write lock
-func (c *commonDnsCache) gc() {
-	for c.lruList.Len() > DnsCacheMaxSize {
+func (c *commonDnsCache[K]) gc() {
+	for c.lruList.Len() > c.maxSize {
 		lruElement := c.lruList.Back()
 		if lruElement == nil {
 			return
 		}
-		entry := lruElement.Value.(*lruEntry)
-		if entry.value.GetDeadline().Before(time.Now()) {
+		entry := lruElement.Value.(*lruEntry[K])
+		if entry.value.Deadline.Before(time.Now()) {
 			delete(c.cache, entry.key)
 			c.lruList.Remove(lruElement)
 		} else {
@@ -145,31 +121,33 @@ func (c *commonDnsCache) gc() {
 	}
 }
 
-func (c *commonDnsCache) UpdateDeadline(fqdn string, cacheKey string, answers []dnsmessage.RR, deadline time.Time) (err error) {
+func (c *commonDnsCache[K]) UpdateDeadline(key K, fqdn string, answer []dnsmessage.RR, deadline time.Time) (bool, *DnsCache) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if elem, ok := c.cache[cacheKey]; ok {
-		entry := elem.Value.(*lruEntry)
-		entry.value.SetAnswer(answers)
-		entry.value.SetDeadline(deadline)
+	if elem, ok := c.cache[key]; ok {
+		entry := elem.Value.(*lruEntry[K])
+		entry.value.Answer = answer
+		entry.value.Deadline = deadline
 		c.lruList.MoveToFront(elem)
+		return false, entry.value
 	} else {
-		cache, err := c.newCacheEntry(fqdn, answers, deadline)
-		if err != nil {
-			return err
+		cache := &DnsCache{
+			Fqdn:     fqdn,
+			Answer:   answer,
+			Deadline: deadline,
 		}
-		entry := &lruEntry{
-			key:   cacheKey,
+		entry := &lruEntry[K]{
+			key:   key,
 			value: cache,
 		}
 		elem := c.lruList.PushFront(entry)
-		c.cache[cacheKey] = elem
+		c.cache[key] = elem
 		c.gc()
+		return true, cache
 	}
-	return nil
 }
 
-func (c *commonDnsCache) UpdateTtl(fqdn string, cacheKey string, answers []dnsmessage.RR, ttl int) (err error) {
-	return c.UpdateDeadline(fqdn, cacheKey, answers, time.Now().Add(time.Duration(ttl)*time.Second))
+func (c *commonDnsCache[K]) UpdateTtl(key K, fqdn string, answer []dnsmessage.RR, ttl int) (bool, *DnsCache) {
+	return c.UpdateDeadline(key, fqdn, answer, time.Now().Add(time.Duration(ttl)*time.Second))
 }

@@ -23,13 +23,6 @@ import (
 )
 
 func (c *ControlPlane) handleConn(lConn net.Conn) error {
-	ActiveConnections.Inc()
-	ActiveConnectionsTCP.Inc()
-	TotalConnections.Inc()
-	defer func() {
-		ActiveConnections.Dec()
-		ActiveConnectionsTCP.Dec()
-	}()
 	defer lConn.Close()
 
 	// Sniff target domain.
@@ -79,7 +72,22 @@ func (c *ControlPlane) handleConn(lConn net.Conn) error {
 	start := time.Now()
 	rConn, err := dialOption.Dialer.DialContext(ctx, "tcp", dialOption.DialTarget)
 	elapsed := time.Since(start).Seconds()
+
 	DialLatency.Observe(elapsed)
+	ActiveConnections.Inc()
+	ActiveConnectionsTCP.Inc()
+	TotalConnections.Inc()
+	dialOption.Dialer.DialLatency.Observe(elapsed)
+	dialOption.Dialer.TotalConnections.Inc()
+	dialOption.Dialer.ActiveConnections.Inc()
+	dialOption.Dialer.ActiveConnectionsTCP.Inc()
+
+	defer func() {
+		ActiveConnections.Dec()
+		ActiveConnectionsTCP.Dec()
+		dialOption.Dialer.ActiveConnections.Dec()
+		dialOption.Dialer.ActiveConnectionsTCP.Dec()
+	}()
 	if err != nil {
 		// TODO: UDP 是不是也有Direct Outbound出问题的情况?
 		// TODO: Control Plane Routing?
