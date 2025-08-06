@@ -89,11 +89,12 @@ var DefaultUdpEndpointPool = UdpEndpointPool{}
 
 func (p *UdpEndpointPool) Remove(key UdpEndpointKey) (err error) {
 	if ue, ok := p.pool.LoadAndDelete(key); ok {
+		ue.(*UdpEndpoint).Close()
+
 		ActiveConnections.Dec()
 		ActiveConnectionsUDP.Dec()
 		ue.(*UdpEndpoint).dialer.ActiveConnections.Dec()
 		ue.(*UdpEndpoint).dialer.ActiveConnectionsUDP.Dec()
-		ue.(*UdpEndpoint).Close()
 	}
 	return nil
 }

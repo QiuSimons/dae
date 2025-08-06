@@ -86,11 +86,16 @@ func (d *DialerPrometheus) initPrometheus(name string) {
 			Buckets: prometheus.ExponentialBuckets(0.001, 2, 15), // 1ms ~ ~16s
 		},
 	)
-	prometheus.MustRegister(d.TotalConnections)
-	prometheus.MustRegister(d.ActiveConnections)
-	prometheus.MustRegister(d.ActiveConnectionsTCP)
-	prometheus.MustRegister(d.ActiveConnectionsUDP)
-	prometheus.MustRegister(d.DialLatency)
+	prometheus.Unregister(d.TotalConnections)
+	prometheus.Unregister(d.ActiveConnections)
+	prometheus.Unregister(d.ActiveConnectionsTCP)
+	prometheus.Unregister(d.ActiveConnectionsUDP)
+	prometheus.Unregister(d.DialLatency)
+	prometheus.Register(d.TotalConnections)
+	prometheus.Register(d.ActiveConnections)
+	prometheus.Register(d.ActiveConnectionsTCP)
+	prometheus.Register(d.ActiveConnectionsUDP)
+	prometheus.Register(d.DialLatency)
 }
 
 type GlobalOption struct {

@@ -70,7 +70,6 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 		return c.dnsController.Handle(dnsMessage, &udpRequest{
 			src:           src,
 			dst:           dst,
-			lConn:         lConn,
 			routingResult: routingResult,
 		})
 	}

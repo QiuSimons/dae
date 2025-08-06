@@ -160,7 +160,6 @@ func (c *DnsController) UpdateDnsCacheTtl(cacheKey dnsCacheKey, fqdn string, ans
 type udpRequest struct {
 	src           netip.AddrPort
 	dst           netip.AddrPort
-	lConn         *net.UDPConn
 	routingResult *bpfRoutingResult
 }
 

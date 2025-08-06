@@ -278,8 +278,9 @@ func resolve(dialer netproxy.Dialer, server netip.AddrPort, host string, typ uin
 	defer cancel()
 	conn, err := dialer.DialContext(ctx, network, server.String())
 	if err != nil {
-		return nil, oops.Wrapf(err, "DialContext")
+		return nil, err
 	}
+	defer conn.Close()
 
 	if network == "tcp" {
 		err = ResolveStream(conn, &msg, false)
