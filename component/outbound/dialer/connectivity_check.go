@@ -446,6 +446,18 @@ func (d *Dialer) runInitialCheck(checkOpts []*CheckOption) (opt *CheckOption) {
 		go func() {
 			defer wg.Done()
 			d.supported[i], latency[i], err[i] = d.Check(opt)
+			if d.supported[i] {
+				log.WithFields(log.Fields{
+					"network": opt.networkType.String(),
+					"node":    d.property.Name,
+					"last":    latency[i].Truncate(time.Millisecond).String(),
+				}).Infoln("Inital Connectivity Check")
+			} else {
+				log.WithFields(log.Fields{
+					"network": opt.networkType.String(),
+					"node":    d.property.Name,
+				}).Infoln(oops.Wrapf(err[i], "Inital Connectivity Check Failed"))
+			}
 		}()
 	}
 	wg.Wait()
@@ -533,12 +545,12 @@ func (d *Dialer) Update(opt *CheckOption, ok bool, latency time.Duration, err er
 			log.WithFields(log.Fields{
 				"network": opt.networkType.String(),
 				"node":    d.property.Name,
-			}).Warnf("%+v\n", oops.Wrapf(err, "Connectivity Check Failed"))
+			}).Warnln(oops.Wrapf(err, "Connectivity Check Failed"))
 		} else {
 			log.WithFields(log.Fields{
 				"network": opt.networkType.String(),
 				"node":    d.property.Name,
-			}).Infof("%+v\n", oops.Wrapf(err, "Connectivity Check Failed"))
+			}).Infoln(oops.Wrapf(err, "Connectivity Check Failed"))
 		}
 		d.collection.Alive = false
 	}
