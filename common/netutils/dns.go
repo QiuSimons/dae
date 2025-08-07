@@ -118,6 +118,7 @@ func ResolveUDP(conn net.Conn, msg *dnsmessage.Msg) error {
 	// TODO: SetDeadline 可能会不被支持, 特别是 SetWriteDeadline
 	conn.SetDeadline(time.Now().Add(consts.DefaultDNSTimeout))
 	ctx, cancel := context.WithCancel(context.TODO())
+	// ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDNSTimeout)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -139,6 +140,9 @@ func ResolveUDP(conn net.Conn, msg *dnsmessage.Msg) error {
 	// Wait for response.
 	respBuf := pool.GetBuffer(consts.EthernetMtu)
 	defer pool.PutBuffer(respBuf)
+	// n, err := common.Invoke(ctx, func() (int, error) {
+	// 	return conn.Read(respBuf)
+	// }, nil)
 	n, err := conn.Read(respBuf)
 	cancel()
 	if err != nil {

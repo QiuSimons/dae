@@ -69,9 +69,9 @@ type DnsController struct {
 	bestDialerChooser  func(req *udpRequest, upstream *dns.Upstream) (*dialArgument, error)
 
 	fixedDomainTtl    map[string]int
-	lookupKeyLocker   common.KeyLocker[queryInfo]
 	lookupCache       *commonDnsCache[queryInfo]
 	dnsCache          *commonDnsCache[dnsCacheKey]
+	dnsKeyLocker      common.KeyLocker[dnsCacheKey]
 	dnsForwarderCache sync.Map // map[dnsForwarderKey]DnsForwarder
 }
 
@@ -323,12 +323,6 @@ func (c *DnsController) handleDNSRequest(
 		}
 	}
 
-	// No parallel for the same lookup.
-	l := c.lookupKeyLocker.Lock(queryInfo)
-	defer func() {
-		c.lookupKeyLocker.Unlock(queryInfo, l)
-	}()
-
 	// Dial and re-route
 	if log.IsLevelEnabled(log.DebugLevel) {
 		log.WithFields(log.Fields{
@@ -442,12 +436,14 @@ func (c *DnsController) reject(msg *dnsmessage.Msg) {
 	msg.Truncated = false
 }
 
-// TODO: 在这里实现分upstream缓存逻辑, 而不是全局缓存
 func (c *DnsController) dialSend(msg *dnsmessage.Msg, upstream *dns.Upstream, dialArgument *dialArgument, queryInfo queryInfo) error {
 	/// Dial and send.
 	// get forwarder from cache
 	key := dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}
 	cacheKey := dnsCacheKey{queryInfo: queryInfo, dnsForwarderKey: key}
+	// No parallel for the same lookup.
+	l := c.dnsKeyLocker.Lock(cacheKey)
+	defer c.dnsKeyLocker.Unlock(cacheKey, l)
 	var forwarder DnsForwarder
 	value, ok := c.dnsForwarderCache.Load(key)
 	if ok {

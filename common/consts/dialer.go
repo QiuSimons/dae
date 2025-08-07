@@ -25,7 +25,7 @@ const (
 const (
 	UdpCheckLookupHost = "connectivitycheck.gstatic.com."
 	DefaultDialTimeout = 8 * time.Second
-	DefaultReadTimeout = 21600 * time.Second
+	DefaultReadTimeout = 3600 * time.Second
 )
 
 type L4ProtoStr string

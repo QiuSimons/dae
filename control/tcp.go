@@ -159,19 +159,19 @@ type ConnWithReadTimeout struct {
 }
 
 func (c *ConnWithReadTimeout) Read(p []byte) (int, error) {
-	_ = c.Conn.SetReadDeadline(time.Now().Add(consts.DefaultReadTimeout))
+	c.Conn.SetReadDeadline(time.Now().Add(consts.DefaultReadTimeout))
 	return c.Conn.Read(p)
 }
 
-func relayDirection(dst, src_ net.Conn) error {
+func relayDirection(dst, src net.Conn) error {
 	// As `io.Copy` uses a 32KB buffer, we create a buffer of the same size.
 	// See https://cs.opensource.google/go/go/+/refs/tags/go1.21.5:src/io/io.go;l=419
 	bufPtr := pool.GetBuffer(1024 * 32) // 32KB
 	defer pool.PutBuffer(bufPtr)
 
-	src := &ConnWithReadTimeout{Conn: src_}
-	_, err := io.CopyBuffer(dst, src, bufPtr)
+	_, err := io.CopyBuffer(dst, &ConnWithReadTimeout{Conn: src}, bufPtr)
 
+	// TODO: Close?
 	if err != nil {
 		dst.SetReadDeadline(time.Now())
 	}
