@@ -30,7 +30,7 @@ type Dialer struct {
 	*GlobalOption
 	InstanceOption
 	netproxy.Dialer
-	property *Property
+	*Property
 
 	collection          *collection
 	supported           [4]bool
@@ -144,7 +144,7 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOpt
 		GlobalOption:        option,
 		InstanceOption:      iOption,
 		Dialer:              dialer,
-		property:            property,
+		Property:            property,
 		collection:          newCollection(),
 		registeredAliveSets: make(AliveDialerSetSet),
 		tickerMu:            sync.Mutex{},
@@ -153,15 +153,15 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOpt
 		ctx:                 ctx,
 		cancel:              cancel,
 	}
-	d.initPrometheus(d.Property().Name)
-	log.WithField("dialer", d.Property().Name).
+	d.initPrometheus(d.Name)
+	log.WithField("dialer", d.Name).
 		WithField("p", unsafe.Pointer(d)).
 		Traceln("NewDialer")
 	return d
 }
 
 func (d *Dialer) Clone() *Dialer {
-	return NewDialer(d.Dialer, d.GlobalOption, d.InstanceOption, d.property)
+	return NewDialer(d.Dialer, d.GlobalOption, d.InstanceOption, d.Property)
 }
 
 func (d *Dialer) Close() error {
@@ -172,8 +172,4 @@ func (d *Dialer) Close() error {
 	}
 	d.tickerMu.Unlock()
 	return nil
-}
-
-func (d *Dialer) Property() *Property {
-	return d.property
 }

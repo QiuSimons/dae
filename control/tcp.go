@@ -83,7 +83,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) error {
 			With("Is Temporary", netErr != nil && netErr.Temporary()).
 			With("Is Timeout", netErr != nil && netErr.Timeout()).
 			With("Outbound", dialOption.Outbound.Name).
-			With("Dialer", dialOption.Dialer.Property().Name).
+			With("Dialer", dialOption.Dialer.Name).
 			With("src", src.String()).
 			With("dst", dst.String()).
 			With("domain", domain).
@@ -127,7 +127,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) error {
 			With("Is Temporary", netErr != nil && netErr.Temporary()).
 			With("Is Timeout", netErr != nil && netErr.Timeout()).
 			With("Outbound", dialOption.Outbound.Name).
-			With("Dialer", dialOption.Dialer.Property().Name).
+			With("Dialer", dialOption.Dialer.Name).
 			With("src", src.String()).
 			With("dst", dst.String()).
 			With("domain", domain).

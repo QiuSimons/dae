@@ -7,7 +7,7 @@ package outbound
 
 import (
 	// _ "github.com/daeuniverse/outbound/dialer/anytls"
-	// _ "github.com/daeuniverse/outbound/dialer/http"
+	_ "github.com/daeuniverse/outbound/dialer/http"
 	_ "github.com/daeuniverse/outbound/dialer/hysteria2"
 	// _ "github.com/daeuniverse/outbound/dialer/juicity"
 	_ "github.com/daeuniverse/outbound/dialer/shadowsocks"
@@ -25,7 +25,5 @@ import (
 	// _ "github.com/daeuniverse/outbound/protocol/tuic"
 	// _ "github.com/daeuniverse/outbound/protocol/vless"
 	// _ "github.com/daeuniverse/outbound/protocol/vmess"
-	_ "github.com/daeuniverse/outbound/transport/simpleobfs"
-	_ "github.com/daeuniverse/outbound/transport/tls"
 	_ "github.com/daeuniverse/outbound/transport/ws"
 )

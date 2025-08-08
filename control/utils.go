@@ -125,7 +125,7 @@ func LogDial(src, dst netip.AddrPort, domain string, dialOption *DialOption, net
 			log.WithFields(log.Fields{
 				"network":          networkType.String(),
 				"originalOutbound": dialOption.Outbound.Name,
-				"fallbackDialer":   dialOption.Dialer.Property().Name,
+				"fallbackDialer":   dialOption.Dialer.Name,
 				"sniffed":          domain,
 				"ip":               RefineAddrPortToShow(dst),
 				"pid":              routingResult.Pid,
@@ -139,7 +139,7 @@ func LogDial(src, dst netip.AddrPort, domain string, dialOption *DialOption, net
 				"network":  networkType.String(),
 				"outbound": dialOption.Outbound.Name,
 				"policy":   dialOption.Outbound.GetSelectionPolicy(),
-				"dialer":   dialOption.Dialer.Property().Name,
+				"dialer":   dialOption.Dialer.Name,
 				"sniffed":  domain,
 				"ip":       RefineAddrPortToShow(dst),
 				"pid":      routingResult.Pid,

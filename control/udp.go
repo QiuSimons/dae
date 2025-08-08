@@ -150,7 +150,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 			log.WithFields(log.Fields{
 				"src":     RefineSourceToShow(src, dst.Addr()),
 				"network": networkType.String(),
-				"dialer":  ue.dialer.Property().Name,
+				"dialer":  ue.dialer.Name,
 			}).Debugln("Old udp endpoint was not alive and removed.")
 		}
 		_ = DefaultUdpEndpointPool.Remove(key)
@@ -187,7 +187,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 				With("Is Temporary", netErr != nil && netErr.Temporary()).
 				With("Is Timeout", netErr != nil && netErr.Timeout()).
 				With("Outbound", dialOption.Outbound.Name).
-				With("Dialer", dialOption.Dialer.Property().Name).
+				With("Dialer", dialOption.Dialer.Name).
 				With("src", src.String()).
 				With("dst", dst.String()).
 				With("domain", domain).
@@ -221,7 +221,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 					With("Is NetError", ok).
 					With("Is Temporary", netErr != nil && netErr.Temporary()).
 					With("Is Timeout", netErr != nil && netErr.Timeout()).
-					With("Dialer", ue.dialer.Property().Name).
+					With("Dialer", ue.dialer.Name).
 					Wrap(err)
 				if !ok {
 					log.Warnf("%+v", err)
@@ -246,7 +246,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 			With("Is NetError", ok).
 			With("Is Temporary", netErr != nil && netErr.Temporary()).
 			With("Is Timeout", netErr != nil && netErr.Timeout()).
-			With("Dialer", ue.dialer.Property().Name).
+			With("Dialer", ue.dialer.Name).
 			Wrapf(err, "failed to write UDP packet")
 		if !ok {
 			return err

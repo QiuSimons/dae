@@ -99,6 +99,7 @@ type Group struct {
 	Filter           [][]*config_parser.Function `mapstructure:"filter" repeatable:""`
 	FilterAnnotation [][]*config_parser.Param    `mapstructure:"_"`
 	Policy           FunctionListOrString        `mapstructure:"policy" required:""`
+	NextHop          string                      `mapstructure:"next_hop"`
 
 	TcpCheckUrl        []string      `mapstructure:"tcp_check_url"`
 	TcpCheckHttpMethod string        `mapstructure:"tcp_check_http_method"`

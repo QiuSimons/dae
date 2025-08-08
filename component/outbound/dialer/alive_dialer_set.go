@@ -35,7 +35,7 @@ type AliveDialerSet struct {
 	dialerToLatency       map[*Dialer]time.Duration
 	dialerToLatencyOffset map[*Dialer]time.Duration
 
-	alive  [4]bool
+	alive  [4]*bool
 	dialer [4]*Dialer
 }
 
@@ -150,10 +150,10 @@ func (a *AliveDialerSet) printLatencies(networkType *NetworkType) {
 			priorityStr = fmt.Sprintf(" (priority: %d)", dialer.priority)
 		}
 		tagStr := ""
-		if dialer.dialer.property.SubscriptionTag != "" {
-			tagStr = fmt.Sprintf(" [%v]", dialer.dialer.property.SubscriptionTag)
+		if dialer.dialer.SubscriptionTag != "" {
+			tagStr = fmt.Sprintf(" [%v]", dialer.dialer.SubscriptionTag)
 		}
-		builder.WriteString(fmt.Sprintf("%4d.%v %v: %v%s\n", i+1, tagStr, dialer.dialer.property.Name, latencyString(dialer.latency, dialer.offset), priorityStr))
+		builder.WriteString(fmt.Sprintf("%4d.%v %v: %v%s\n", i+1, tagStr, dialer.dialer.Name, latencyString(dialer.latency, dialer.offset), priorityStr))
 	}
 	// TODO: Log level?
 	log.Warnln(strings.TrimSuffix(builder.String(), "\n"))
@@ -186,7 +186,7 @@ func (a *AliveDialerSet) addAliveDialer(dialer *Dialer) {
 	}
 
 	log.WithFields(log.Fields{
-		"dialer": dialer.property.Name,
+		"dialer": dialer.Name,
 		"group":  a.dialerGroupName,
 	}).Warnf("[NOT ALIVE --> ALIVE]")
 
@@ -200,7 +200,7 @@ func (a *AliveDialerSet) removeAliveDialer(dialer *Dialer) {
 	}
 
 	log.WithFields(log.Fields{
-		"dialer": dialer.property.Name,
+		"dialer": dialer.Name,
 		"group":  a.dialerGroupName,
 	}).Infof("[ALIVE --> NOT ALIVE]")
 
@@ -222,7 +222,7 @@ func (a *AliveDialerSet) removeAliveDialer(dialer *Dialer) {
 
 func (a *AliveDialerSet) handleAliveStateChange(alive bool, networkType *NetworkType) {
 	index := NetworkTypeToIndex(networkType)
-	if a.alive[index] == alive {
+	if a.alive[index] != nil && *a.alive[index] == alive {
 		return
 	}
 
@@ -237,7 +237,7 @@ func (a *AliveDialerSet) handleAliveStateChange(alive bool, networkType *Network
 			"network": networkType.String(),
 		}).Infof("Group has no dialer alive")
 	}
-	a.alive[index] = alive
+	a.alive[index] = &alive
 	a.aliveChangeCallback(alive, networkType)
 }
 
@@ -249,13 +249,13 @@ func (a *AliveDialerSet) logDialerSelection(oldBestDialer *Dialer, newBestDialer
 		oldDialerName = "<nil>"
 	} else {
 		re = "re-"
-		oldDialerName = oldBestDialer.property.Name
+		oldDialerName = oldBestDialer.Name
 	}
 
 	if newBestDialer == nil {
 		newDialerName = "<nil>"
 	} else {
-		newDialerName = newBestDialer.property.Name
+		newDialerName = newBestDialer.Name
 	}
 
 	if oldBestDialer == nil {
@@ -277,6 +277,7 @@ func (a *AliveDialerSet) logDialerSelection(oldBestDialer *Dialer, newBestDialer
 	}
 }
 
+// 修改初始化时 dialer 更新的逻辑?
 // NotifyLatencyChange should be invoked when dialer every time latency and alive state changes.
 func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 	a.mu.Lock()
@@ -284,7 +285,7 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 
 	a.updateDialerAliveState(dialer, alive)
 
-	fmt.Printf("[DEBUG] NotifyLatencyChange: %v %v\n", dialer.property.Name, alive)
+	fmt.Printf("[DEBUG] NotifyLatencyChange: %v %v\n", dialer.Name, alive)
 
 	latency, hasLatency := a.getLatencyData(dialer)
 	if hasLatency {
@@ -300,7 +301,7 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 			oldDialer := a.dialer[i]
 			newDialer := a.calcMinLatency(networkType)
 			if newDialer != nil {
-				fmt.Printf("[DEBUG] newDialer: %v, hasLatency: %v, network: %v\n", newDialer.property.Name, hasLatency, networkType.String())
+				fmt.Printf("[DEBUG] newDialer: %v, hasLatency: %v, network: %v\n", newDialer.Name, hasLatency, networkType.String())
 			}
 			if oldDialer != newDialer {
 				newLatency := a.GetSortingLatency(newDialer)
@@ -319,9 +320,9 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 				}
 				a.dialer[i] = newDialer
 				a.logDialerSelection(oldDialer, newDialer, networkType)
-				a.handleAliveStateChange(newDialer != nil, networkType)
 				a.printLatencies(networkType)
 			}
+			a.handleAliveStateChange(newDialer != nil, networkType)
 		case consts.DialerSelectionPolicy_Fixed:
 			if dialer == a.fixedDialer {
 				if alive {

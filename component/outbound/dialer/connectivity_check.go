@@ -286,7 +286,7 @@ func (d *Dialer) createHttpCheckFunc(ipVersion consts.IpVersionStr, network stri
 		if !ip.IsValid() {
 			log.WithFields(log.Fields{
 				"link":    d.TcpCheckOptionRaw.Raw,
-				"dialer":  d.property.Name,
+				"dialer":  d.Name,
 				"network": typ.String(),
 			}).Debugln("Skip check due to no DNS record.")
 			return false, nil
@@ -317,7 +317,7 @@ func (d *Dialer) createDnsCheckFunc(ipVersion consts.IpVersionStr, network strin
 		if !ip.IsValid() {
 			log.WithFields(log.Fields{
 				"link":    d.CheckDnsOptionRaw.Raw,
-				"dialer":  d.property.Name,
+				"dialer":  d.Name,
 				"network": typ.String(),
 			}).Debugln("Skip check due to no DNS record.")
 			return false, nil
@@ -411,7 +411,7 @@ func (d *Dialer) NotifyCheck() {
 		return
 	// If fail to push elem to chan, the check is in process.
 	case d.checkCh <- time.Now():
-		fmt.Printf("[DEBUG] NotifyCheck: %v\n", d.property.Name)
+		fmt.Printf("[DEBUG] NotifyCheck: %v\n", d.Name)
 	default:
 	}
 }
@@ -423,9 +423,9 @@ func (d *Dialer) runCheckLoop(checkOpt *CheckOption) {
 			return
 		case <-d.checkCh:
 			for i := 0; i < 3; i++ {
-				fmt.Printf("[DEBUG] runCheck: %v, count: %v\n", d.property.Name, i)
+				fmt.Printf("[DEBUG] runCheck: %v, count: %v\n", d.Name, i)
 				ok, latency, err := d.Check(checkOpt)
-				d.Update(checkOpt, ok, latency, err)
+				d.Update(ok, latency, checkOpt.networkType, err)
 				if ok {
 					break
 				}
@@ -449,14 +449,14 @@ func (d *Dialer) runInitialCheck(checkOpts []*CheckOption) (opt *CheckOption) {
 			if d.supported[i] {
 				log.WithFields(log.Fields{
 					"network": opt.networkType.String(),
-					"node":    d.property.Name,
+					"node":    d.Name,
 					"last":    latency[i].Truncate(time.Millisecond).String(),
 				}).Infoln("Inital Connectivity Check")
 			} else {
 				log.WithFields(log.Fields{
 					"network": opt.networkType.String(),
-					"node":    d.property.Name,
-				}).Infoln(oops.Wrapf(err[i], "Inital Connectivity Check Failed"))
+					"node":    d.Name,
+				}).Infof("%+v\n", oops.Wrapf(err[i], "Inital Connectivity Check Failed"))
 			}
 		}()
 	}
@@ -464,10 +464,11 @@ func (d *Dialer) runInitialCheck(checkOpts []*CheckOption) (opt *CheckOption) {
 	for _, opt := range checkOpts {
 		i := NetworkTypeToIndex(opt.networkType)
 		if d.supported[i] {
-			d.Update(opt, d.supported[i], latency[i], err[i])
+			d.Update(d.supported[i], latency[i], opt.networkType, err[i])
 			return opt
 		}
 	}
+	d.Update(false, 0, nil, errors.Join(err[:]...))
 	return nil
 }
 
@@ -511,7 +512,7 @@ func (d *Dialer) ReportUnavailable(typ *NetworkType, err error) {
 	d.NotifyCheck()
 }
 
-func (d *Dialer) Update(opt *CheckOption, ok bool, latency time.Duration, err error) {
+func (d *Dialer) Update(ok bool, latency time.Duration, networkType *NetworkType, err error) {
 	if ok {
 		d.collection.Latencies10.AppendLatency(latency)
 		avg, _ := d.collection.Latencies10.AvgLatency()
@@ -524,16 +525,16 @@ func (d *Dialer) Update(opt *CheckOption, ok bool, latency time.Duration, err er
 
 		if !d.collection.Alive {
 			log.WithFields(log.Fields{
-				"network": opt.networkType.String(),
-				"node":    d.property.Name,
+				"network": networkType.String(),
+				"node":    d.Name,
 				"last":    latency.Truncate(time.Millisecond).String(),
 				"avg_10":  avg.Truncate(time.Millisecond),
 				"mov_avg": d.collection.MovingAverage.Truncate(time.Millisecond),
 			}).Infoln("Connectivity Check")
 		} else {
 			log.WithFields(log.Fields{
-				"network": opt.networkType.String(),
-				"node":    d.property.Name,
+				"network": networkType.String(),
+				"node":    d.Name,
 				"last":    latency.Truncate(time.Millisecond).String(),
 				"avg_10":  avg.Truncate(time.Millisecond),
 				"mov_avg": d.collection.MovingAverage.Truncate(time.Millisecond),
@@ -541,16 +542,16 @@ func (d *Dialer) Update(opt *CheckOption, ok bool, latency time.Duration, err er
 		}
 		d.collection.Alive = true
 	} else {
+		fields := log.Fields{
+			"node": d.Name,
+		}
+		if networkType != nil {
+			fields["network"] = networkType.String()
+		}
 		if d.collection.Alive {
-			log.WithFields(log.Fields{
-				"network": opt.networkType.String(),
-				"node":    d.property.Name,
-			}).Warnln(oops.Wrapf(err, "Connectivity Check Failed"))
+			log.WithFields(fields).Warnln(oops.Wrapf(err, "Connectivity Check Failed"))
 		} else {
-			log.WithFields(log.Fields{
-				"network": opt.networkType.String(),
-				"node":    d.property.Name,
-			}).Infoln(oops.Wrapf(err, "Connectivity Check Failed"))
+			log.WithFields(fields).Infoln(oops.Wrapf(err, "Connectivity Check Failed"))
 		}
 		d.collection.Alive = false
 	}

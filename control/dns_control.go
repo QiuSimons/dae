@@ -365,7 +365,7 @@ Dial:
 					"network":  dialArgument.networkType.String(),
 					"outbound": dialArgument.Outbound.Name,
 					"policy":   dialArgument.Outbound.GetSelectionPolicy(),
-					"dialer":   dialArgument.Dialer.Property().Name,
+					"dialer":   dialArgument.Dialer.Name,
 					"qname":    queryInfo.qname,
 					"qtype":    queryInfo.qtype,
 					"pid":      req.routingResult.Pid,

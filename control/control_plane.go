@@ -34,6 +34,7 @@ import (
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
+	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/pool"
 
 	"github.com/daeuniverse/outbound/transport/grpc"
@@ -236,10 +237,10 @@ func NewControlPlane(
 		return nil, oops.Errorf("invalid no_connectivity_behavior: %v", global.NoConnectivityBehavior)
 	}
 
-	_direct, directProperty := dialer.NewDirectDialer(option)
-	direct := dialer.NewDialer(_direct, option, dialer.InstanceOption{DisableCheck: true}, directProperty)
-	_block, blockProperty := dialer.NewBlockDialer(option, func() { /*Dialer Outbound*/ })
-	block := dialer.NewDialer(_block, option, dialer.InstanceOption{DisableCheck: true}, blockProperty)
+	_direct, directProperty := D.NewDirectDialer(&option.ExtraOption)
+	direct := dialer.NewDialer(_direct, option, dialer.InstanceOption{DisableCheck: true}, &dialer.Property{Property: *directProperty})
+	_block, blockProperty := D.NewBlockDialer(&option.ExtraOption, func() { /*Dialer Outbound*/ })
+	block := dialer.NewDialer(_block, option, dialer.InstanceOption{DisableCheck: true}, &dialer.Property{Property: *blockProperty})
 	outbounds := []*outbound.DialerGroup{
 		outbound.NewDialerGroup(option, consts.OutboundDirect.String(),
 			[]*dialer.Dialer{direct}, []*dialer.Annotation{{}},
@@ -268,14 +269,14 @@ func NewControlPlane(
 			return nil, oops.Errorf("failed to create group %v: %w", group.Name, err)
 		}
 		// Filter nodes with user given filters.
-		dialers, annos, err := dialerSet.FilterAndAnnotate(group.Filter, group.FilterAnnotation)
+		dialers, annos, err := dialerSet.FilterAndAnnotate(group.Filter, group.FilterAnnotation, group.NextHop)
 		if err != nil {
 			return nil, oops.Errorf(`failed to create group "%v": %w`, group.Name, err)
 		}
 		// Convert node links to dialers.
 		log.Infof(`Group "%v" node list:`, group.Name)
 		for _, d := range dialers {
-			log.Infoln("\t" + d.Property().Name)
+			log.Infoln("\t" + d.Name)
 		}
 		if len(dialers) == 0 {
 			log.Infoln("\t<Empty>")
@@ -860,7 +861,7 @@ func (c *ControlPlane) chooseBestDnsDialer(
 			"choose":     string(l4proto) + "+" + string(ipversion),
 			"use":        bestTarget.String(),
 			"outbound":   bestOutbound.Name,
-			"dialer":     bestDialer.Property().Name,
+			"dialer":     bestDialer.Name,
 		}).Traceln("Choose DNS path")
 	}
 	return &dialArgument{
