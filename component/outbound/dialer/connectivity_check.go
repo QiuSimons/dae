@@ -267,34 +267,34 @@ type CheckOption struct {
 	CheckFunc   func(typ *NetworkType) (ok bool, err error)
 }
 
-// createTcpCheckFunc 创建TCP检查函数
-func (d *Dialer) createHttpCheckFunc(ipVersion consts.IpVersionStr, network string) func(typ *NetworkType) (ok bool, err error) {
-	return func(typ *NetworkType) (ok bool, err error) {
-		opt, err := d.TcpCheckOptionRaw.Option()
-		if err != nil {
-			return false, err
-		}
+// // createTcpCheckFunc 创建TCP检查函数
+// func (d *Dialer) createHttpCheckFunc(ipVersion consts.IpVersionStr, network string) func(typ *NetworkType) (ok bool, err error) {
+// 	return func(typ *NetworkType) (ok bool, err error) {
+// 		opt, err := d.TcpCheckOptionRaw.Option()
+// 		if err != nil {
+// 			return false, err
+// 		}
 
-		var ip netip.Addr
-		switch ipVersion {
-		case consts.IpVersionStr_4:
-			ip = opt.Ip4
-		case consts.IpVersionStr_6:
-			ip = opt.Ip6
-		}
+// 		var ip netip.Addr
+// 		switch ipVersion {
+// 		case consts.IpVersionStr_4:
+// 			ip = opt.Ip4
+// 		case consts.IpVersionStr_6:
+// 			ip = opt.Ip6
+// 		}
 
-		if !ip.IsValid() {
-			log.WithFields(log.Fields{
-				"link":    d.TcpCheckOptionRaw.Raw,
-				"dialer":  d.Name,
-				"network": typ.String(),
-			}).Debugln("Skip check due to no DNS record.")
-			return false, nil
-		}
+// 		if !ip.IsValid() {
+// 			log.WithFields(log.Fields{
+// 				"link":    d.TcpCheckOptionRaw.Raw,
+// 				"dialer":  d.Name,
+// 				"network": typ.String(),
+// 			}).Debugln("Skip check due to no DNS record.")
+// 			return false, nil
+// 		}
 
-		return d.HttpCheck(opt.Url, ip, opt.Method, network)
-	}
-}
+// 		return d.HttpCheck(opt.Url, ip, opt.Method, network)
+// 	}
+// }
 
 // createDnsCheckFunc 创建DNS检查函数
 // TODO: Context 应该随情况生成, 而非传入
@@ -453,10 +453,17 @@ func (d *Dialer) runInitialCheck(checkOpts []*CheckOption) (opt *CheckOption) {
 					"last":    latency[i].Truncate(time.Millisecond).String(),
 				}).Infoln("Inital Connectivity Check")
 			} else {
-				log.WithFields(log.Fields{
-					"network": opt.networkType.String(),
-					"node":    d.Name,
-				}).Infof("%+v\n", oops.Wrapf(err[i], "Inital Connectivity Check Failed"))
+				if log.IsLevelEnabled(log.TraceLevel) {
+					log.WithFields(log.Fields{
+						"network": opt.networkType.String(),
+						"node":    d.Name,
+					}).Infof("%+v\n", oops.Wrapf(err[i], "Inital Connectivity Check Failed"))
+				} else {
+					log.WithFields(log.Fields{
+						"network": opt.networkType.String(),
+						"node":    d.Name,
+					}).Infoln(oops.Wrapf(err[i], "Inital Connectivity Check Failed"))
+				}
 			}
 		}()
 	}

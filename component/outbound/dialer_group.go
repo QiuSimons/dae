@@ -12,6 +12,7 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
+	log "github.com/sirupsen/logrus"
 )
 
 var ErrNoDialer = fmt.Errorf("no dialer")
@@ -110,4 +111,14 @@ func (g *DialerGroup) Select(networkType *dialer.NetworkType) (dialer *dialer.Di
 	}
 
 	return dialer, nil
+}
+
+func (g *DialerGroup) PrintLatency() {
+	if g.aliveDialerSet == nil {
+		return
+	}
+	for i := 0; i < 4; i++ {
+		networkType := dialer.IndexToNetworkType(i)
+		g.aliveDialerSet.PrintLatencies(networkType, log.InfoLevel)
+	}
 }

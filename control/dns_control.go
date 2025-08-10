@@ -6,11 +6,9 @@
 package control
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"math"
-	"net"
 	"net/netip"
 	"strings"
 	"sync"
@@ -34,8 +32,8 @@ import (
 // TODO: reload时保留lookup cache
 
 const (
-	MaxDnsLookupDepth  = 3
-	minFirefoxCacheTtl = 120
+	MaxDnsLookupDepth = 3
+	minLookupTTL      = 86400
 )
 
 type IpVersionPrefer int
@@ -53,8 +51,9 @@ var (
 )
 
 type DnsControllerOption struct {
-	NewLookupCache     func(cache *DnsCache) error
-	LookupCacheTimeout func(cache *DnsCache) error
+	MatchBitmap        func(fqdn string) []uint32
+	NewLookupCache     func(ip netip.Addr, domainBitmap []uint32) error
+	LookupCacheTimeout func(ip netip.Addr, domainBitmap []uint32) error
 	BestDialerChooser  func(req *udpRequest, upstream *dns.Upstream) (*dialArgument, error)
 	IpVersionPrefer    int
 	FixedDomainTtl     map[string]int
@@ -64,8 +63,9 @@ type DnsController struct {
 	routing     *dns.Dns
 	qtypePrefer uint16
 
-	newLookupCache     func(cache *DnsCache) error
-	lookupCacheTimeout func(cache *DnsCache) error
+	matchBitmap        func(fqdn string) []uint32
+	newLookupCache     func(ip netip.Addr, domainBitmap []uint32) error
+	lookupCacheTimeout func(ip netip.Addr, domainBitmap []uint32) error
 	bestDialerChooser  func(req *udpRequest, upstream *dns.Upstream) (*dialArgument, error)
 
 	fixedDomainTtl    map[string]int
@@ -73,6 +73,9 @@ type DnsController struct {
 	dnsCache          *commonDnsCache[dnsCacheKey]
 	dnsKeyLocker      common.KeyLocker[dnsCacheKey]
 	dnsForwarderCache sync.Map // map[dnsForwarderKey]DnsForwarder
+	// mu protects deadlineTimers
+	mu             sync.Mutex
+	deadlineTimers map[*DnsCache]*time.Timer
 }
 
 func parseIpVersionPreference(prefer int) (uint16, error) {
@@ -99,6 +102,7 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		routing:     routing,
 		qtypePrefer: prefer,
 
+		matchBitmap:        option.MatchBitmap,
 		newLookupCache:     option.NewLookupCache,
 		lookupCacheTimeout: option.LookupCacheTimeout,
 		bestDialerChooser:  option.BestDialerChooser,
@@ -107,18 +111,8 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		dnsForwarderCache: sync.Map{},
 		dnsCache:          newCommonDnsCache[dnsCacheKey](32768),
 		lookupCache:       newCommonDnsCache[queryInfo](16384),
+		deadlineTimers:    make(map[*DnsCache]*time.Timer),
 	}, nil
-}
-
-func (c *DnsController) FillCacheMsg(msg *dnsmessage.Msg, cache *DnsCache) {
-	if cache != nil {
-		cache.FillInto(msg)
-		// TODO: 允许关闭这部分逻辑
-		ttl := uint32(time.Until(cache.Deadline).Seconds())
-		for i := range msg.Answer {
-			msg.Answer[i].Header().Ttl = ttl
-		}
-	}
 }
 
 func (c *DnsController) NormalizeDnsResp(answers []dnsmessage.RR) (ttl int) {
@@ -129,10 +123,6 @@ func (c *DnsController) NormalizeDnsResp(answers []dnsmessage.RR) (ttl int) {
 			break
 		}
 	}
-	if len(answers) == 0 {
-		// It seems no answers (NXDomain).
-		ttl = minFirefoxCacheTtl
-	}
 
 	// Set TTL = zero. This requests applications must resend every request.
 	// However, it may be not defined in the standard.
@@ -142,19 +132,23 @@ func (c *DnsController) NormalizeDnsResp(answers []dnsmessage.RR) (ttl int) {
 	return
 }
 
-func (c *DnsController) UpdateDnsCacheDeadline(cacheKey dnsCacheKey, fqdn string, answers []dnsmessage.RR, deadline time.Time) (bool, *DnsCache) {
+func (c *DnsController) UpdateDnsCacheDeadline(cacheKey dnsCacheKey, fqdn string, answers []dnsmessage.RR, deadline time.Time) {
 	if fixedTtl, ok := c.fixedDomainTtl[fqdn]; ok {
 		deadline = time.Now().Add(time.Duration(fixedTtl) * time.Second)
 	}
-	return c.dnsCache.UpdateDeadline(cacheKey, fqdn, answers, deadline)
+	for _, answer := range answers {
+		c.dnsCache.UpdateDeadline(cacheKey, answer, deadline)
+	}
 }
 
-func (c *DnsController) UpdateDnsCacheTtl(cacheKey dnsCacheKey, fqdn string, answers []dnsmessage.RR, ttl int) (bool, *DnsCache) {
+func (c *DnsController) UpdateDnsCacheTtl(cacheKey dnsCacheKey, fqdn string, answers []dnsmessage.RR, ttl int) {
 	finalTTL := ttl
 	if fixedTtl, ok := c.fixedDomainTtl[fqdn]; ok {
 		finalTTL = fixedTtl
 	}
-	return c.dnsCache.UpdateTtl(cacheKey, fqdn, answers, finalTTL)
+	for _, answer := range answers {
+		c.dnsCache.UpdateTtl(cacheKey, answer, finalTTL)
+	}
 }
 
 type udpRequest struct {
@@ -184,16 +178,6 @@ type queryInfo struct {
 type dnsCacheKey struct {
 	queryInfo
 	dnsForwarderKey
-}
-
-func IncludeAnyIp(msg *dnsmessage.Msg) bool {
-	for _, ans := range msg.Answer {
-		switch ans.(type) {
-		case *dnsmessage.A, *dnsmessage.AAAA:
-			return true
-		}
-	}
-	return false
 }
 
 func (c *DnsController) prepareQueryInfo(dnsMessage *dnsmessage.Msg) (queryInfo queryInfo) {
@@ -248,7 +232,7 @@ func (c *DnsController) Handle(dnsMessage *dnsmessage.Msg, req *udpRequest) (err
 				if err != nil {
 					break
 				}
-				if c.qtypePrefer != queryInfo.qtype && dnsMessage2 != nil && IncludeAnyIp(dnsMessage2) {
+				if c.qtypePrefer != queryInfo.qtype && dnsMessage2 != nil && IncludeAnyIpInMsg(dnsMessage2) {
 					c.reject(dnsMessage)
 				}
 			}
@@ -414,15 +398,53 @@ Dial:
 	// 但在有bump_map的情况下这不是大问题
 	switch {
 	case !dnsMessage.Response,
+		len(dnsMessage.Answer) == 0,
 		len(dnsMessage.Question) == 0,               // Check healthy resp.
 		dnsMessage.Rcode != dnsmessage.RcodeSuccess: // Check suc resp.
 		return nil
 	}
+
 	ans := deepcopy.Copy(dnsMessage.Answer).([]dnsmessage.RR)
 	ttl := c.NormalizeDnsResp(ans)
-	isNew, cache := c.lookupCache.UpdateTtl(queryInfo, queryInfo.qname, ans, ttl)
-	if isNew {
-		c.newLookupCache(cache)
+	c.LookupCache(queryInfo, ans, ttl)
+	return nil
+}
+
+func (c *DnsController) LookupCache(queryInfo queryInfo, answers []dnsmessage.RR, ttl int) error {
+	domainBitmap := c.matchBitmap(queryInfo.qname)
+	allZero := true
+	for _, v := range domainBitmap {
+		if v != 0 {
+			allZero = false
+			break
+		}
+	}
+	lookupTTL := ttl
+	if lookupTTL < minLookupTTL {
+		lookupTTL = minLookupTTL
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, answer := range answers {
+		cache := c.lookupCache.UpdateTtl(queryInfo, answer, ttl)
+		ip, ok := cache.GetIp()
+		if !ok || allZero {
+			continue
+		}
+		if timer, ok := c.deadlineTimers[cache]; ok {
+			timer.Reset(time.Duration(lookupTTL) * time.Second)
+			continue
+		}
+		err := c.newLookupCache(ip, domainBitmap)
+		if err != nil {
+			return err
+		}
+		c.deadlineTimers[cache] = time.AfterFunc(time.Duration(lookupTTL)*time.Second, func() {
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			c.lookupCacheTimeout(ip, domainBitmap)
+			delete(c.deadlineTimers, cache)
+		})
 	}
 	return nil
 }
@@ -436,6 +458,7 @@ func (c *DnsController) reject(msg *dnsmessage.Msg) {
 	msg.Truncated = false
 }
 
+// TODO: 简化 cacheKey?
 func (c *DnsController) dialSend(msg *dnsmessage.Msg, upstream *dns.Upstream, dialArgument *dialArgument, queryInfo queryInfo) error {
 	/// Dial and send.
 	// get forwarder from cache
@@ -449,10 +472,12 @@ func (c *DnsController) dialSend(msg *dnsmessage.Msg, upstream *dns.Upstream, di
 	if ok {
 		// Lookup Cache
 		if cache := c.dnsCache.Get(cacheKey); cache != nil {
-			if cache.Deadline.After(time.Now()) {
-				c.FillCacheMsg(msg, cache)
+			if !c.dnsCache.AllTimeout(cache) {
+				FillInto(msg, cache)
 				if log.IsLevelEnabled(log.DebugLevel) && len(msg.Question) > 0 {
-					log.Debugf("UDP(DNS) <-> Cache: %v %v", queryInfo.qname, queryInfo.qtype)
+					log.WithFields(log.Fields{
+						"answer": msg.Answer,
+					}).Debugf("UDP(DNS) <-> Cache: %v %v", queryInfo.qname, queryInfo.qtype)
 				}
 				return nil
 			}
@@ -472,6 +497,13 @@ func (c *DnsController) dialSend(msg *dnsmessage.Msg, upstream *dns.Upstream, di
 	err := forwarder.ForwardDNS(msg)
 	if err != nil {
 		return err
+	}
+
+	switch {
+	case !msg.Response,
+		len(msg.Question) == 0,               // Check healthy resp.
+		msg.Rcode != dnsmessage.RcodeSuccess: // Check suc resp.
+		return nil
 	}
 
 	ans := deepcopy.Copy(msg.Answer).([]dnsmessage.RR)

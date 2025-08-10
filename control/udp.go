@@ -169,16 +169,18 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 			return err
 		}
 
-		// Dial
-		// Only print routing for new connection to avoid the log exploded (Quic and BT).
-		LogDial(src, dst, domain, dialOption, networkType, routingResult)
 		// Do not overwrite target.
 		// This fixes a problem that quic connection to google servers.
 		// Reproduce:
 		// docker run --rm --name curl-http3 ymuski/curl-http3 curl --http3 -o /dev/null -v -L https://i.ytimg.com
+		dialOption.DialTarget = dst.String()
+
+		// Dial
+		// Only print routing for new connection to avoid the log exploded (Quic and BT).
+		LogDial(src, dst, domain, dialOption, networkType, routingResult)
 		ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
 		defer cancel()
-		udpConn, err := dialOption.Dialer.ListenPacket(ctx, dst.String())
+		udpConn, err := dialOption.Dialer.ListenPacket(ctx, dialOption.DialTarget)
 		if err != nil {
 			netErr, ok := IsNetError(err)
 			err = oops.

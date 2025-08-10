@@ -64,9 +64,7 @@ func (ue *UdpEndpoint) WriteTo(b []byte, addr net.Addr) (int, error) {
 func (ue *UdpEndpoint) Close() error {
 	ue.cancel()
 	ue.mu.Lock()
-	if ue.deadlineTimer != nil {
-		ue.deadlineTimer.Stop()
-	}
+	ue.deadlineTimer.Stop()
 	ue.mu.Unlock()
 	return ue.conn.Close()
 }

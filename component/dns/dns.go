@@ -33,6 +33,7 @@ type Dns struct {
 
 type NewOption struct {
 	LocationFinder          *assets.LocationFinder
+	UpstreamReadyCallback   func(dnsUpstream *Upstream)
 	UpstreamResolverNetwork string
 }
 
@@ -64,6 +65,8 @@ func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 			Network: opt.UpstreamResolverNetwork,
 			FinishInitCallback: func(i int) func(raw *url.URL, upstream *Upstream) (err error) {
 				return func(raw *url.URL, upstream *Upstream) (err error) {
+					opt.UpstreamReadyCallback(upstream)
+
 					s.upstream2IndexMu.Lock()
 					s.upstream2Index[upstream] = i
 					s.upstream2IndexMu.Unlock()

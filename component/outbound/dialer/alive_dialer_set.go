@@ -99,7 +99,7 @@ func (a *AliveDialerSet) GetPriority(d *Dialer) int {
 	return a.dialerToPriority[d]
 }
 
-func (a *AliveDialerSet) printLatencies(networkType *NetworkType) {
+func (a *AliveDialerSet) PrintLatencies(networkType *NetworkType, level log.Level) {
 	var builder strings.Builder
 	if networkType != nil {
 		builder.WriteString(fmt.Sprintf("Group '%v' [%v]:\n", a.dialerGroupName, networkType.String()))
@@ -144,19 +144,26 @@ func (a *AliveDialerSet) printLatencies(networkType *NetworkType) {
 		// Then sort by latency (lower latency first)
 		return alive[i].sortingLatency < alive[j].sortingLatency
 	})
-	for i, dialer := range alive {
-		priorityStr := ""
-		if !samePriority {
-			priorityStr = fmt.Sprintf(" (priority: %d)", dialer.priority)
+	if len(alive) == 0 {
+		builder.WriteString("\t<Empty>\n")
+	} else {
+		for i, dialer := range alive {
+			priorityStr := ""
+			if !samePriority {
+				priorityStr = fmt.Sprintf(" (priority: %d)", dialer.priority)
+			}
+			tagStr := ""
+			if dialer.dialer.SubscriptionTag != "" {
+				tagStr = fmt.Sprintf(" [%v]", dialer.dialer.SubscriptionTag)
+			}
+			builder.WriteString(fmt.Sprintf("%4d.%v %v: %v%s\n", i+1, tagStr, dialer.dialer.Name, latencyString(dialer.latency, dialer.offset), priorityStr))
 		}
-		tagStr := ""
-		if dialer.dialer.SubscriptionTag != "" {
-			tagStr = fmt.Sprintf(" [%v]", dialer.dialer.SubscriptionTag)
-		}
-		builder.WriteString(fmt.Sprintf("%4d.%v %v: %v%s\n", i+1, tagStr, dialer.dialer.Name, latencyString(dialer.latency, dialer.offset), priorityStr))
 	}
-	// TODO: Log level?
-	log.Warnln(strings.TrimSuffix(builder.String(), "\n"))
+	if level == log.InfoLevel {
+		log.Infoln(strings.TrimSuffix(builder.String(), "\n"))
+	} else {
+		log.Warnln(strings.TrimSuffix(builder.String(), "\n"))
+	}
 }
 
 func (a *AliveDialerSet) getLatencyData(dialer *Dialer) (latency time.Duration, hasLatency bool) {
@@ -320,7 +327,7 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 				}
 				a.dialer[i] = newDialer
 				a.logDialerSelection(oldDialer, newDialer, networkType)
-				a.printLatencies(networkType)
+				a.PrintLatencies(networkType, log.WarnLevel)
 			}
 			a.handleAliveStateChange(newDialer != nil, networkType)
 		case consts.DialerSelectionPolicy_Fixed:
@@ -331,11 +338,6 @@ func (a *AliveDialerSet) NotifyLatencyChange(dialer *Dialer, alive bool) {
 				a.handleAliveStateChange(alive, networkType)
 			}
 		}
-	}
-
-	// TODO: Debug
-	if !alive {
-		a.printLatencies(nil)
 	}
 }
 

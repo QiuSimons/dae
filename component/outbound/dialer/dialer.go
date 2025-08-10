@@ -100,7 +100,7 @@ func (d *DialerPrometheus) initPrometheus(name string) {
 
 type GlobalOption struct {
 	D.ExtraOption
-	TcpCheckOptionRaw TcpCheckOptionRaw // Lazy parse
+	// TcpCheckOptionRaw TcpCheckOptionRaw // Lazy parse
 	CheckDnsOptionRaw CheckDnsOptionRaw // Lazy parse
 	CheckInterval     time.Duration
 	CheckTolerance    time.Duration
@@ -129,7 +129,7 @@ func NewGlobalOption(global *config.Global) *GlobalOption {
 			TlsFragmentInterval: global.TlsFragmentInterval,
 			UDPHopInterval:      global.UDPHopInterval,
 		},
-		TcpCheckOptionRaw: TcpCheckOptionRaw{Raw: global.TcpCheckUrl, Method: global.TcpCheckHttpMethod},
+		// TcpCheckOptionRaw: TcpCheckOptionRaw{Raw: global.TcpCheckUrl, Method: global.TcpCheckHttpMethod},
 		CheckDnsOptionRaw: CheckDnsOptionRaw{Raw: global.UdpCheckDns},
 		CheckInterval:     global.CheckInterval,
 		CheckTolerance:    global.CheckTolerance,

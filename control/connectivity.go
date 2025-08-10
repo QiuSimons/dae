@@ -12,7 +12,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, noConnectivityTrySniff bool, noConnectivityOutbound consts.OutboundIndex) func(alive bool, networkType *dialer.NetworkType) {
+func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, outboundName string, noConnectivityTrySniff bool, noConnectivityOutbound consts.OutboundIndex) func(alive bool, networkType *dialer.NetworkType) {
 	return func(alive bool, networkType *dialer.NetworkType) {
 		if c.closed.Err() != nil {
 			return
@@ -24,7 +24,7 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, noConnect
 			}
 			log.WithFields(log.Fields{
 				"outboundId": outbound,
-			}).Debugf("Outbound <%v> %v -> %v, notify the kernel program.", c.outboundId2Name[outbound], networkType.String(), strAlive)
+			}).Debugf("Outbound <%v> %v -> %v, notify the kernel program.", outboundName, networkType.String(), strAlive)
 		}
 
 		// 0: go control plane
@@ -43,7 +43,7 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, noConnect
 			log.WithFields(log.Fields{
 				"alive":    alive,
 				"network":  networkType.String(),
-				"outbound": c.outboundId2Name[outbound],
+				"outbound": outboundName,
 			}).Warnf("Failed to notify the kernel program: %v", err)
 		}
 	}

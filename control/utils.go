@@ -55,8 +55,10 @@ func (c *ControlPlane) RouteDialOption(p *RouteParam) (dialOption *DialOption, e
 	outboundIndex := consts.OutboundIndex(p.routingResult.Outbound)
 	// mark := p.routingResult.Mark
 
-	dialTarget, shouldReroute, dialIp := c.ChooseDialTarget(outboundIndex, p.Dest, p.Domain)
-	if shouldReroute {
+	verified, shouldReroute := c.VerifySniff(outboundIndex, p.Dest, p.Domain)
+	switch {
+	case c.rerouteMode == consts.RerouteMode_WhileNeed && shouldReroute,
+		c.rerouteMode == consts.RerouteMode_Force:
 		outboundIndex = consts.OutboundControlPlaneRouting
 	}
 
@@ -73,8 +75,6 @@ func (c *ControlPlane) RouteDialOption(p *RouteParam) (dialOption *DialOption, e
 				outboundIndex.String(),
 			)
 		}
-		// Reset dialTarget.
-		dialTarget, _, dialIp = c.ChooseDialTarget(outboundIndex, p.Dest, p.Domain)
 	default:
 	}
 	// if mark == 0 {
@@ -90,12 +90,8 @@ func (c *ControlPlane) RouteDialOption(p *RouteParam) (dialOption *DialOption, e
 		return
 	}
 	outbound := c.outbounds[outboundIndex]
-	// TODO: ChooseDialTarget 应该替我们实现这个逻辑?
-	if p.networkType.L4Proto == consts.L4ProtoStr_UDP {
-		dialIp = false
-	}
-	// TODO: Fallback 时 IP 仍会显示之前的地址, 应该单独处理日志
-	dialer, fallback, err := outbound.SelectFallbackIpVersion(p.networkType, !dialIp)
+	dialTarget, dialIp := c.ChooseDialTarget(outboundIndex, p.Dest, p.Domain, verified && c.dialTargetOverride)
+	dialer, fallback, err := outbound.SelectFallbackIpVersion(p.networkType, dialIp)
 	fallbackDialer := false
 	if err != nil {
 		dialer, err = c.outbounds[c.noConnectivityOutbound].Select(p.networkType)
@@ -117,37 +113,33 @@ func (c *ControlPlane) RouteDialOption(p *RouteParam) (dialOption *DialOption, e
 
 func LogDial(src, dst netip.AddrPort, domain string, dialOption *DialOption, networkType *dialer.NetworkType, routingResult *bpfRoutingResult) {
 	if log.IsLevelEnabled(log.InfoLevel) {
+		fields := log.Fields{
+			"network": networkType.String(),
+			"sniffed": domain,
+			"ip":      RefineAddrPortToShow(dst),
+			"pid":     routingResult.Pid,
+			"ifindex": routingResult.Ifindex,
+			"dscp":    routingResult.Dscp,
+			"pname":   ProcessName2String(routingResult.Pname[:]),
+			"mac":     Mac2String(routingResult.Mac[:]),
+		}
+		if consts.OutboundIndex(routingResult.Outbound) == consts.OutboundControlPlaneRouting {
+			fields["controlPlaneRoute"] = "true"
+		}
 		networkTypeStr := strings.ToUpper(networkType.String())
 		if dialOption.FallbackIpVersion {
 			networkTypeStr = networkTypeStr + " (fallback)"
 		}
 		if dialOption.FallbackDialer {
-			log.WithFields(log.Fields{
-				"network":          networkType.String(),
-				"originalOutbound": dialOption.Outbound.Name,
-				"fallbackDialer":   dialOption.Dialer.Name,
-				"sniffed":          domain,
-				"ip":               RefineAddrPortToShow(dst),
-				"pid":              routingResult.Pid,
-				"ifindex":          routingResult.Ifindex,
-				"dscp":             routingResult.Dscp,
-				"pname":            ProcessName2String(routingResult.Pname[:]),
-				"mac":              Mac2String(routingResult.Mac[:]),
-			}).Infof("[%v] %v <-(fallback)-> %v", networkTypeStr, RefineSourceToShow(src, dst.Addr()), dialOption.DialTarget)
+			fields["originalOutbound"] = dialOption.Outbound.Name
+			fields["originalPolicy"] = dialOption.Outbound.GetSelectionPolicy()
+			fields["fallbackDialer"] = dialOption.Dialer.Name
+			log.WithFields(fields).Infof("[%v] %v <-(fallback)-> %v", networkTypeStr, RefineSourceToShow(src, dst.Addr()), dialOption.DialTarget)
 		} else {
-			log.WithFields(log.Fields{
-				"network":  networkType.String(),
-				"outbound": dialOption.Outbound.Name,
-				"policy":   dialOption.Outbound.GetSelectionPolicy(),
-				"dialer":   dialOption.Dialer.Name,
-				"sniffed":  domain,
-				"ip":       RefineAddrPortToShow(dst),
-				"pid":      routingResult.Pid,
-				"ifindex":  routingResult.Ifindex,
-				"dscp":     routingResult.Dscp,
-				"pname":    ProcessName2String(routingResult.Pname[:]),
-				"mac":      Mac2String(routingResult.Mac[:]),
-			}).Infof("[%v] %v <-> %v", networkTypeStr, RefineSourceToShow(src, dst.Addr()), dialOption.DialTarget)
+			fields["outbound"] = dialOption.Outbound.Name
+			fields["policy"] = dialOption.Outbound.GetSelectionPolicy()
+			fields["dialer"] = dialOption.Dialer.Name
+			log.WithFields(fields).Infof("[%v] %v <-> %v", networkTypeStr, RefineSourceToShow(src, dst.Addr()), dialOption.DialTarget)
 		}
 	}
 }
