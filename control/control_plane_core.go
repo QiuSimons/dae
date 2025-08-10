@@ -20,7 +20,6 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
-	dnsmessage "github.com/miekg/dns"
 	"github.com/mohae/deepcopy"
 	"github.com/safchain/ethtool"
 	"github.com/samber/oops"
@@ -35,9 +34,8 @@ var coreFlip = 0
 type controlPlaneCore struct {
 	mu sync.Mutex
 
-	deferFuncs      []func() error
-	bpf             *bpfObjects
-	outboundId2Name map[uint8]string
+	deferFuncs []func() error
+	bpf        *bpfObjects
 
 	kernelVersion *internal.Version
 
@@ -46,10 +44,13 @@ type controlPlaneCore struct {
 	bpfEjected bool
 
 	// IP -> rule index -> matched count
-	// >1 means the current IP has at least one mapped domain that match this rule.
+	// >=1 means the current IP has at least one mapped domain that match this rule.
 	domainBumpMap map[netip.Addr][]uint32
+	// IP -> rule index -> unmatched count
+	domainUnmatchedMap map[netip.Addr][]uint32
 	// IP -> rule index -> is all matched (Bitmap)
-	// one means all domains mapeed by the current IP address are matched.
+	// one means all domains mapped by the current IP address are matched.
+	// TODO: 现在的算法中, 这个值可能不准确
 	domainRoutingMap map[netip.Addr][]uint32
 	bumpMapMu        sync.Mutex
 
@@ -60,7 +61,6 @@ type controlPlaneCore struct {
 
 func newControlPlaneCore(
 	bpf *bpfObjects,
-	outboundId2Name map[uint8]string,
 	kernelVersion *internal.Version,
 	isReload bool,
 ) *controlPlaneCore {
@@ -75,18 +75,18 @@ func newControlPlaneCore(
 	ifmgr := component.NewInterfaceManager()
 	deferFuncs = append(deferFuncs, ifmgr.Close)
 	return &controlPlaneCore{
-		deferFuncs:       deferFuncs,
-		bpf:              bpf,
-		outboundId2Name:  outboundId2Name,
-		kernelVersion:    kernelVersion,
-		flip:             coreFlip,
-		isReload:         isReload,
-		bpfEjected:       false,
-		ifmgr:            ifmgr,
-		domainBumpMap:    make(map[netip.Addr][]uint32),
-		domainRoutingMap: make(map[netip.Addr][]uint32),
-		closed:           closed,
-		close:            toClose,
+		deferFuncs:         deferFuncs,
+		bpf:                bpf,
+		kernelVersion:      kernelVersion,
+		flip:               coreFlip,
+		isReload:           isReload,
+		bpfEjected:         false,
+		ifmgr:              ifmgr,
+		domainBumpMap:      make(map[netip.Addr][]uint32),
+		domainUnmatchedMap: make(map[netip.Addr][]uint32),
+		domainRoutingMap:   make(map[netip.Addr][]uint32),
+		closed:             closed,
+		close:              toClose,
 	}
 }
 
@@ -637,170 +637,132 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 	return
 }
 
-// Parse ips from DNS resp answers.
-func getIPs(answer []dnsmessage.RR) (ips []netip.Addr) {
-	for _, ans := range answer {
-		var (
-			ip netip.Addr
-			ok bool
-		)
-		switch body := ans.(type) {
-		case *dnsmessage.A:
-			ip, ok = netip.AddrFromSlice(body.A)
-		case *dnsmessage.AAAA:
-			ip, ok = netip.AddrFromSlice(body.AAAA)
-		}
-		if !ok || ip.IsUnspecified() {
-			continue
-		}
-		ips = append(ips, ip)
-	}
-	return
-}
-
 func getBit(bitmap []uint32, index int) uint32 {
 	return bitmap[index/32] >> (index % 32) & 1
 }
 
-// BatchNewDomain update bpf map domain_bump and domain_routing. This function should be invoked every new cache.
-func (c *controlPlaneCore) BatchNewDomain(cache *DnsCache, domainBitmap []uint32) error {
-	ips := getIPs(cache.Answer)
-	if len(ips) == 0 {
-		return nil
-	}
+func setBit(bitmap []uint32, index int) {
+	bitmap[index/32] |= 1 << (index % 32)
+}
 
+func clearBit(bitmap []uint32, index int) {
+	bitmap[index/32] &^= 1 << (index % 32)
+}
+
+// BatchNewDomain update bpf map domain_bump and domain_routing. This function should be invoked every new cache.
+// TODO: 处理域名 IP 变更的情况
+// 这需要对新增的 answers 单独调用 BatchNewDomain, 同时针对每个 answer 单独处理过期时的 BatchRemoveDomain
+func (c *controlPlaneCore) BatchNewDomain(ip netip.Addr, domainBitmap []uint32) error {
 	// Update bpf map.
 	// Construct keys and vals, and BpfMapBatchUpdate.
-	var keys [][4]uint32
-	var vals_bump []bpfDomainRouting
-	var vals_routing []bpfDomainRouting
-
 	c.bumpMapMu.Lock()
 	defer c.bumpMapMu.Unlock()
 
-	r := bpfDomainRouting{}
-
-	if consts.MaxMatchSetLen/32 != len(r.Bitmap) || len(domainBitmap) != len(r.Bitmap) {
-		return oops.Errorf("domain bitmap length not sync with kern program")
+	var bumpMap bpfDomainRouting
+	if consts.MaxMatchSetLen/32 != len(bumpMap.Bitmap) || len(domainBitmap) != len(bumpMap.Bitmap) {
+		panic("domain bitmap length not sync with kern program")
 	}
 
-	for _, ip := range ips {
-		ip6 := ip.As16()
-		keys = append(keys, common.Ipv6ByteSliceToUint32Array(ip6[:]))
-
-		newBumpMap, exists := c.domainBumpMap[ip]
-		if !exists {
-			newBumpMap = make([]uint32, consts.MaxMatchSetLen)
+	_, exists := c.domainBumpMap[ip]
+	if !exists {
+		c.domainBumpMap[ip] = make([]uint32, consts.MaxMatchSetLen)
+		c.domainUnmatchedMap[ip] = make([]uint32, consts.MaxMatchSetLen)
+	}
+	for index := 0; index < consts.MaxMatchSetLen; index++ {
+		current := getBit(domainBitmap, index)
+		c.domainBumpMap[ip][index] += current
+		if current == 0 {
+			c.domainUnmatchedMap[ip][index]++
 		}
+	}
+
+	for index, val := range c.domainBumpMap[ip] {
+		if val > 0 {
+			setBit(bumpMap.Bitmap[:], index)
+		}
+	}
+
+	if !exists {
+		// New IP, init routingMap
+		c.domainRoutingMap[ip] = slices.Clone(domainBitmap)
+	} else {
+		// Old IP, Update routingMap
 		for index := 0; index < consts.MaxMatchSetLen; index++ {
-			newBumpMap[index] += getBit(domainBitmap, index)
-		}
-		c.domainBumpMap[ip] = newBumpMap
-
-		for index, val := range newBumpMap {
-			if val > 0 {
-				// Bitmap should only be zero or one, we set to one if it's >1
-				r.Bitmap[index/32] |= 1 << (index % 32)
+			// If this domain matches the current rule, all previous domains also match the current rule, then it still matches, so no need to update
+			// If previous domains not match the current rule, then it still not match, so no need to update
+			// If previous domains match the current rule, but current domain not match, then it does not match, so need to update
+			if getBit(c.domainRoutingMap[ip], index) == 1 && getBit(domainBitmap, index) != 1 {
+				clearBit(c.domainRoutingMap[ip], index)
 			}
 		}
-		vals_bump = append(vals_bump, r)
-
-		if !exists {
-			// New IP, init routingMap
-			c.domainRoutingMap[ip] = slices.Clone(domainBitmap)
-		} else {
-			// Old IP, Update routingMap
-			for index := 0; index < consts.MaxMatchSetLen; index++ {
-				// If this domain matches the current rule, all previous domains also match the current rule, then it still matches, so no need to update
-				// If previous domains not match the current rule, then it still not match, so no need to update
-				// If previous domains match the current rule, but current domain not match, then it does not match, so need to update
-				if getBit(c.domainRoutingMap[ip], index) == 1 && getBit(domainBitmap, index) != 1 {
-					c.domainRoutingMap[ip][index/32] &^= 1 << (index % 32)
-				}
-			}
-		}
-		copy(r.Bitmap[:], c.domainRoutingMap[ip])
-		vals_routing = append(vals_routing, r)
 	}
-	if _, err := BpfMapBatchUpdate(c.bpf.DomainBumpMap, keys, vals_bump, &ebpf.BatchOptions{
-		ElemFlags: uint64(ebpf.UpdateAny),
-	}); err != nil {
+
+	ip6 := ip.As16()
+	key := common.Ipv6ByteSliceToUint32Array(ip6[:])
+	if err := c.bpf.DomainBumpMap.Update(key, bumpMap, ebpf.UpdateAny); err != nil {
 		return err
 	}
-	if _, err := BpfMapBatchUpdate(c.bpf.DomainRoutingMap, keys, vals_routing, &ebpf.BatchOptions{
-		ElemFlags: uint64(ebpf.UpdateAny),
-	}); err != nil {
+	if err := c.bpf.DomainRoutingMap.Update(key, c.domainRoutingMap[ip], ebpf.UpdateAny); err != nil {
 		return err
 	}
 	return nil
 }
 
+// TODO: 如果不 GC 有什么代价呢? 随着时间增加准确性下降?
 // BatchRemoveDomainBump update or remove bpf map domain_bump and domain_routing.
-func (c *controlPlaneCore) BatchRemoveDomain(cache *DnsCache, domainBitmap []uint32) error {
-	ips := getIPs(cache.Answer)
-	if len(ips) == 0 {
-		return nil
-	}
-
+func (c *controlPlaneCore) BatchRemoveDomain(ip netip.Addr, domainBitmap []uint32) error {
 	// Update bpf map.
 	// Update and determine whether to delete
-	var keys_del [][4]uint32
-	var keys_modify [][4]uint32
-	var vals_modify_bump []bpfDomainRouting
-	var vals_modify_routing []bpfDomainRouting
 
 	c.bumpMapMu.Lock()
 	defer c.bumpMapMu.Unlock()
 
-	for _, ip := range ips {
-		ip6 := ip.As16()
-		newBumpMapVal := c.domainBumpMap[ip]
-		for index := 0; index < consts.MaxMatchSetLen; index++ {
-			newBumpMapVal[index] -= domainBitmap[index/32] >> (index % 32) & 1
+	for index := 0; index < consts.MaxMatchSetLen; index++ {
+		current := getBit(domainBitmap, index)
+		c.domainBumpMap[ip][index] -= current
+		if current == 0 {
+			c.domainUnmatchedMap[ip][index]--
 		}
+	}
 
-		bumpMap := bpfDomainRouting{}
-		routingMap := bpfDomainRouting{}
-		copy(routingMap.Bitmap[:], c.domainRoutingMap[ip])
+	var bumpMap bpfDomainRouting
 
-		del := true
-		for index, val := range newBumpMapVal {
-			if val > 0 {
-				del = false // This IP refers to some domain name that matches the domain_set, so there is no need to delete
-				bumpMap.Bitmap[index/32] |= 1 << (index % 32)
-			} else {
-				// This IP no longer refers to any domain name that matches the domain_set
-				routingMap.Bitmap[index/32] &^= 1 << (index % 32)
+	del := true
+	for index, val := range c.domainBumpMap[ip] {
+		if val > 0 {
+			// This IP still refers to some domain name that matches the domain_set, so there is no need to delete
+			del = false
+			setBit(bumpMap.Bitmap[:], index)
+			if c.domainUnmatchedMap[ip][index] == 0 {
+				setBit(c.domainRoutingMap[ip], index)
 			}
-		}
-		if del {
-			delete(c.domainBumpMap, ip)
-			delete(c.domainRoutingMap, ip)
-			keys_del = append(keys_del, common.Ipv6ByteSliceToUint32Array(ip6[:]))
 		} else {
-			c.domainBumpMap[ip] = newBumpMapVal
-			keys_modify = append(keys_modify, common.Ipv6ByteSliceToUint32Array(ip6[:]))
-			vals_modify_bump = append(vals_modify_bump, bumpMap)
-			vals_modify_routing = append(vals_modify_routing, routingMap)
+			// This IP no longer refers to any domain name that matches the domain_set
+			clearBit(c.domainRoutingMap[ip], index)
 		}
-	}
-	if _, err := BpfMapBatchDelete(c.bpf.DomainBumpMap, keys_del); err != nil {
-		return err
-	}
-	if _, err := BpfMapBatchDelete(c.bpf.DomainRoutingMap, keys_del); err != nil {
-		return err
-	}
-	if _, err := BpfMapBatchUpdate(c.bpf.DomainBumpMap, keys_modify, vals_modify_bump, &ebpf.BatchOptions{
-		ElemFlags: uint64(ebpf.UpdateAny),
-	}); err != nil {
-		return err
-	}
-	if _, err := BpfMapBatchUpdate(c.bpf.DomainRoutingMap, keys_modify, vals_modify_routing, &ebpf.BatchOptions{
-		ElemFlags: uint64(ebpf.UpdateAny),
-	}); err != nil {
-		return err
 	}
 
+	ip6 := ip.As16()
+	key := common.Ipv6ByteSliceToUint32Array(ip6[:])
+
+	if del {
+		delete(c.domainBumpMap, ip)
+		delete(c.domainUnmatchedMap, ip)
+		delete(c.domainRoutingMap, ip)
+		if err := c.bpf.DomainBumpMap.Delete(key); err != nil {
+			return err
+		}
+		if err := c.bpf.DomainRoutingMap.Delete(key); err != nil {
+			return err
+		}
+	} else {
+		if err := c.bpf.DomainBumpMap.Update(key, bumpMap, ebpf.UpdateAny); err != nil {
+			return err
+		}
+		if err := c.bpf.DomainRoutingMap.Update(key, c.domainRoutingMap[ip], ebpf.UpdateAny); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

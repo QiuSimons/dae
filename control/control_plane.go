@@ -57,8 +57,6 @@ type ControlPlane struct {
 
 	dnsController *DnsController
 
-	dialMode consts.DialMode
-
 	routingMatcher *RoutingMatcher
 
 	ctx    context.Context
@@ -71,9 +69,12 @@ type ControlPlane struct {
 	wanInterface []string
 	lanInterface []string
 
-	sniffingTimeout   time.Duration
-	tproxyPortProtect bool
-	soMarkFromDae     uint32
+	dialTargetOverride bool
+	rerouteMode        consts.RerouteMode
+	sniffingTimeout    time.Duration
+	sniffVerifyMode    consts.SniffVerifyMode
+	tproxyPortProtect  bool
+	soMarkFromDae      uint32
 }
 
 // TODO: 统一 Outbound 中的DNS解析器
@@ -195,11 +196,8 @@ func NewControlPlane(
 		}
 	}
 	log.Infof("Loaded eBPF programs and maps")
-	// outboundId2Name can be modified later.
-	outboundId2Name := make(map[uint8]string)
 	core := newControlPlaneCore(
 		bpf,
-		outboundId2Name,
 		&kernelVersion,
 		_bpf != nil,
 	)
@@ -217,13 +215,12 @@ func NewControlPlane(
 	}
 	option := dialer.NewGlobalOption(global)
 
-	// Dial mode.
-	dialMode, err := consts.ParseDialMode(global.DialMode)
-	if err != nil {
-		return nil, err
-	}
+	consts.VerifyRerouteMode(string(global.RerouteMode))
+	consts.VerifySniffVerifyMode(string(global.SniffVerifyMode))
+
 	sniffingTimeout := global.SniffingTimeout
-	if dialMode == consts.DialMode_Ip {
+	if !global.DialTargetOverride && global.RerouteMode == consts.RerouteMode_None {
+		// Sniff is not needed.
 		sniffingTimeout = 0
 	}
 
@@ -260,6 +257,7 @@ func NewControlPlane(
 	// FIXME: Ugly code here: reset grpc and meek clients manually.
 	grpc.CleanGlobalClientConnectionCache()
 	meek.CleanGlobalRoundTripperCache()
+
 	dialerSet := outbound.NewDialerSetFromLinks(option, tagToNodeList)
 	deferFuncs = append(deferFuncs, dialerSet.Close)
 	for _, group := range groups {
@@ -295,22 +293,13 @@ func NewControlPlane(
 			dialers = newDialers
 			finalOption = groupOption
 		}
+		id := uint8(len(outbounds))
 		// Create dialer group and append it to outbounds.
 		dialerGroup := outbound.NewDialerGroup(finalOption, group.Name, dialers, annos, *policy,
-			true, core.outboundAliveChangeCallback(uint8(len(outbounds)), global.NoConnectivityTrySniff, noConnectivityOutbound))
+			true, core.outboundAliveChangeCallback(id, group.Name, global.NoConnectivityTrySniff, noConnectivityOutbound))
 		outbounds = append(outbounds, dialerGroup)
 	}
 
-	/// Node Connectivity Check.
-	for _, g := range outbounds {
-		for _, d := range g.Dialers {
-			// We only activate check of nodes that have a group.
-			d.ActivateCheck(&wg)
-		}
-		// TODO: 打印延迟
-	}
-
-	/// Routing.
 	// Generate outboundName2Id from outbounds.
 	if len(outbounds) > int(consts.OutboundUserDefinedMax) {
 		return nil, oops.Errorf("too many outbounds")
@@ -321,8 +310,17 @@ func NewControlPlane(
 			return nil, oops.Errorf("duplicated outbound name: %v", o.Name)
 		}
 		outboundName2Id[o.Name] = uint8(i)
-		outboundId2Name[uint8(i)] = o.Name
 	}
+
+	/// Node Connectivity Check.
+	for _, g := range outbounds {
+		for _, d := range g.Dialers {
+			// We only activate check of nodes that have a group.
+			d.ActivateCheck(&wg)
+		}
+	}
+
+	/// Routing.
 	// Apply rules optimizers.
 	locationFinder := assets.NewLocationFinder(externGeoDataDirs)
 	var rules []*config_parser.RoutingRule
@@ -364,7 +362,6 @@ func NewControlPlane(
 		outbounds:              outbounds,
 		noConnectivityOutbound: noConnectivityOutbound,
 		dnsController:          nil,
-		dialMode:               dialMode,
 		routingMatcher:         routingMatcher,
 		ctx:                    ctx,
 		cancel:                 cancel,
@@ -373,6 +370,9 @@ func NewControlPlane(
 		realDomainSet:          bloom.NewWithEstimates(2048, 0.001),
 		lanInterface:           global.LanInterface,
 		wanInterface:           global.WanInterface,
+		dialTargetOverride:     global.DialTargetOverride,
+		rerouteMode:            global.RerouteMode,
+		sniffVerifyMode:        global.SniffVerifyMode,
 		sniffingTimeout:        sniffingTimeout,
 		tproxyPortProtect:      global.TproxyPortProtect,
 		soMarkFromDae:          global.SoMarkFromDae,
@@ -386,6 +386,7 @@ func NewControlPlane(
 	/// DNS upstream.
 	dnsUpstream, err := dns.New(dnsConfig, &dns.NewOption{
 		LocationFinder:          locationFinder,
+		UpstreamReadyCallback:   plane.dnsUpstreamReadyCallback,
 		UpstreamResolverNetwork: "udp",
 	})
 	if err != nil {
@@ -403,18 +404,19 @@ func NewControlPlane(
 		return nil, err
 	}
 	if plane.dnsController, err = NewDnsController(dnsUpstream, &DnsControllerOption{
-		NewLookupCache: func(cache *DnsCache) error {
-			domainBitmap := plane.routingMatcher.domainMatcher.MatchDomainBitmap(cache.Fqdn)
+		MatchBitmap: func(fqdn string) []uint32 {
+			return plane.routingMatcher.domainMatcher.MatchDomainBitmap(fqdn)
+		},
+		NewLookupCache: func(ip netip.Addr, domainBitmap []uint32) error {
 			// Write mappings into eBPF map:
 			// IP record (from dns lookup) -> domain routing
-			if err = core.BatchNewDomain(cache, domainBitmap); err != nil {
+			if err := core.BatchNewDomain(ip, domainBitmap); err != nil {
 				return oops.Wrapf(err, "BatchNewDomain")
 			}
 			return nil
 		},
-		LookupCacheTimeout: func(cache *DnsCache) error {
-			domainBitmap := plane.routingMatcher.domainMatcher.MatchDomainBitmap(cache.Fqdn)
-			if err = core.BatchRemoveDomain(cache, domainBitmap); err != nil {
+		LookupCacheTimeout: func(ip netip.Addr, domainBitmap []uint32) error {
+			if err := core.BatchRemoveDomain(ip, domainBitmap); err != nil {
 				return oops.Wrapf(err, "BatchRemoveDomain")
 			}
 			return nil
@@ -425,7 +427,7 @@ func NewControlPlane(
 	}); err != nil {
 		return nil, err
 	}
-	deferFuncs = append(deferFuncs, plane.dnsController.Close)
+	plane.deferFuncs = append(deferFuncs, plane.dnsController.Close)
 	// TODO: 保留 LookupCache?
 	// TODO: 在 DNS Config 不变的情况下，保留 DNSCache
 	// Lookup Cache 存储任何 lookup 所产生的记录, 这些记录是否需要GC?
@@ -444,6 +446,10 @@ func NewControlPlane(
 	}
 
 	wg.Wait()
+
+	for _, g := range outbounds {
+		g.PrintLatency()
+	}
 
 	/// Bind to links. Binding should be advance of dialerGroups to avoid un-routable old connection.
 	// Bind to LAN
@@ -510,14 +516,14 @@ func ParseFixedDomainTtl(ks []config.KeyableString) (map[string]int, error) {
 func ParseGroupOverrideOption(group config.Group, global config.Global) (*dialer.GlobalOption, error) {
 	result := global
 	changed := false
-	if group.TcpCheckUrl != nil {
-		result.TcpCheckUrl = group.TcpCheckUrl
-		changed = true
-	}
-	if group.TcpCheckHttpMethod != "" {
-		result.TcpCheckHttpMethod = group.TcpCheckHttpMethod
-		changed = true
-	}
+	// if group.TcpCheckUrl != nil {
+	// 	result.TcpCheckUrl = group.TcpCheckUrl
+	// 	changed = true
+	// }
+	// if group.TcpCheckHttpMethod != "" {
+	// 	result.TcpCheckHttpMethod = group.TcpCheckHttpMethod
+	// 	changed = true
+	// }
 	if group.UdpCheckDns != nil {
 		result.UdpCheckDns = group.UdpCheckDns
 		changed = true
@@ -545,58 +551,100 @@ func (c *ControlPlane) InjectBpf(bpf *bpfObjects) {
 	c.core.InjectBpf(bpf)
 }
 
-func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip.AddrPort, domain string) (dialTarget string, shouldReroute bool, dialIp bool) {
-	dialMode := consts.DialMode_Ip
-
-	if !outbound.IsReserved() && domain != "" {
-		switch c.dialMode {
-		case consts.DialMode_Domain:
-			if c.dnsController.lookupCache.Get(queryInfo{qname: domain, qtype: common.AddrToDnsType(dst.Addr())}) != nil {
-				// Has Cached A/AAAA records. It is a real domain.
-				// For this case, It should be able to handle domain match set directly in kernel
-				dialMode = consts.DialMode_Domain
-			} else {
-				// Successful sniff without DNS lookup record.
-				// In this case, the kernel may not handle domain match set, so re-route is required.
-				// Check if the domain is in real-domain set (bloom filter).
-				// TODO: 产生一个真的DNS查询? 这样能被缓存
-				c.muRealDomainSet.Lock()
-				if c.realDomainSet.TestString(domain) {
-					c.muRealDomainSet.Unlock()
-					dialMode = consts.DialMode_Domain
-
-					// Should use this domain to reroute
-					shouldReroute = true
-				} else {
-					c.muRealDomainSet.Unlock()
-					// Lookup A/AAAA to make sure it is a real domain.
-					// TODO: 这里可能可以直接使用正常的 DNS 解析流程, 从而可以得到缓存
-					if ip46, err := netutils.ResolveIp46(domain); err == nil && ip46.IsValid() {
-						// Has A/AAAA records. It is a real domain.
-						dialMode = consts.DialMode_Domain
-						// Add it to real-domain set.
-						c.muRealDomainSet.Lock()
-						c.realDomainSet.AddString(domain)
-						c.muRealDomainSet.Unlock()
-
-						// Should use this domain to reroute
-						shouldReroute = true
-					}
-				}
-			}
-		case consts.DialMode_DomainCao:
-			shouldReroute = true
-			fallthrough
-		case consts.DialMode_DomainPlus:
-			dialMode = consts.DialMode_Domain
-		}
+func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) {
+	// Waiting for ready.
+	select {
+	case <-c.ctx.Done():
+		return
+	case <-c.ready:
 	}
 
-	switch dialMode {
-	case consts.DialMode_Ip:
-		dialTarget = dst.String()
-		dialIp = true
-	case consts.DialMode_Domain:
+	/// Updates dns cache to support domain routing for hostname of dns_upstream.
+	deadline := time.Hour * 24 * 365 * 10 // Ten years later.
+	fqdn := dnsmessage.CanonicalName(dnsUpstream.Hostname)
+
+	if dnsUpstream.Ip4.IsValid() {
+		typ := dnsmessage.TypeA
+		answers := []dnsmessage.RR{&dnsmessage.A{
+			Hdr: dnsmessage.RR_Header{
+				Name:   dnsmessage.CanonicalName(fqdn),
+				Rrtype: typ,
+				Class:  dnsmessage.ClassINET,
+				Ttl:    0, // Must be zero.
+			},
+			A: dnsUpstream.Ip4.AsSlice(),
+		}}
+		c.dnsController.LookupCache(queryInfo{qname: fqdn, qtype: typ}, answers, int(deadline.Seconds()))
+	}
+
+	if dnsUpstream.Ip6.IsValid() {
+		typ := dnsmessage.TypeAAAA
+		answers := []dnsmessage.RR{&dnsmessage.AAAA{
+			Hdr: dnsmessage.RR_Header{
+				Name:   dnsmessage.CanonicalName(fqdn),
+				Rrtype: typ,
+				Class:  dnsmessage.ClassINET,
+				Ttl:    0, // Must be zero.
+			},
+			AAAA: dnsUpstream.Ip6.AsSlice(),
+		}}
+		c.dnsController.LookupCache(queryInfo{qname: fqdn, qtype: typ}, answers, int(deadline.Seconds()))
+	}
+}
+
+// verified 返回 domain 是不是 dst 的域名
+// shouldReroute 返回 Kernel 是否有可能没有正确 Route
+// SniffVerifyMode_Loose 在这个域名存在时, 通过认证
+// SniffVerifyMode_Strict 在这个域名尝试过对应的 DNS 解析时, 通过认证
+func (c *ControlPlane) VerifySniff(outbound consts.OutboundIndex, dst netip.AddrPort, domain string) (verified bool, shouldReroute bool) {
+	if domain == "" {
+		return
+	}
+	fqdn := dnsmessage.CanonicalName(domain)
+	if dnsCache := c.dnsController.lookupCache.Get(queryInfo{qname: fqdn, qtype: common.AddrToDnsType(dst.Addr())}); dnsCache != nil {
+		includeInCache := IncludeIp(dst.Addr(), dnsCache)
+		// Successful sniff without DNS lookup record.
+		// In this case, the kernel may not handle domain match set, so re-route is required.
+		shouldReroute = !includeInCache
+		switch c.sniffVerifyMode {
+		case consts.SniffVerifyMode_None, consts.SniffVerifyMode_Loose:
+			verified = true
+		case consts.SniffVerifyMode_Strict:
+			verified = includeInCache
+		}
+	} else {
+		// Successful sniff without DNS lookup record.
+		shouldReroute = true
+		// Check if the domain is in real-domain set (bloom filter).
+		switch c.sniffVerifyMode {
+		case consts.SniffVerifyMode_None:
+			verified = true
+		case consts.SniffVerifyMode_Strict:
+			verified = false
+		case consts.SniffVerifyMode_Loose:
+			// TODO: 产生一个真的DNS查询? 这样能被缓存
+			c.muRealDomainSet.Lock()
+			verified = c.realDomainSet.TestString(fqdn) // Test if the domain is in real-domain set.
+			c.muRealDomainSet.Unlock()
+			if !verified {
+				// Lookup A/AAAA to make sure it is a real domain.
+				// TODO: 这里可能可以直接使用正常的 DNS 解析流程, 从而可以得到缓存
+				if ip46, err := netutils.ResolveIp46(fqdn); err == nil && ip46.IsValid() {
+					// Has A/AAAA records. It is a real domain.
+					// Add it to real-domain set.
+					c.muRealDomainSet.Lock()
+					c.realDomainSet.AddString(fqdn)
+					c.muRealDomainSet.Unlock()
+					verified = true
+				}
+			}
+		}
+	}
+	return
+}
+
+func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip.AddrPort, domain string, override bool) (dialTarget string, dialIp bool) {
+	if override {
 		if strings.HasPrefix(domain, "[") && strings.HasSuffix(domain, "]") {
 			// Sniffed domain may be like `[2606:4700:20::681a:d1f]`. We should remove the brackets.
 			domain = domain[1 : len(domain)-1]
@@ -605,11 +653,9 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 			// domain is IPv4 or IPv6 (has colon)
 			dialTarget = net.JoinHostPort(domain, strconv.Itoa(int(dst.Port())))
 			dialIp = true
-
 		} else if _, _, err := net.SplitHostPort(domain); err == nil {
 			// domain is already domain:port
 			dialTarget = domain
-
 		} else {
 			dialTarget = net.JoinHostPort(domain, strconv.Itoa(int(dst.Port())))
 		}
@@ -617,8 +663,11 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 			"from": dst.String(),
 			"to":   dialTarget,
 		}).Debugln("Rewrite dial target to domain")
+	} else {
+		dialTarget = dst.String()
+		dialIp = true
 	}
-	return dialTarget, shouldReroute, dialIp
+	return
 }
 
 type Listener struct {
