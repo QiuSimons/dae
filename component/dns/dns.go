@@ -64,14 +64,12 @@ func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 		r := &UpstreamResolver{
 			Raw:     u,
 			Network: opt.UpstreamResolverNetwork,
-			FinishInitCallback: func(i int) func(raw *url.URL, upstream *Upstream) (err error) {
-				return func(raw *url.URL, upstream *Upstream) (err error) {
-					opt.UpstreamReadyCallback(upstream)
-
+			FinishInitCallback: func(i int) func(raw *url.URL, upstream *Upstream) {
+				return func(raw *url.URL, upstream *Upstream) {
+					go opt.UpstreamReadyCallback(upstream)
 					s.upstream2IndexMu.Lock()
 					s.upstream2Index[upstream] = i
 					s.upstream2IndexMu.Unlock()
-					return nil
 				}
 			}(i),
 			mu:       sync.Mutex{},

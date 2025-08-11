@@ -150,7 +150,7 @@ type UpstreamResolver struct {
 	Raw     *url.URL
 	Network string
 	// FinishInitCallback may be invoked again if err is not nil
-	FinishInitCallback func(raw *url.URL, upstream *Upstream) (err error)
+	FinishInitCallback func(raw *url.URL, upstream *Upstream)
 	mu                 sync.Mutex
 	upstream           *Upstream
 	init               bool
@@ -165,10 +165,7 @@ func (u *UpstreamResolver) GetUpstream() (_ *Upstream, err error) {
 		if u.upstream, err = NewUpstream(ctx, u.Raw, u.Network); err != nil {
 			return nil, fmt.Errorf("failed to init dns upstream: %w", err)
 		}
-		if err = u.FinishInitCallback(u.Raw, u.upstream); err != nil {
-			u.upstream = nil
-			return
-		}
+		u.FinishInitCallback(u.Raw, u.upstream)
 		u.init = true
 	}
 	return u.upstream, nil
