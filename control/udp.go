@@ -32,11 +32,6 @@ const (
 	MaxRetry       = 2
 )
 
-type UdpEndpointKey struct {
-	LAddr netip.AddrPort
-	RAddr netip.AddrPort
-}
-
 func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Msg, timeout time.Duration) {
 	if sniffDns {
 		var dnsmsg dnsmessage.Msg
@@ -74,14 +69,13 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 		})
 	}
 
-	key := UdpEndpointKey{
-		LAddr: src,
-		RAddr: dst,
-	}
-
 	/// Sniff
 	if !skipSniffing {
 		// Sniff Quic, ...
+		key := PacketSnifferKey{
+			LAddr: src,
+			RAddr: dst,
+		}
 		_sniffer, _ := DefaultPacketSnifferSessionMgr.GetOrCreate(key, nil)
 		_sniffer.Mu.Lock()
 		// Re-get sniffer from pool to confirm the transaction is not done.
@@ -137,11 +131,11 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 		IpVersion: consts.IpVersionStrFromAddr(dst.Addr()),
 	}
 
-	l := DefaultUdpEndpointPool.UdpEndpointKeyLocker.Lock(key)
-	defer DefaultUdpEndpointPool.UdpEndpointKeyLocker.Unlock(key, l)
+	l := DefaultUdpEndpointPool.UdpEndpointKeyLocker.Lock(src)
+	defer DefaultUdpEndpointPool.UdpEndpointKeyLocker.Unlock(src, l)
 
 	// Get udp endpoint.
-	ue, ok := DefaultUdpEndpointPool.Get(key)
+	ue, ok := DefaultUdpEndpointPool.Get(src)
 	// If the udp endpoint has been not alive, remove it from pool and retry
 	// UDP 不是面向连接的, 在 tcp 中, 一个连接失败, 我们会重置中继它, 等待一个新的连接
 	// 在 UDP 中, l -> r继续中继到新的节点, 并在新的节点上进行 r -> l 中继
@@ -153,7 +147,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 				"dialer":  ue.dialer.Name,
 			}).Debugln("Old udp endpoint was not alive and removed.")
 		}
-		_ = DefaultUdpEndpointPool.Remove(key)
+		_ = DefaultUdpEndpointPool.Remove(src)
 		ok = false
 	}
 	if !ok {
@@ -204,7 +198,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 			}
 			return nil
 		}
-		ue = DefaultUdpEndpointPool.Create(key, &UdpEndpointOptions{
+		ue = DefaultUdpEndpointPool.Create(src, &UdpEndpointOptions{
 			PacketConn: udpConn,
 			Handler: func(data []byte, from netip.AddrPort) (err error) {
 				return sendPkt(data, from, src)
@@ -215,7 +209,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 		// Receive UDP messages.
 		go func() {
 			err = ue.run()
-			DefaultUdpEndpointPool.Remove(key)
+			DefaultUdpEndpointPool.Remove(src)
 			if err != nil {
 				netErr, ok := IsNetError(err)
 				err = oops.
@@ -241,7 +235,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 	// Try to write data
 	_, err = ue.WriteTo(data, net.UDPAddrFromAddrPort(dst))
 	if err != nil {
-		DefaultUdpEndpointPool.Remove(key)
+		DefaultUdpEndpointPool.Remove(src)
 		netErr, ok := IsNetError(err)
 		err = oops.
 			In("UdpEndpoint l -> r relay").

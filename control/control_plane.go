@@ -779,7 +779,8 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			DefaultUdpTaskPool.EmitTask(convergeSrc.String(), func() {
 				defer pool.PutBuffer(data)
 				var routingResult *bpfRoutingResult
-				routingResult, err := c.core.RetrieveRoutingResult(src, dst, unix.IPPROTO_UDP)
+				// Use an empty AddrPort for dst
+				routingResult, err := c.core.RetrieveRoutingResult(src, netip.AddrPort{}, unix.IPPROTO_UDP)
 				if err != nil {
 					log.Warningf("%+v", oops.Wrapf(err, "No AddrPort presented"))
 					return
