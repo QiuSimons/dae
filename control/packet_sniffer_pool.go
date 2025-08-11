@@ -7,6 +7,7 @@ package control
 
 import (
 	"fmt"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -27,10 +28,15 @@ type PacketSniffer struct {
 // PacketSnifferPool is a full-cone udp conn pool
 type PacketSnifferPool struct {
 	pool             sync.Map
-	snifferKeyLocker common.KeyLocker[UdpEndpointKey]
+	snifferKeyLocker common.KeyLocker[PacketSnifferKey]
 }
 type PacketSnifferOptions struct {
 	Ttl time.Duration
+}
+
+type PacketSnifferKey struct {
+	LAddr netip.AddrPort
+	RAddr netip.AddrPort
 }
 
 var DefaultPacketSnifferSessionMgr = NewPacketSnifferPool()
@@ -39,7 +45,7 @@ func NewPacketSnifferPool() *PacketSnifferPool {
 	return &PacketSnifferPool{}
 }
 
-func (p *PacketSnifferPool) Remove(key UdpEndpointKey, sniffer *PacketSniffer) (err error) {
+func (p *PacketSnifferPool) Remove(key PacketSnifferKey, sniffer *PacketSniffer) (err error) {
 	if ue, ok := p.pool.LoadAndDelete(key); ok {
 		sniffer.Close()
 		if ue != sniffer {
@@ -49,7 +55,7 @@ func (p *PacketSnifferPool) Remove(key UdpEndpointKey, sniffer *PacketSniffer) (
 	return nil
 }
 
-func (p *PacketSnifferPool) Get(key UdpEndpointKey) *PacketSniffer {
+func (p *PacketSnifferPool) Get(key PacketSnifferKey) *PacketSniffer {
 	_qs, ok := p.pool.Load(key)
 	if !ok {
 		return nil
@@ -58,7 +64,7 @@ func (p *PacketSnifferPool) Get(key UdpEndpointKey) *PacketSniffer {
 }
 
 // TODO: 工作原理
-func (p *PacketSnifferPool) GetOrCreate(key UdpEndpointKey, createOption *PacketSnifferOptions) (qs *PacketSniffer, isNew bool) {
+func (p *PacketSnifferPool) GetOrCreate(key PacketSnifferKey, createOption *PacketSnifferOptions) (qs *PacketSniffer, isNew bool) {
 	_qs, ok := p.pool.Load(key)
 begin:
 	if !ok {

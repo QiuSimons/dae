@@ -72,20 +72,21 @@ func (ue *UdpEndpoint) Close() error {
 // UdpEndpointPool is a full-cone udp conn pool
 type UdpEndpointPool struct {
 	pool                 sync.Map
-	UdpEndpointKeyLocker common.KeyLocker[UdpEndpointKey]
+	UdpEndpointKeyLocker common.KeyLocker[netip.AddrPort]
 }
 
 type UdpEndpointOptions struct {
 	PacketConn net.PacketConn
 	Handler    UdpHandler
 	NatTimeout time.Duration
+	Src        netip.AddrPort
 
 	Dialer *dialer.Dialer
 }
 
 var DefaultUdpEndpointPool = UdpEndpointPool{}
 
-func (p *UdpEndpointPool) Remove(key UdpEndpointKey) (err error) {
+func (p *UdpEndpointPool) Remove(key netip.AddrPort) (err error) {
 	if ue, ok := p.pool.LoadAndDelete(key); ok {
 		ue.(*UdpEndpoint).Close()
 
@@ -97,7 +98,7 @@ func (p *UdpEndpointPool) Remove(key UdpEndpointKey) (err error) {
 	return nil
 }
 
-func (p *UdpEndpointPool) Get(key UdpEndpointKey) (udpEndpoint *UdpEndpoint, ok bool) {
+func (p *UdpEndpointPool) Get(key netip.AddrPort) (udpEndpoint *UdpEndpoint, ok bool) {
 	_ue, ok := p.pool.Load(key)
 	if !ok {
 		return nil, ok
@@ -110,7 +111,7 @@ func (p *UdpEndpointPool) Get(key UdpEndpointKey) (udpEndpoint *UdpEndpoint, ok 
 	return _ue.(*UdpEndpoint), ok
 }
 
-func (p *UdpEndpointPool) Create(key UdpEndpointKey, createOption *UdpEndpointOptions) (udpEndpoint *UdpEndpoint) {
+func (p *UdpEndpointPool) Create(key netip.AddrPort, createOption *UdpEndpointOptions) (udpEndpoint *UdpEndpoint) {
 	TotalConnections.Inc()
 	ActiveConnections.Inc()
 	ActiveConnectionsUDP.Inc()

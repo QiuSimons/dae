@@ -1183,11 +1183,17 @@ static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan, u32 lin
 
 	bool isdns = tuples.five.dport == bpf_htons(53) && l4proto == IPPROTO_UDP;
 
+	struct tuples_key routing_tuples_key = tuples.five;
+	if (l4proto == IPPROTO_UDP) {
+		__builtin_memset(&routing_tuples_key.dip, 0, sizeof(routing_tuples_key.dip));
+		routing_tuples_key.dport = 0;
+	}
+
 	if (l4proto == IPPROTO_TCP && !(tcph.syn && !tcph.ack)) {
 		// Established TCP Connection.
 		struct routing_result *routing_result =
 			bpf_map_lookup_elem(&routing_tuples_map,
-					    &tuples.five);
+					    &routing_tuples_key);
 
 		if (routing_result)
 			goto control_plane;
@@ -1325,7 +1331,7 @@ static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan, u32 lin
 	}
 
 	// Only proxy traffic should be saved.
-	if (bpf_map_update_elem(&routing_tuples_map, &tuples.five,
+	if (bpf_map_update_elem(&routing_tuples_map, &routing_tuples_key,
 				&routing_result, BPF_ANY)) {
 		bpf_printk("shot save routing result: %d", s64_ret);
 		return TC_ACT_SHOT;
