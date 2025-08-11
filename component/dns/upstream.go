@@ -103,7 +103,7 @@ func NewUpstream(ctx context.Context, upstream *url.URL, resolverNetwork string)
 		return nil, fmt.Errorf("%w: %v", ErrFormat, err)
 	}
 
-	ip46, err := netutils.ResolveIp46(hostname)
+	ip46, err := netutils.ParseOrResolveIp46(hostname)
 	if err != nil {
 		return nil, oops.Wrapf(err, "failed to resolve dns_upstream %v", upstream.String())
 	}
@@ -160,20 +160,16 @@ func (u *UpstreamResolver) GetUpstream() (_ *Upstream, err error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if !u.init {
-		defer func() {
-			if err == nil {
-				if err = u.FinishInitCallback(u.Raw, u.upstream); err != nil {
-					u.upstream = nil
-					return
-				}
-				u.init = true
-			}
-		}()
 		ctx, cancel := context.WithTimeout(context.TODO(), 10*time.Second)
 		defer cancel()
 		if u.upstream, err = NewUpstream(ctx, u.Raw, u.Network); err != nil {
 			return nil, fmt.Errorf("failed to init dns upstream: %w", err)
 		}
+		if err = u.FinishInitCallback(u.Raw, u.upstream); err != nil {
+			u.upstream = nil
+			return
+		}
+		u.init = true
 	}
 	return u.upstream, nil
 }
