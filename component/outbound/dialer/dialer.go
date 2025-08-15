@@ -54,12 +54,13 @@ type Dialer struct {
 }
 
 type DialerPrometheus struct {
+	prometheusRegistry                                            prometheus.Registerer
 	TotalConnections                                              prometheus.Counter
 	ActiveConnections, ActiveConnectionsTCP, ActiveConnectionsUDP prometheus.Gauge
 	DialLatency                                                   prometheus.Histogram
 }
 
-func (d *DialerPrometheus) initPrometheus(name string) {
+func (d *DialerPrometheus) initPrometheus(prometheusRegistry prometheus.Registerer, name string) {
 	d.ActiveConnections = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Name: fmt.Sprintf("dae_active_connections_%s", name),
@@ -91,16 +92,11 @@ func (d *DialerPrometheus) initPrometheus(name string) {
 			Buckets: prometheus.ExponentialBuckets(0.001, 2, 15), // 1ms ~ ~16s
 		},
 	)
-	prometheus.Unregister(d.TotalConnections)
-	prometheus.Unregister(d.ActiveConnections)
-	prometheus.Unregister(d.ActiveConnectionsTCP)
-	prometheus.Unregister(d.ActiveConnectionsUDP)
-	prometheus.Unregister(d.DialLatency)
-	prometheus.Register(d.TotalConnections)
-	prometheus.Register(d.ActiveConnections)
-	prometheus.Register(d.ActiveConnectionsTCP)
-	prometheus.Register(d.ActiveConnectionsUDP)
-	prometheus.Register(d.DialLatency)
+	prometheusRegistry.MustRegister(d.TotalConnections)
+	prometheusRegistry.MustRegister(d.ActiveConnections)
+	prometheusRegistry.MustRegister(d.ActiveConnectionsTCP)
+	prometheusRegistry.MustRegister(d.ActiveConnectionsUDP)
+	prometheusRegistry.MustRegister(d.DialLatency)
 }
 
 type GlobalOption struct {
@@ -143,7 +139,7 @@ func NewGlobalOption(global *config.Global) *GlobalOption {
 }
 
 // NewDialer is for register in general.
-func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOption, property *Property) *Dialer {
+func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOption, property *Property, prometheusRegistry prometheus.Registerer) *Dialer {
 	ctx, cancel := context.WithCancel(context.Background())
 	d := &Dialer{
 		GlobalOption:           option,
@@ -157,8 +153,9 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOpt
 		checkCh:                make(chan time.Time, 1),
 		ctx:                    ctx,
 		cancel:                 cancel,
+		DialerPrometheus:       DialerPrometheus{prometheusRegistry: prometheusRegistry},
 	}
-	d.initPrometheus(d.Name)
+	d.initPrometheus(prometheusRegistry, d.Name)
 	log.WithField("dialer", d.Name).
 		WithField("p", unsafe.Pointer(d)).
 		Traceln("NewDialer")
@@ -166,7 +163,7 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOpt
 }
 
 func (d *Dialer) Clone() *Dialer {
-	return NewDialer(d.Dialer, d.GlobalOption, d.InstanceOption, d.Property)
+	return NewDialer(d.Dialer, d.GlobalOption, d.InstanceOption, d.Property, d.prometheusRegistry)
 }
 
 func (d *Dialer) Close() error {

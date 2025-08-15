@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/outbound/protocol/direct"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/samber/oops"
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -53,9 +54,10 @@ var (
 		"http://www.gstatic.com/generate_204",
 		"http://www.qualcomm.cn/generate_204",
 	}
-	std          = log.New()
-	pprofServer  *http.Server
-	controlPlane *control.ControlPlane
+	std              = log.New()
+	pprofServer      *http.Server
+	prometheusServer *http.Server
+	controlPlane     *control.ControlPlane
 )
 
 func init() {
@@ -127,10 +129,11 @@ func Run(conf *config.Config, externGeoDataDirs []string) {
 	_ = os.Remove(AbortFile)
 
 	startPprofServer(conf.Global.PprofPort)
-	startPrometheusServer()
+	prometheusRegistry := prometheus.NewRegistry()
+	startPrometheusServer(conf.Global.MetricsPort, prometheusRegistry)
 
 	// New ControlPlane.
-	c, err := newControlPlane(nil, conf, externGeoDataDirs)
+	c, err := newControlPlane(nil, conf, externGeoDataDirs, prometheusRegistry)
 	if err != nil {
 		std.Fatalln(err)
 	}
@@ -249,15 +252,18 @@ loop:
 				// New logger.
 				logger.SetLogger(newConf.Global.LogLevel, disableTimestamp, nil)
 
+				// New prometheus registry.
+				prometheusRegistry = prometheus.NewRegistry()
+
 				// New control plane.
 				obj := c.EjectBpf()
 				std.Warnln("[Reload] Load new control plane")
-				newC, err := newControlPlane(obj, newConf, externGeoDataDirs)
+				newC, err := newControlPlane(obj, newConf, externGeoDataDirs, prometheusRegistry)
 				if err != nil {
 					reloadingErr = err
 					std.Errorf("%+v", oops.Wrapf(err, "[Reload] Failed to reload; try to roll back configuration"))
 					// Load last config back.
-					newC, err = newControlPlane(obj, conf, externGeoDataDirs)
+					newC, err = newControlPlane(obj, conf, externGeoDataDirs, prometheusRegistry)
 					if err != nil {
 						sdnotify.Stopping()
 						obj.Close()
@@ -285,6 +291,7 @@ loop:
 				oldC.Close()
 
 				startPprofServer(conf.Global.PprofPort)
+				startPrometheusServer(conf.Global.MetricsPort, prometheusRegistry)
 			case syscall.SIGHUP:
 				// Ignore.
 				continue
@@ -305,21 +312,30 @@ func startPprofServer(port uint16) {
 		pprofServer = nil
 	}
 
-	if port != 0 {
-		pprofAddr := fmt.Sprintf("localhost:%d", port)
-		pprofServer = &http.Server{Addr: pprofAddr, Handler: nil}
-		go pprofServer.ListenAndServe()
-		runtime.SetBlockProfileRate(1)
-		runtime.SetMutexProfileFraction(1)
+	if port == 0 {
+		return
 	}
+	pprofServer = &http.Server{Addr: fmt.Sprintf("localhost:%d", port)}
+	go pprofServer.ListenAndServe()
+	runtime.SetBlockProfileRate(1)
+	runtime.SetMutexProfileFraction(1)
 }
 
-func startPrometheusServer() {
-	http.Handle("/metrics", promhttp.Handler())
-	go http.ListenAndServe(":2112", nil)
+func startPrometheusServer(port uint16, prometheusRegistry *prometheus.Registry) {
+	if prometheusServer != nil {
+		prometheusServer.Shutdown(context.Background())
+		prometheusServer = nil
+	}
+
+	if port == 0 {
+		return
+	}
+
+	prometheusServer = &http.Server{Addr: fmt.Sprintf("localhost:%d", port), Handler: promhttp.HandlerFor(prometheusRegistry, promhttp.HandlerOpts{})}
+	go prometheusServer.ListenAndServe()
 }
 
-func newControlPlane(bpf interface{}, conf *config.Config, externGeoDataDirs []string) (c *control.ControlPlane, err error) {
+func newControlPlane(bpf interface{}, conf *config.Config, externGeoDataDirs []string, prometheusRegistry *prometheus.Registry) (c *control.ControlPlane, err error) {
 	// Deep copy to prevent modification.
 	conf = deepcopy.Copy(conf).(*config.Config)
 
@@ -437,6 +453,7 @@ func newControlPlane(bpf interface{}, conf *config.Config, externGeoDataDirs []s
 		&conf.Global,
 		&conf.Dns,
 		externGeoDataDirs,
+		prometheusRegistry,
 	)
 	if err != nil {
 		return nil, err
