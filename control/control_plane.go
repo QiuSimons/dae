@@ -36,6 +36,7 @@ import (
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/pool"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/daeuniverse/outbound/transport/grpc"
 	"github.com/daeuniverse/outbound/transport/meek"
@@ -74,6 +75,8 @@ type ControlPlane struct {
 	sniffVerifyMode    consts.SniffVerifyMode
 	tproxyPortProtect  bool
 	soMarkFromDae      uint32
+
+	PrometheusRegistry *prometheus.Registry
 }
 
 // TODO: 统一 Outbound 中的DNS解析器
@@ -88,6 +91,7 @@ func NewControlPlane(
 	global *config.Global,
 	dnsConfig *config.Dns,
 	externGeoDataDirs []string,
+	prometheusRegistry *prometheus.Registry,
 ) (*ControlPlane, error) {
 	// TODO: Some users reported that enabling GSO on the client wgrpcould affect the performance of watching YouTube, so we disabled it by default.
 	if _, ok := os.LookupEnv("QUIC_GO_DISABLE_GSO"); !ok {
@@ -208,6 +212,8 @@ func NewControlPlane(
 		}
 	}()
 
+	initPrometheus(prometheusRegistry)
+
 	/// DialerGroups (outbounds).
 	if global.AllowInsecure {
 		log.Warnln("AllowInsecure is enabled, but it is not recommended. Please make sure you have to turn it on.")
@@ -257,7 +263,7 @@ func NewControlPlane(
 	grpc.CleanGlobalClientConnectionCache()
 	meek.CleanGlobalRoundTripperCache()
 
-	dialerSet := outbound.NewDialerSetFromLinks(option, tagToNodeList)
+	dialerSet := outbound.NewDialerSetFromLinks(option, prometheusRegistry, tagToNodeList)
 	deferFuncs = append(deferFuncs, dialerSet.Close)
 	for _, group := range groups {
 		// Parse policy.
@@ -374,6 +380,7 @@ func NewControlPlane(
 		sniffingTimeout:        sniffingTimeout,
 		tproxyPortProtect:      global.TproxyPortProtect,
 		soMarkFromDae:          global.SoMarkFromDae,
+		PrometheusRegistry:     prometheusRegistry,
 	}
 	defer func() {
 		if err != nil {
