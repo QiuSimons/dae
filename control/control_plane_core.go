@@ -418,7 +418,15 @@ func (c *controlPlaneCore) setupLocalTcpFastRedirect() (err error) {
 		return oops.Errorf("AttachSkMsgVerdict: %w", err)
 	}
 	return nil
+}
 
+func (c *controlPlaneCore) setupExitHandler() (err error) {
+	link, err := link.Tracepoint("sched", "sched_process_exit", c.bpf.HandleExit, nil)
+	if err != nil {
+		return oops.Errorf("AttachRawTracepoint: %w", err)
+	}
+	c.deferFuncs = append(c.deferFuncs, link.Close)
+	return nil
 }
 
 // bindWan supports lazy-bind if interface `ifname` is not found.
