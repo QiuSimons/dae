@@ -92,11 +92,46 @@ func (d *DialerPrometheus) initPrometheus(prometheusRegistry prometheus.Register
 			Buckets: prometheus.ExponentialBuckets(0.001, 2, 15), // 1ms ~ ~16s
 		},
 	)
-	prometheusRegistry.MustRegister(d.TotalConnections)
-	prometheusRegistry.MustRegister(d.ActiveConnections)
-	prometheusRegistry.MustRegister(d.ActiveConnectionsTCP)
-	prometheusRegistry.MustRegister(d.ActiveConnectionsUDP)
-	prometheusRegistry.MustRegister(d.DialLatency)
+
+	if err := prometheusRegistry.Register(d.TotalConnections); err != nil {
+		if are, ok := err.(prometheus.AlreadyRegisteredError); ok {
+			d.TotalConnections = are.ExistingCollector.(prometheus.Counter)
+		} else {
+			log.Errorf("Failed to register TotalConnections metric: %v", err)
+		}
+	}
+
+	if err := prometheusRegistry.Register(d.ActiveConnections); err != nil {
+		if are, ok := err.(prometheus.AlreadyRegisteredError); ok {
+			d.ActiveConnections = are.ExistingCollector.(prometheus.Gauge)
+		} else {
+			log.Errorf("Failed to register ActiveConnections metric: %v", err)
+		}
+	}
+
+	if err := prometheusRegistry.Register(d.ActiveConnectionsTCP); err != nil {
+		if are, ok := err.(prometheus.AlreadyRegisteredError); ok {
+			d.ActiveConnectionsTCP = are.ExistingCollector.(prometheus.Gauge)
+		} else {
+			log.Errorf("Failed to register ActiveConnectionsTCP metric: %v", err)
+		}
+	}
+
+	if err := prometheusRegistry.Register(d.ActiveConnectionsUDP); err != nil {
+		if are, ok := err.(prometheus.AlreadyRegisteredError); ok {
+			d.ActiveConnectionsUDP = are.ExistingCollector.(prometheus.Gauge)
+		} else {
+			log.Errorf("Failed to register ActiveConnectionsUDP metric: %v", err)
+		}
+	}
+
+	if err := prometheusRegistry.Register(d.DialLatency); err != nil {
+		if are, ok := err.(prometheus.AlreadyRegisteredError); ok {
+			d.DialLatency = are.ExistingCollector.(prometheus.Histogram)
+		} else {
+			log.Errorf("Failed to register DialLatency metric: %v", err)
+		}
+	}
 }
 
 type GlobalOption struct {
