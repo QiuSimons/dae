@@ -572,6 +572,9 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 func (c *controlPlaneCore) bindDaens() (err error) {
 	daens := GetDaeNetns()
 
+	_ = daens.With(func() error {
+		return netlink.LinkSetTxQLen(daens.Dae0Peer(), 1000)
+	})
 	// tproxy_dae0peer_ingress@eth0 at dae netns
 	daens.With(func() error {
 		return c.addQdisc(daens.Dae0Peer().Attrs().Name)
