@@ -61,33 +61,36 @@ type DialerPrometheus struct {
 }
 
 func (d *DialerPrometheus) initPrometheus(registry prometheus.Registerer, name string) {
-	d.ActiveConnections = prometheus.NewGauge(
+	// Generate unique name using pointer address to avoid duplicate metrics
+	uniqueName := fmt.Sprintf("%s_%p", name, d)
+	
+d.ActiveConnections = prometheus.NewGauge(
 		prometheus.GaugeOpts{
-			Name: fmt.Sprintf("dae_active_connections_%s", name),
+			Name: fmt.Sprintf("dae_active_connections_%s", uniqueName),
 			Help: fmt.Sprintf("Number of active connections in %s", name),
 		},
 	)
 	d.ActiveConnectionsTCP = prometheus.NewGauge(
 		prometheus.GaugeOpts{
-			Name: fmt.Sprintf("dae_active_connections_%s_tcp", name),
+			Name: fmt.Sprintf("dae_active_connections_%s_tcp", uniqueName),
 			Help: fmt.Sprintf("Number of active TCP connections in %s", name),
 		},
 	)
 	d.ActiveConnectionsUDP = prometheus.NewGauge(
 		prometheus.GaugeOpts{
-			Name: fmt.Sprintf("dae_active_connections_%s_udp", name),
+			Name: fmt.Sprintf("dae_active_connections_%s_udp", uniqueName),
 			Help: fmt.Sprintf("Number of active UDP connections in %s", name),
 		},
 	)
 	d.TotalConnections = prometheus.NewCounter(
 		prometheus.CounterOpts{
-			Name: fmt.Sprintf("dae_total_connections_%s", name),
+			Name: fmt.Sprintf("dae_total_connections_%s", uniqueName),
 			Help: fmt.Sprintf("Total number of connections handled in %s", name),
 		},
 	)
 	d.DialLatency = prometheus.NewHistogram(
 		prometheus.HistogramOpts{
-			Name:    fmt.Sprintf("dae_dial_latency_seconds_%s", name),
+			Name:    fmt.Sprintf("dae_dial_latency_seconds_%s", uniqueName),
 			Help:    fmt.Sprintf("Dial latency in seconds in %s", name),
 			Buckets: prometheus.ExponentialBuckets(0.001, 2, 15), // 1ms ~ ~16s
 		},
