@@ -61,6 +61,12 @@ type DialerPrometheus struct {
 }
 
 func (d *DialerPrometheus) InitPrometheus(name string) {
+	// Capture registry in a local variable to prevent nil pointer due to concurrent modification
+	r := d.registry
+	if r == nil {
+		return
+	}
+
 	d.ActiveConnections = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Name: fmt.Sprintf("dae_active_connections_%s", name),
@@ -92,11 +98,16 @@ func (d *DialerPrometheus) InitPrometheus(name string) {
 			Buckets: prometheus.ExponentialBuckets(0.001, 2, 15), // 1ms ~ ~16s
 		},
 	)
-	d.registry.MustRegister(d.TotalConnections)
-	d.registry.MustRegister(d.ActiveConnections)
-	d.registry.MustRegister(d.ActiveConnectionsTCP)
-	d.registry.MustRegister(d.ActiveConnectionsUDP)
-	d.registry.MustRegister(d.DialLatency)
+
+	// Double-check registry is not nil before registering metrics
+	if r == nil {
+		return
+	}
+	r.MustRegister(d.TotalConnections)
+	r.MustRegister(d.ActiveConnections)
+	r.MustRegister(d.ActiveConnectionsTCP)
+	r.MustRegister(d.ActiveConnectionsUDP)
+	r.MustRegister(d.DialLatency)
 }
 
 type GlobalOption struct {

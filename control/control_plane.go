@@ -211,8 +211,14 @@ func NewControlPlane(
 		}
 	}()
 
-	prometheusRegistry := prometheus.NewRegistry()
-	initPrometheus(prometheusRegistry)
+	var prometheusRegistry *prometheus.Registry
+	if global.MetricsPort != 0 {
+		prometheusRegistry = prometheus.NewRegistry()
+		initPrometheus(prometheusRegistry)
+	} else {
+		// Leave as nil when metrics are disabled
+		prometheusRegistry = nil
+	}
 
 	/// DialerGroups (outbounds).
 	if global.AllowInsecure {
