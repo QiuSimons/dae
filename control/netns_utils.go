@@ -122,10 +122,16 @@ func (ns *DaeNetns) WithHost(f func() error) (err error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
+	origNs, err := netns.Get()
+	if err != nil {
+		return fmt.Errorf("failed to get current netns: %v", err)
+	}
+	defer origNs.Close()
+
 	if err = netns.Set(ns.hostNs); err != nil {
 		return fmt.Errorf("failed to switch to host netns: %v", err)
 	}
-	defer netns.Set(ns.daeNs)
+	defer netns.Set(origNs)
 
 	if err = f(); err != nil {
 		return fmt.Errorf("failed to run func in host netns: %v", err)
