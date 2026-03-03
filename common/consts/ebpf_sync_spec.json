@@ -13,7 +13,8 @@
     "Fallback",
     "MustRules",
     "Upstream",
-    "QType"
+    "QType",
+    "Interface"
   ],
   "l4_proto": [
     {

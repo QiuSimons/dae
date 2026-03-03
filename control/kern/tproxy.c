@@ -127,6 +127,8 @@ struct routing_result {
 	__u8 pname[TASK_COMM_LEN];
 	__u32 pid;
 	__u8 dscp;
+	__u32 ifindex;
+	__u8 direction_in;
 };
 
 struct tuples_key {
@@ -223,6 +225,12 @@ struct match_set {
 		enum IpVersionType ip_version;
 		__u32 pname[TASK_COMM_LEN / 4];
 		__u8 dscp;
+		struct {
+			__u16 userspace_index;
+			__u8 zone;
+			__u8 _padding;
+			__u32 ifindex;
+		} iface;
 	};
 	bool not ; // A subrule flag (this is not a match_set flag).
 	enum MatchType type;
@@ -697,6 +705,7 @@ struct route_params {
 	const __be32 *saddr;
 	const __be32 *daddr;
 	__be32 mac[4];
+	__u32 ifindex;
 };
 
 struct route_ctx {
@@ -961,6 +970,21 @@ static int route_loop_cb(__u32 index, void *data)
 		if (_dscp == match_set->dscp)
 			mark_matched(ctx);
 		break;
+	case MatchType_Interface:
+	{
+		bool direction_ok = false;
+		if (match_set->iface.ifindex == 0)
+			break;
+		if (ctx->params->ifindex != match_set->iface.ifindex)
+			break;
+		if (match_set->iface.zone == 1 && _is_wan)
+			direction_ok = true;
+		if (match_set->iface.zone == 2 && !_is_wan)
+			direction_ok = true;
+		if (direction_ok)
+			mark_matched(ctx);
+		break;
+	}
 	case MatchType_Fallback:
 #ifdef __DEBUG_ROUTING
 		bpf_printk("CHECK: hit fallback");
@@ -1478,6 +1502,7 @@ new_connection:;
 	else
 		params.flag[1] = IpVersionType_6;
 	params.flag[6] = tuples.dscp;
+	params.ifindex = skb->ifindex;
 	params.mac[2] = bpf_htonl((ethh.h_source[0] << 8) | (ethh.h_source[1]));
 	params.mac[3] =
 		bpf_htonl((ethh.h_source[2] << 24) | (ethh.h_source[3] << 16) |
@@ -1497,6 +1522,8 @@ new_connection:;
 	routing_result.mark = s64_ret >> 8;
 	routing_result.must = (s64_ret >> 40) & 1;
 	routing_result.dscp = tuples.dscp;
+	routing_result.ifindex = skb->ifindex;
+	routing_result.direction_in = 1;
 	__builtin_memcpy(routing_result.mac, ethh.h_source,
 			 sizeof(routing_result.mac));
 	/// NOTICE: No pid pname info for LAN packet.
@@ -1717,6 +1744,7 @@ static __always_inline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_
 			else
 				params.flag[1] = IpVersionType_6;
 			params.flag[6] = tuples.dscp;
+			params.ifindex = skb->ifindex;
 			if (pid_is_control_plane(skb, &pid_pname)) {
 				// From control plane. Direct.
 				return TC_ACT_OK;
@@ -1813,6 +1841,8 @@ static __always_inline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_
 				routing_result.mark = mark;
 				routing_result.must = must;
 				routing_result.dscp = tuples.dscp;
+				routing_result.ifindex = skb->ifindex;
+				routing_result.direction_in = 0;
 				__builtin_memcpy(routing_result.mac, ethh.h_source,
 						 sizeof(ethh.h_source));
 				if (pid_pname) {
@@ -1838,6 +1868,7 @@ static __always_inline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_
 		else
 			params.flag[1] = IpVersionType_6;
 		params.flag[6] = tuples.dscp;
+		params.ifindex = skb->ifindex;
 
 		struct pid_pname *pid_pname;
 
@@ -1898,6 +1929,8 @@ static __always_inline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_
 				routing_result.mark = mark;
 				routing_result.must = must;
 				routing_result.dscp = tuples.dscp;
+				routing_result.ifindex = skb->ifindex;
+				routing_result.direction_in = 0;
 				__builtin_memcpy(routing_result.mac, ethh.h_source,
 						 sizeof(ethh.h_source));
 				if (pid_pname) {

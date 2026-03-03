@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"structs"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/routing"
 	"golang.org/x/sys/unix"
 )
 
@@ -32,7 +34,18 @@ func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto con
 	copy(mac16[10:], routingResult.Mac[:])
 	bSrc := src.Addr().As16()
 	bDst := dst.Addr().As16()
-	outboundIndex, mark, must, err = c.routingMatcher.Match(
+
+	direction := routing.InterfaceDirectionOut
+	if routingResult.DirectionIn > 0 {
+		direction = routing.InterfaceDirectionIn
+	}
+	ifname := ""
+	if routingResult.Ifindex > 0 {
+		if iface, e := net.InterfaceByIndex(int(routingResult.Ifindex)); e == nil {
+			ifname = iface.Name
+		}
+	}
+	outboundIndex, mark, must, err = c.routingMatcher.MatchWithInterface(
 		bSrc,
 		bDst,
 		src.Port(),
@@ -43,6 +56,8 @@ func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto con
 		routingResult.Pname,
 		routingResult.Dscp,
 		mac16,
+		direction,
+		ifname,
 	)
 	return
 }

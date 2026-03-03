@@ -87,14 +87,16 @@ type bpfRedirectTuple struct {
 }
 
 type bpfRoutingResult struct {
-	_        structs.HostLayout
-	Mark     uint32
-	Must     uint8
-	Mac      [6]uint8
-	Outbound uint8
-	Pname    [16]uint8
-	Pid      uint32
-	Dscp     uint8
+	_           structs.HostLayout
+	Mark        uint32
+	Must        uint8
+	Mac         [6]uint8
+	Outbound    uint8
+	Pname       [16]uint8
+	Pid         uint32
+	Dscp        uint8
+	Ifindex     uint32
+	DirectionIn uint8
 }
 
 type bpfTuplesKey struct {

@@ -19,6 +19,7 @@ import (
 type RoutingMatcher struct {
 	lpmMatcher    []*trie.Trie
 	domainMatcher routing.DomainMatcher // All domain matchSets use one DomainMatcher.
+	interfaceSet  [][]routing.InterfaceMatcher
 
 	matches []bpfMatchSet
 }
@@ -35,6 +36,23 @@ func (m *RoutingMatcher) Match(
 	processName [16]uint8,
 	tos uint8,
 	mac [16]uint8,
+) (outboundIndex consts.OutboundIndex, mark uint32, must bool, err error) {
+	return m.MatchWithInterface(sourceAddr, destAddr, sourcePort, destPort, ipVersion, l4proto, domain, processName, tos, mac, routing.InterfaceDirectionOut, "")
+}
+
+func (m *RoutingMatcher) MatchWithInterface(
+	sourceAddr [16]uint8,
+	destAddr [16]uint8,
+	sourcePort uint16,
+	destPort uint16,
+	ipVersion consts.IpVersionType,
+	l4proto consts.L4ProtoType,
+	domain string,
+	processName [16]uint8,
+	tos uint8,
+	mac [16]uint8,
+	direction routing.InterfaceDirection,
+	ifname string,
 ) (outboundIndex consts.OutboundIndex, mark uint32, must bool, err error) {
 	if len(sourceAddr) != net.IPv6len || len(destAddr) != net.IPv6len || len(mac) != net.IPv6len {
 		return 0, 0, false, fmt.Errorf("bad address length")
@@ -104,6 +122,16 @@ func (m *RoutingMatcher) Match(
 		case consts.MatchType_Dscp:
 			if tos == match.Value[0] {
 				goodSubrule = true
+			}
+		case consts.MatchType_Interface:
+			idx := uint16(binary.LittleEndian.Uint16(match.Value[:2]))
+			if int(idx) < len(m.interfaceSet) {
+				for _, iface := range m.interfaceSet[idx] {
+					if routing.MatchInterface(iface, direction, ifname) {
+						goodSubrule = true
+						break
+					}
+				}
 			}
 		case consts.MatchType_Fallback:
 			goodSubrule = true

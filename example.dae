@@ -238,6 +238,9 @@ dns {
         request {
             # Lookup China mainland domains using alidns, otherwise googledns.
             qname(geosite:cn) -> alidns
+            # Interface matcher examples:
+            # interface(wan:0eth) -> googledns   # wan only supports out semantic
+            # interface(lan:3eth,4eth) -> alidns # lan only supports in semantic
             # fallback is also called default.
             fallback: googledns
         }
@@ -320,6 +323,9 @@ group {
 # See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md for full examples.
 routing {
     ### Preset rules.
+    # Interface matcher examples:
+    # interface(wan:0eth) -> direct
+    # interface(lan:3eth,4eth) -> my_group
 
     # Network managers in localhost should be direct to avoid false negative network connectivity check when binding to
     # WAN.

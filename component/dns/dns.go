@@ -147,8 +147,12 @@ func (s *Dns) InitUpstreams() {
 }
 
 func (s *Dns) RequestSelect(qname string, qtype uint16) (upstreamIndex consts.DnsRequestOutboundIndex, upstream *Upstream, err error) {
+	return s.RequestSelectWithInterface(qname, qtype, routing.InterfaceDirectionOut, "")
+}
+
+func (s *Dns) RequestSelectWithInterface(qname string, qtype uint16, direction routing.InterfaceDirection, ifname string) (upstreamIndex consts.DnsRequestOutboundIndex, upstream *Upstream, err error) {
 	// Route.
-	upstreamIndex, err = s.reqMatcher.Match(qname, qtype)
+	upstreamIndex, err = s.reqMatcher.MatchWithInterface(qname, qtype, direction, ifname)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -169,6 +173,10 @@ func (s *Dns) RequestSelect(qname string, qtype uint16) (upstreamIndex consts.Dn
 }
 
 func (s *Dns) ResponseSelect(msg *dnsmessage.Msg, fromUpstream *Upstream) (upstreamIndex consts.DnsResponseOutboundIndex, upstream *Upstream, err error) {
+	return s.ResponseSelectWithInterface(msg, fromUpstream, routing.InterfaceDirectionOut, "")
+}
+
+func (s *Dns) ResponseSelectWithInterface(msg *dnsmessage.Msg, fromUpstream *Upstream, direction routing.InterfaceDirection, ifname string) (upstreamIndex consts.DnsResponseOutboundIndex, upstream *Upstream, err error) {
 	if !msg.Response {
 		return 0, nil, fmt.Errorf("DNS response expected but DNS request received")
 	}
@@ -208,7 +216,7 @@ func (s *Dns) ResponseSelect(msg *dnsmessage.Msg, fromUpstream *Upstream) (upstr
 	}
 	from := fromValue.(int)
 	// Route.
-	upstreamIndex, err = s.respMatcher.Match(qname, qtype, ips, consts.DnsRequestOutboundIndex(from))
+	upstreamIndex, err = s.respMatcher.MatchWithInterface(qname, qtype, ips, consts.DnsRequestOutboundIndex(from), direction, ifname)
 	if err != nil {
 		return 0, nil, err
 	}

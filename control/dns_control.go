@@ -25,6 +25,7 @@ import (
 	"github.com/daeuniverse/dae/component/dns"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/outbound/pkg/fastrand"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/sirupsen/logrus"
@@ -390,7 +391,6 @@ func (c *DnsController) bpfUpdateWorker() {
 		}
 	}
 }
-
 
 // triggerBpfUpdateIfNeeded enqueues a BPF update task if needed.
 // This is non-blocking: if the queue is full, the update is skipped
@@ -871,6 +871,24 @@ type udpRequest struct {
 	routingResult *bpfRoutingResult
 }
 
+func dnsInterfaceContext(req *udpRequest) (routing.InterfaceDirection, string) {
+	if req == nil || req.routingResult == nil {
+		return routing.InterfaceDirectionOut, ""
+	}
+	direction := routing.InterfaceDirectionOut
+	if req.routingResult.DirectionIn > 0 {
+		direction = routing.InterfaceDirectionIn
+	}
+	if req.routingResult.Ifindex == 0 {
+		return direction, ""
+	}
+	iface, err := net.InterfaceByIndex(int(req.routingResult.Ifindex))
+	if err != nil {
+		return direction, ""
+	}
+	return direction, iface.Name
+}
+
 type dialArgument struct {
 	l4proto      consts.L4ProtoStr
 	ipversion    consts.IpVersionStr
@@ -1145,7 +1163,8 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 		if c.routing == nil {
 			return fmt.Errorf("dns routing is not configured")
 		}
-		upstreamIndex, _, err := c.routing.RequestSelect(qname, qtype)
+		direction, ifname := dnsInterfaceContext(req)
+		upstreamIndex, _, err := c.routing.RequestSelectWithInterface(qname, qtype, direction, ifname)
 		if err != nil {
 			return err
 		}
@@ -1394,7 +1413,8 @@ func (c *DnsController) handleWithResponseWriter_(
 	if c.routing == nil {
 		return fmt.Errorf("dns routing is not configured")
 	}
-	upstreamIndex, upstream, err := c.routing.RequestSelect(qname, qtype)
+	direction, ifname := dnsInterfaceContext(req)
+	upstreamIndex, upstream, err := c.routing.RequestSelectWithInterface(qname, qtype, direction, ifname)
 	if err != nil {
 		return err
 	}
@@ -1464,7 +1484,7 @@ func (c *DnsController) writeCachedResponse(resp []byte, reqId uint16, req *udpR
 	// Optimization: Patch ID directly in the packed buffer if possible.
 	// For UDP, we can use Write() directly. For TCP, we might need WriteMsg or manual length.
 	// However, most responseWriters here are either UDP or wrappers that handle message framing.
-	
+
 	if responseWriter != nil {
 		// msgCapturer is used by singleflight path to capture *Msg value.
 		// Keep WriteMsg semantics for this internal writer.
@@ -1637,7 +1657,8 @@ func (c *DnsController) dialSend(ctx context.Context, invokingDepth int, req *ud
 	}
 
 	// Route response.
-	upstreamIndex, nextUpstream, err := c.routing.ResponseSelect(respMsg, upstream)
+	direction, ifname := dnsInterfaceContext(req)
+	upstreamIndex, nextUpstream, err := c.routing.ResponseSelectWithInterface(respMsg, upstream, direction, ifname)
 	if err != nil {
 		return err
 	}
