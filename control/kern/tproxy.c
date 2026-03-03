@@ -973,6 +973,7 @@ static int route_loop_cb(__u32 index, void *data)
 	case MatchType_Interface:
 	{
 		bool direction_ok = false;
+
 		if (match_set->iface.ifindex == 0)
 			break;
 		if (ctx->params->ifindex != match_set->iface.ifindex)
