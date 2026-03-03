@@ -121,7 +121,6 @@ func (ns *DaeNetns) WithHost(f func() error) (err error) {
 
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
-
 	origNs, err := netns.Get()
 	if err != nil {
 		return fmt.Errorf("failed to get current netns: %v", err)
