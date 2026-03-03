@@ -882,11 +882,16 @@ func dnsInterfaceContext(req *udpRequest) (routing.InterfaceDirection, string) {
 	if req.routingResult.Ifindex == 0 {
 		return direction, ""
 	}
-	iface, err := net.InterfaceByIndex(int(req.routingResult.Ifindex))
-	if err != nil {
-		return direction, ""
-	}
-	return direction, iface.Name
+	ifname := ""
+	_ = GetDaeNetns().WithHost(func() error {
+		iface, err := net.InterfaceByIndex(int(req.routingResult.Ifindex))
+		if err != nil {
+			return nil
+		}
+		ifname = iface.Name
+		return nil
+	})
+	return direction, ifname
 }
 
 type dialArgument struct {

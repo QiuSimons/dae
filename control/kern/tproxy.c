@@ -706,6 +706,7 @@ struct route_params {
 	const __be32 *daddr;
 	__be32 mac[4];
 	__u32 ifindex;
+	__u8 is_wan;
 };
 
 struct route_ctx {
@@ -821,7 +822,7 @@ static int route_loop_cb(__u32 index, void *data)
 #define _l4proto_type ctx->params->flag[0]
 #define _ipversion_type ctx->params->flag[1]
 #define _pname (&ctx->params->flag[2])
-#define _is_wan ctx->params->flag[2]
+#define _is_wan ctx->params->is_wan
 #define _dscp ctx->params->flag[6]
 
 	struct route_ctx *ctx = data;
@@ -1084,7 +1085,7 @@ static __always_inline __s64 route(const struct route_params *params)
 #define _l4proto_type params->flag[0]
 #define _ipversion_type params->flag[1]
 #define _pname (&params->flag[2])
-#define _is_wan params->flag[2]
+#define _is_wan params->is_wan
 #define _dscp params->flag[6]
 
 	int ret;
@@ -1504,6 +1505,7 @@ new_connection:;
 		params.flag[1] = IpVersionType_6;
 	params.flag[6] = tuples.dscp;
 	params.ifindex = skb->ifindex;
+	params.is_wan = 0;
 	params.mac[2] = bpf_htonl((ethh.h_source[0] << 8) | (ethh.h_source[1]));
 	params.mac[3] =
 		bpf_htonl((ethh.h_source[2] << 24) | (ethh.h_source[3] << 16) |
@@ -1746,6 +1748,7 @@ static __always_inline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_
 				params.flag[1] = IpVersionType_6;
 			params.flag[6] = tuples.dscp;
 			params.ifindex = skb->ifindex;
+			params.is_wan = 1;
 			if (pid_is_control_plane(skb, &pid_pname)) {
 				// From control plane. Direct.
 				return TC_ACT_OK;
@@ -1870,6 +1873,7 @@ static __always_inline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_
 			params.flag[1] = IpVersionType_6;
 		params.flag[6] = tuples.dscp;
 		params.ifindex = skb->ifindex;
+		params.is_wan = 1;
 
 		struct pid_pname *pid_pname;
 

@@ -22,9 +22,9 @@ import (
 )
 
 const (
-	NsName       = "daens"
-	HostVethName = "dae0"
-	NsVethName   = "dae0peer"
+	NsName        = "daens"
+	HostVethName  = "dae0"
+	NsVethName    = "dae0peer"
 	DaeVethTxQLen = 1000
 )
 
@@ -110,6 +110,25 @@ func (ns *DaeNetns) With(f func() error) (err error) {
 
 	if err = f(); err != nil {
 		return fmt.Errorf("failed to run func in dae netns: %v", err)
+	}
+	return
+}
+
+func (ns *DaeNetns) WithHost(f func() error) (err error) {
+	if err = daeNetns.Setup(); err != nil {
+		return fmt.Errorf("failed to setup dae netns: %v", err)
+	}
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	if err = netns.Set(ns.hostNs); err != nil {
+		return fmt.Errorf("failed to switch to host netns: %v", err)
+	}
+	defer netns.Set(ns.daeNs)
+
+	if err = f(); err != nil {
+		return fmt.Errorf("failed to run func in host netns: %v", err)
 	}
 	return
 }
