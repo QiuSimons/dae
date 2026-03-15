@@ -102,7 +102,7 @@ func TestQuicConnection_Port8443(t *testing.T) {
 
 // TestPortHeuristics_Port443NonQuic verifies port 443 non-QUIC traffic
 func TestPortHeuristics_Port443NonQuic(t *testing.T) {
-	src := netip.MustParseAddrPort("192.168.1.100:50000")
+	src := netip.MustParseAddrPort("192.168.1.100:50003")
 	dst := netip.MustParseAddrPort("93.184.216.34:443")
 
 	// Non-QUIC data on port 443 (e.g., DTLS, Hysteria2)
@@ -112,7 +112,7 @@ func TestPortHeuristics_Port443NonQuic(t *testing.T) {
 	require.False(t, decision.IsQuicInitial, "Non-QUIC data should not be detected as QUIC Initial")
 	require.True(t, decision.IsLikelyQuicData, "Port 443 should trigger likely QUIC heuristic")
 	require.True(t, decision.PreferSymmetricNat(), "Port 443 should prefer symmetric NAT")
-	require.True(t, decision.ShouldUseOrderedIngress(), "Port 443 should use ordered ingress due to heuristic")
+	require.False(t, decision.ShouldUseOrderedIngress(), "Port 443 should NOT use ordered ingress without sniffer session")
 }
 
 // TestPortHeuristics_NonQuicPorts verifies non-QUIC ports

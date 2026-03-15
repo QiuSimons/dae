@@ -338,6 +338,10 @@ func (d *Dialer) initRecoveryDetection(checkInterval time.Duration) {
 // triggerRecoveryDetection triggers recovery detection with exponential backoff.
 // This is called when health check succeeds, to verify the dialer is truly stable before marking it healthy.
 func (d *Dialer) triggerRecoveryDetection() {
+	d.triggerRecoveryDetectionInternal(nil)
+}
+
+func (d *Dialer) triggerRecoveryDetectionInternal(target *NetworkType) {
 	// Check context first to avoid scheduling recovery on a closed dialer
 	select {
 	case <-d.ctx.Done():
@@ -359,20 +363,48 @@ func (d *Dialer) triggerRecoveryDetection() {
 		return
 	}
 
-	// Determine which network type to check (start with UDP as it's most common)
-	networkType := &NetworkType{
-		L4Proto:   consts.L4ProtoStr_UDP,
-		IpVersion: consts.IpVersionStr_4,
-		IsDns:     false,
+	// Determine which network type to check.
+	// If no specific target provided, default to UDPv4 (legacy behavior)
+	// or try to find a dead protocol to recover.
+	networkType := target
+	if networkType == nil {
+		networkType = &NetworkType{
+			L4Proto:   consts.L4ProtoStr_UDP,
+			IpVersion: consts.IpVersionStr_4,
+			IsDns:     false,
+		}
 	}
 
 	// Skip if already healthy (no need to confirm recovery)
 	if d.MustGetAlive(networkType) {
-		d.Log.WithFields(logrus.Fields{
-			"dialer":  d.Property().Name,
-			"network": networkType.String(),
-		}).Traceln("Dialer is already healthy, skip recovery detection")
-		return
+		// If the specific target is healthy, try to find any other dead protocol.
+		found := false
+		if target == nil {
+			protocols := []consts.L4ProtoStr{consts.L4ProtoStr_UDP, consts.L4ProtoStr_TCP}
+			ipVersions := []consts.IpVersionStr{consts.IpVersionStr_4, consts.IpVersionStr_6}
+			isDnsChoices := []bool{false, true}
+
+			for _, p := range protocols {
+				for _, v := range ipVersions {
+					for _, dns := range isDnsChoices {
+						nt := &NetworkType{L4Proto: p, IpVersion: v, IsDns: dns}
+						if !d.MustGetAlive(nt) {
+							networkType = nt
+							found = true
+							goto afterSearch
+						}
+					}
+				}
+			}
+		}
+	afterSearch:
+		if !found {
+			d.Log.WithFields(logrus.Fields{
+				"dialer":  d.Property().Name,
+				"network": networkType.String(),
+			}).Traceln("Dialer is already healthy across measured protocols, skip recovery detection")
+			return
+		}
 	}
 
 	// Calculate backoff duration based on current level
@@ -430,7 +462,10 @@ func (d *Dialer) confirmRecovery(networkType *NetworkType) {
 	}
 
 	// Double-check if still healthy (might have failed during backoff period)
-	if !d.MustGetAlive(networkType) {
+	d.recoveryState.Lock()
+	alive := d.MustGetAlive(networkType)
+	if !alive {
+		d.recoveryState.Unlock()
 		d.Log.WithFields(logrus.Fields{
 			"dialer":  d.Property().Name,
 			"network": networkType.String(),
@@ -440,7 +475,6 @@ func (d *Dialer) confirmRecovery(networkType *NetworkType) {
 
 	// Confirm recovery - increase backoff level for next time
 	// Only increment if level hasn't been reset by a concurrent failure
-	d.recoveryState.Lock()
 	if d.recoveryState.backoffLevel == currentBackoffLevel {
 		d.recoveryState.backoffLevel++
 		// Persist the incremented backoff level to survive Clone() and reloads
@@ -534,17 +568,22 @@ func (d *Dialer) markUnavailableFromProxyFailure() {
 
 	// Use existing markUnavailable logic from connectivity_check.go
 	// This will update collection.Alive and notify AliveDialerSet
-	// Mark both IPv4 and IPv6 as dead since they likely share the same proxy IP/health.
-	for _, ipVersion := range []consts.IpVersionStr{consts.IpVersionStr_4, consts.IpVersionStr_6} {
-		networkType := &NetworkType{
-			L4Proto:   consts.L4ProtoStr_UDP,
-			IpVersion: ipVersion,
-			IsDns:     false,
+	// Mark both TCP and UDP across all supported IP versions as dead since they
+	// share the same proxy IP/health. Bypass threshold to ensure immediate failover.
+	protocols := []consts.L4ProtoStr{consts.L4ProtoStr_TCP, consts.L4ProtoStr_UDP}
+	ipVersions := []consts.IpVersionStr{consts.IpVersionStr_4, consts.IpVersionStr_6}
+
+	for _, proto := range protocols {
+		for _, ipVersion := range ipVersions {
+			networkType := &NetworkType{
+				L4Proto:   proto,
+				IpVersion: ipVersion,
+				IsDns:     false,
+			}
+			d.ReportUnavailableForced(networkType, nil)
 		}
-		update := d.markUnavailable(networkType)
-		// Notify dialer group about state change
-		d.informDialerGroupUpdate(update)
 	}
+
 
 	// Reset backoff level (start fresh for next recovery)
 	d.resetBackoffLevel()
@@ -552,6 +591,7 @@ func (d *Dialer) markUnavailableFromProxyFailure() {
 	// Cancel any pending recovery confirmation
 	d.cancelPendingRecoveryConfirmation()
 }
+
 
 func (d *Dialer) GetHttpClient(idx int, ip netip.Addr, soMark uint32, mptcp bool) *http.Client {
 	key := fmt.Sprintf("%d-%s", idx, ip.String())
