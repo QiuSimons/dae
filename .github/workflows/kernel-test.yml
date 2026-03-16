@@ -1,6 +1,9 @@
 name: Kernel Test
 
 on:
+  push:
+    branches:
+      - optimize/code-quality-fixes
   pull_request:
     paths:
       - "**/*.go"
