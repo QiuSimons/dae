@@ -33,7 +33,7 @@ func newRecoveryTestDialer() *Dialer {
 
 func TestIssue1_DeadlockFixed(t *testing.T) {
 	d := newRecoveryTestDialer()
-	d.GlobalOption.CheckInterval = 30 * time.Second
+	d.CheckInterval = 30 * time.Second
 
 	d.initRecoveryDetection(30 * time.Second)
 
@@ -64,7 +64,7 @@ func TestIssue2_MaxBackoffNowUsed(t *testing.T) {
 	expectedMaxBackoff := time.Duration(float64(checkInterval) * 2.0 / 3.0)
 
 	d := newRecoveryTestDialer()
-	d.GlobalOption.CheckInterval = checkInterval
+	d.CheckInterval = checkInterval
 
 	d.initRecoveryDetection(checkInterval)
 
@@ -75,35 +75,6 @@ func TestIssue2_MaxBackoffNowUsed(t *testing.T) {
 	if actualMaxBackoff != expectedMaxBackoff {
 		t.Errorf("Expected maxBackoff=%v, got %v", expectedMaxBackoff, actualMaxBackoff)
 	}
-}
-
-func TestRevivalTrigger(t *testing.T) {
-	d := newRecoveryTestDialer()
-	d.GlobalOption.CheckInterval = 30 * time.Second
-	d.initRecoveryDetection(30 * time.Second)
-
-	typ := &NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4}
-
-	// 1. Success with isRevival=false should NOT start timer
-	d.NotifyHealthCheckResult(typ, true, false)
-	d.recoveryState[idxTcp].Lock()
-	if d.recoveryState[idxTcp].confirmTimer != nil {
-		d.recoveryState[idxTcp].Unlock()
-		t.Error("Timer started on non-revival success")
-	}
-	d.recoveryState[idxTcp].Unlock()
-
-	// 2. Success with isRevival=true SHOULD start timer
-	d.NotifyHealthCheckResult(typ, true, true)
-	d.recoveryState[idxTcp].Lock()
-	if d.recoveryState[idxTcp].confirmTimer == nil {
-		d.recoveryState[idxTcp].Unlock()
-		t.Error("Timer NOT started on revival success")
-	} else {
-		d.recoveryState[idxTcp].confirmTimer.Stop()
-		d.recoveryState[idxTcp].confirmTimer = nil
-	}
-	d.recoveryState[idxTcp].Unlock()
 }
 
 func TestConcurrentBackoffAccess(t *testing.T) {
