@@ -2019,12 +2019,16 @@ static __noinline int do_tproxy_lan_egress(struct __sk_buff *skb, u32 link_h_len
 SEC("tc/lan_egress_l2")
 int tproxy_lan_egress_l2(struct __sk_buff *skb)
 {
+	if (unlikely(PARAM.dae_socket_mark && skb->mark == PARAM.dae_socket_mark))
+		return TC_ACT_OK;
 	return do_tproxy_lan_egress(skb, 14);
 }
 
 SEC("tc/lan_egress_l3")
 int tproxy_lan_egress_l3(struct __sk_buff *skb)
 {
+	if (unlikely(PARAM.dae_socket_mark && skb->mark == PARAM.dae_socket_mark))
+		return TC_ACT_OK;
 	return do_tproxy_lan_egress(skb, 0);
 }
 
@@ -2397,12 +2401,16 @@ block:
 SEC("tc/lan_ingress_l2")
 int tproxy_lan_ingress_l2(struct __sk_buff *skb)
 {
+	if (unlikely(PARAM.dae_socket_mark && skb->mark == PARAM.dae_socket_mark))
+		return TC_ACT_OK;
 	return do_tproxy_lan_ingress(skb, 14);
 }
 
 SEC("tc/lan_ingress_l3")
 int tproxy_lan_ingress_l3(struct __sk_buff *skb)
 {
+	if (unlikely(PARAM.dae_socket_mark && skb->mark == PARAM.dae_socket_mark))
+		return TC_ACT_OK;
 	return do_tproxy_lan_ingress(skb, 0);
 }
 
@@ -2432,8 +2440,6 @@ static __always_inline bool pid_is_control_plane(struct __sk_buff *skb,
 	}
 	if (p)
 		*p = NULL;
-	if (PARAM.dae_socket_mark && skb->mark == PARAM.dae_socket_mark)
-		return true;
 	if ((skb->mark & 0x100) == 0x100)
 		return true;
 	return false;
@@ -2486,12 +2492,16 @@ static __noinline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link_h_le
 SEC("tc/wan_ingress_l2")
 int tproxy_wan_ingress_l2(struct __sk_buff *skb)
 {
+	if (unlikely(PARAM.dae_socket_mark && skb->mark == PARAM.dae_socket_mark))
+		return TC_ACT_OK;
 	return do_tproxy_wan_ingress(skb, 14);
 }
 
 SEC("tc/wan_ingress_l3")
 int tproxy_wan_ingress_l3(struct __sk_buff *skb)
 {
+	if (unlikely(PARAM.dae_socket_mark && skb->mark == PARAM.dae_socket_mark))
+		return TC_ACT_OK;
 	return do_tproxy_wan_ingress(skb, 0);
 }
 
@@ -2873,18 +2883,24 @@ static __noinline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_h_len
 SEC("tc/wan_egress_l2")
 int tproxy_wan_egress_l2(struct __sk_buff *skb)
 {
+	if (unlikely(PARAM.dae_socket_mark && skb->mark == PARAM.dae_socket_mark))
+		return TC_ACT_OK;
 	return do_tproxy_wan_egress(skb, 14);
 }
 
 SEC("tc/wan_egress_l3")
 int tproxy_wan_egress_l3(struct __sk_buff *skb)
 {
+	if (unlikely(PARAM.dae_socket_mark && skb->mark == PARAM.dae_socket_mark))
+		return TC_ACT_OK;
 	return do_tproxy_wan_egress(skb, 0);
 }
 
 SEC("tc/dae0peer_ingress")
 int tproxy_dae0peer_ingress(struct __sk_buff *skb)
 {
+	if (unlikely(PARAM.dae_socket_mark && skb->mark == PARAM.dae_socket_mark))
+		return TC_ACT_OK;
 	/* Only packets redirected from wan_egress or lan_ingress have this cb mark.
    */
 	if (skb->cb[0] != TPROXY_MARK)
@@ -3015,6 +3031,8 @@ load_redirect_tuple(struct __sk_buff *skb,
 SEC("tc/dae0_ingress")
 int tproxy_dae0_ingress(struct __sk_buff *skb)
 {
+	if (unlikely(PARAM.dae_socket_mark && skb->mark == PARAM.dae_socket_mark))
+		return TC_ACT_OK;
 	// reverse the tuple!
 	struct redirect_tuple redirect_tuple = {};
 	int ret;
