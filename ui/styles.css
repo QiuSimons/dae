@@ -1908,6 +1908,7 @@ body.controller-collapsed .controller-bar {
 .config-field select,
 .config-row input,
 .config-row select,
+.config-block-card input,
 .config-block-head input,
 .config-textarea {
   width: 100%;
@@ -1924,6 +1925,7 @@ body.controller-collapsed .controller-bar {
 .config-field select,
 .config-row input,
 .config-row select,
+.config-block-card input,
 .config-block-head input {
   height: 48px;
   padding-block: 0;
