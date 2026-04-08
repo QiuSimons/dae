@@ -408,6 +408,7 @@ button {
 }
 
 .controller-field input,
+.controller-field select,
 .inline-field select {
   width: 100%;
   height: 46px;
@@ -440,6 +441,28 @@ button {
   grid-template-columns: 1.05fr 1.95fr 0.95fr;
   gap: 18px;
   padding: 0 8px;
+}
+
+.page-stack {
+  display: block;
+}
+
+.page {
+  display: none;
+}
+
+.page.active {
+  display: block;
+}
+
+.page-grid {
+  display: grid;
+  gap: 18px;
+  padding: 0 8px;
+}
+
+.page-grid.two-column {
+  grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.38fr);
 }
 
 .card {
@@ -482,6 +505,159 @@ button {
 .traffic-card,
 .connections-card {
   min-height: 198px;
+}
+
+.overview-card,
+.shortcut-card,
+.controller-card,
+.stream-card,
+.runtime-config-card,
+.logs-card,
+.log-level-card {
+  min-height: 198px;
+}
+
+.shortcut-card {
+  grid-column: 2 / span 2;
+}
+
+.shortcut-grid {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 6px 18px 22px;
+}
+
+.shortcut-button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 16px 18px;
+  border: 1px solid rgba(111, 122, 136, 0.12);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.72);
+  cursor: pointer;
+  transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
+}
+
+.shortcut-button:hover {
+  transform: translateY(-2px);
+  border-color: rgba(76, 192, 181, 0.26);
+  box-shadow: 0 14px 28px rgba(116, 103, 82, 0.08);
+}
+
+.shortcut-button span {
+  font-size: 0.86rem;
+  color: #68727a;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.shortcut-button strong {
+  color: var(--text);
+  font-size: 1rem;
+  font-weight: 600;
+  text-align: left;
+}
+
+.detail-grid {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 10px;
+  padding: 6px 18px 22px;
+}
+
+.detail-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 13px 14px;
+  border-radius: 16px;
+  background: rgba(247, 248, 249, 0.72);
+}
+
+.detail-row span {
+  color: #68727a;
+  font-size: 0.88rem;
+}
+
+.detail-row strong {
+  max-width: 60%;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.controller-page-note {
+  position: relative;
+  z-index: 1;
+  margin: 0;
+  padding: 0 18px 22px;
+  color: #6e767e;
+  line-height: 1.6;
+}
+
+.stream-list {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 6px 18px 22px;
+}
+
+.stream-pill {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 13px 14px;
+  border-radius: 16px;
+  background: rgba(247, 248, 249, 0.8);
+}
+
+.stream-pill span {
+  color: #68727a;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.76rem;
+}
+
+.stream-pill strong {
+  font-size: 0.88rem;
+}
+
+.stream-pill.live strong {
+  color: #218d77;
+}
+
+.stream-pill.opening strong,
+.stream-pill.retrying strong {
+  color: #c08a39;
+}
+
+.stream-pill.offline strong,
+.stream-pill.standby strong,
+.stream-pill.idle strong {
+  color: #6f7c86;
+}
+
+.inline-form {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  gap: 12px;
+  align-items: end;
+  padding: 6px 18px 14px;
+}
+
+.compact-field {
+  min-width: 0;
+  flex: 1;
 }
 
 .meter-list {
@@ -1024,6 +1200,106 @@ button {
   gap: 10px;
 }
 
+.logs-toolbar {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 18px 14px;
+}
+
+.logs-shell {
+  position: relative;
+  z-index: 1;
+  min-height: 420px;
+  margin: 0 18px 22px;
+  padding: 14px;
+  border-radius: 20px;
+  background: rgba(31, 43, 47, 0.94);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+}
+
+.logs-empty {
+  color: rgba(232, 237, 240, 0.56);
+  font-family: "SF Mono", "JetBrains Mono", "IBM Plex Mono", monospace;
+  font-size: 0.9rem;
+}
+
+.logs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 520px;
+  overflow: auto;
+}
+
+.log-entry {
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #edf3f6;
+  font-family: "SF Mono", "JetBrains Mono", "IBM Plex Mono", monospace;
+}
+
+.log-entry-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.log-time {
+  color: rgba(232, 237, 240, 0.62);
+  font-size: 0.8rem;
+}
+
+.log-level {
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.log-level.trace,
+.log-level.debug {
+  background: rgba(111, 124, 134, 0.28);
+  color: #dbe3e8;
+}
+
+.log-level.info {
+  background: rgba(76, 192, 181, 0.2);
+  color: #97f0e7;
+}
+
+.log-level.warn,
+.log-level.warning {
+  background: rgba(240, 180, 90, 0.22);
+  color: #ffd28d;
+}
+
+.log-level.error,
+.log-level.fatal,
+.log-level.panic {
+  background: rgba(233, 97, 88, 0.22);
+  color: #ffada6;
+}
+
+.log-message,
+.log-fields {
+  margin: 0;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+.log-fields {
+  margin-top: 8px;
+  color: rgba(232, 237, 240, 0.62);
+  font-size: 0.84rem;
+}
+
 .action-button {
   padding: 11px 18px;
   border: 0;
@@ -1081,6 +1357,7 @@ button {
     grid-column: 2;
   }
 
+  .shortcut-card,
   .proxies-card {
     grid-column: 1 / span 2;
   }
@@ -1095,6 +1372,10 @@ button {
 
   .controller-actions {
     grid-column: 1 / span 2;
+  }
+
+  .page-grid.two-column {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -1126,6 +1407,7 @@ button {
   }
 
   .connections-card,
+  .shortcut-card,
   .proxies-card,
   .editor-card {
     grid-column: auto;
@@ -1144,9 +1426,16 @@ button {
   }
 
   .editor-toolbar,
-  .proxy-toolbar {
+  .proxy-toolbar,
+  .logs-toolbar,
+  .inline-form {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .stream-list,
+  .shortcut-grid {
+    grid-template-columns: 1fr;
   }
 }
 

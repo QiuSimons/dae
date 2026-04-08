@@ -25,11 +25,11 @@
         <nav class="nav">
           <div class="nav-group">
             <p class="nav-title">Overview</p>
-            <button class="nav-item active" type="button">
+            <button class="nav-item active" data-view="dashboard" type="button">
               <span class="nav-icon"></span>
               <span>Dashboard</span>
             </button>
-            <button class="nav-item" type="button">
+            <button class="nav-item" data-view="controller" type="button">
               <span class="nav-icon"></span>
               <span>External Controller</span>
             </button>
@@ -40,19 +40,19 @@
               <p class="nav-title">Runtime</p>
               <span class="nav-badge">LIVE</span>
             </div>
-            <button class="nav-item" type="button">
+            <button class="nav-item" data-view="proxies" type="button">
               <span class="nav-icon"></span>
               <span>Proxies</span>
             </button>
-            <button class="nav-item" type="button">
+            <button class="nav-item" data-view="traffic" type="button">
               <span class="nav-icon"></span>
               <span>Traffic</span>
             </button>
-            <button class="nav-item" type="button">
+            <button class="nav-item" data-view="configs" type="button">
               <span class="nav-icon"></span>
               <span>Configs</span>
             </button>
-            <button class="nav-item" type="button">
+            <button class="nav-item" data-view="logs" type="button">
               <span class="nav-icon"></span>
               <span>Logs</span>
             </button>
@@ -60,11 +60,11 @@
 
           <div class="nav-group">
             <p class="nav-title">Hints</p>
-            <button class="nav-item" type="button">
+            <button class="nav-item" data-open-view="traffic" type="button">
               <span class="nav-icon"></span>
               <span>`/traffic` prefers WebSocket</span>
             </button>
-            <button class="nav-item" type="button">
+            <button class="nav-item" data-open-view="configs" type="button">
               <span class="nav-icon"></span>
               <span>`/configs/dae` edits startup config</span>
             </button>
@@ -75,8 +75,8 @@
       <main class="workspace">
         <header class="topbar">
           <div class="title-block">
-            <p class="eyebrow">Dashboard</p>
-            <h1>daed <span id="versionLabel">unlinked</span></h1>
+            <p class="eyebrow" id="pageEyebrow">Dashboard</p>
+            <h1><span id="pageTitle">daed Dashboard</span> <span id="versionLabel">unlinked</span></h1>
           </div>
 
           <div class="topbar-actions">
@@ -136,7 +136,6 @@
 
             <div class="controller-actions">
               <button class="action-button subtle" id="connectButton" type="submit">Connect</button>
-              <button class="action-button ghost" id="refreshButton" type="button">Refresh</button>
             </div>
           </form>
 
@@ -147,186 +146,387 @@
         </section>
 
         <section class="panel-banner">
-          <p>External Controller</p>
+          <p id="pageBanner">External Controller</p>
         </section>
 
-        <section class="dashboard-grid">
-          <article class="card status-card">
-            <div class="card-header">
-              <h2>System Status</h2>
-            </div>
-
-            <div class="summary-list">
-              <div class="summary-row">
-                <span>Controller</span>
-                <strong id="controllerStateValue">offline</strong>
-              </div>
-              <div class="summary-row">
-                <span>Mode</span>
-                <strong id="modeValue">-</strong>
-              </div>
-              <div class="summary-row">
-                <span>Log Level</span>
-                <strong id="logLevelValue">-</strong>
-              </div>
-              <div class="summary-row">
-                <span>Memory In Use</span>
-                <strong id="memoryValue">-</strong>
-              </div>
-            </div>
-
-            <div class="meter-list">
-              <div class="meter">
-                <div class="meter-label-row">
-                  <span>Alive Nodes</span>
-                  <strong id="aliveNodesValue">0 / 0</strong>
+        <div class="page-stack">
+          <section class="page active" data-page="dashboard">
+            <section class="dashboard-grid">
+              <article class="card status-card">
+                <div class="card-header">
+                  <h2>System Status</h2>
                 </div>
-                <div class="meter-track">
-                  <span class="meter-fill cpu" id="aliveNodesBar" style="width: 0%"></span>
-                </div>
-              </div>
 
-              <div class="meter">
-                <div class="meter-label-row">
-                  <span>Selected Groups</span>
-                  <strong id="groupCoverageValue">0 / 0</strong>
-                </div>
-                <div class="meter-track">
-                  <span class="meter-fill memory" id="groupCoverageBar" style="width: 0%"></span>
-                </div>
-              </div>
-
-              <div class="meter">
-                <div class="meter-label-row">
-                  <span>Memory Pressure</span>
-                  <strong id="memoryPressureValue">N/A</strong>
-                </div>
-                <div class="meter-track">
-                  <span class="meter-fill core" id="memoryPressureBar" style="width: 0%"></span>
-                </div>
-              </div>
-            </div>
-          </article>
-
-          <article class="card traffic-card">
-            <div class="card-header">
-              <h2>Traffic Flow</h2>
-              <div class="chart-legend">
-                <span class="legend-item upload">Upload</span>
-                <span class="legend-item download">Download</span>
-              </div>
-            </div>
-
-            <div class="chart-scale" id="chartScale"></div>
-
-            <div class="chart-shell">
-              <canvas id="trafficChart" width="760" height="280"></canvas>
-            </div>
-
-            <div class="chart-time" id="chartTime"></div>
-
-            <div class="traffic-totals">
-              <div class="mini-stat">
-                <span>Upload Total</span>
-                <strong id="uploadTotalValue">0 B</strong>
-              </div>
-              <div class="mini-stat">
-                <span>Download Total</span>
-                <strong id="downloadTotalValue">0 B</strong>
-              </div>
-              <div class="mini-stat">
-                <span>Transport</span>
-                <strong id="trafficTransportValue">idle</strong>
-              </div>
-            </div>
-          </article>
-
-          <article class="card connections-card">
-            <div class="card-header">
-              <h2>Runtime</h2>
-            </div>
-
-            <div class="stats-stack">
-              <div class="stat-row">
-                <span>Version</span>
-                <strong id="runtimeVersionValue">-</strong>
-              </div>
-              <div class="stat-row">
-                <span>TProxy</span>
-                <strong id="tproxyPortValue">-</strong>
-              </div>
-              <div class="stat-row">
-                <span>Allow LAN</span>
-                <strong id="allowLanValue">-</strong>
-              </div>
-              <div class="stat-row">
-                <span>Bind</span>
-                <strong id="bindAddressValue">-</strong>
-              </div>
-            </div>
-          </article>
-
-          <article class="card proxies-card">
-            <div class="card-header">
-              <h2>Proxies</h2>
-            </div>
-
-            <div class="proxy-layout">
-              <div class="proxy-tabs" id="proxyTabs" role="tablist" aria-label="Proxy groups"></div>
-
-              <div class="proxy-panel">
-                <div class="proxy-toolbar">
-                  <div>
-                    <p class="proxy-current-label">Current Group</p>
-                    <h3 class="proxy-current-name" id="currentGroupName">No group</h3>
-                    <p class="proxy-current-meta" id="currentGroupMeta">Connect controller to load proxies.</p>
+                <div class="summary-list">
+                  <div class="summary-row">
+                    <span>Controller</span>
+                    <strong id="controllerStateValue">offline</strong>
                   </div>
+                  <div class="summary-row">
+                    <span>Mode</span>
+                    <strong id="modeValue">-</strong>
+                  </div>
+                  <div class="summary-row">
+                    <span>Log Level</span>
+                    <strong id="logLevelValue">-</strong>
+                  </div>
+                  <div class="summary-row">
+                    <span>Memory In Use</span>
+                    <strong id="memoryValue">-</strong>
+                  </div>
+                </div>
+
+                <div class="meter-list">
+                  <div class="meter">
+                    <div class="meter-label-row">
+                      <span>Alive Nodes</span>
+                      <strong id="aliveNodesValue">0 / 0</strong>
+                    </div>
+                    <div class="meter-track">
+                      <span class="meter-fill cpu" id="aliveNodesBar" style="width: 0%"></span>
+                    </div>
+                  </div>
+
+                  <div class="meter">
+                    <div class="meter-label-row">
+                      <span>Selected Groups</span>
+                      <strong id="groupCoverageValue">0 / 0</strong>
+                    </div>
+                    <div class="meter-track">
+                      <span class="meter-fill memory" id="groupCoverageBar" style="width: 0%"></span>
+                    </div>
+                  </div>
+
+                  <div class="meter">
+                    <div class="meter-label-row">
+                      <span>Memory Pressure</span>
+                      <strong id="memoryPressureValue">N/A</strong>
+                    </div>
+                    <div class="meter-track">
+                      <span class="meter-fill core" id="memoryPressureBar" style="width: 0%"></span>
+                    </div>
+                  </div>
+                </div>
+              </article>
+
+              <article class="card connections-card">
+                <div class="card-header">
+                  <h2>Runtime</h2>
+                </div>
+
+                <div class="stats-stack">
+                  <div class="stat-row">
+                    <span>Version</span>
+                    <strong id="runtimeVersionValue">-</strong>
+                  </div>
+                  <div class="stat-row">
+                    <span>TProxy</span>
+                    <strong id="tproxyPortValue">-</strong>
+                  </div>
+                  <div class="stat-row">
+                    <span>Allow LAN</span>
+                    <strong id="allowLanValue">-</strong>
+                  </div>
+                  <div class="stat-row">
+                    <span>Bind</span>
+                    <strong id="bindAddressValue">-</strong>
+                  </div>
+                </div>
+              </article>
+
+              <article class="card overview-card">
+                <div class="card-header">
+                  <h2>Controller Overview</h2>
+                </div>
+
+                <div class="detail-grid">
+                  <div class="detail-row">
+                    <span>Controller URL</span>
+                    <strong id="controllerUrlValue">-</strong>
+                  </div>
+                  <div class="detail-row">
+                    <span>Auth</span>
+                    <strong id="controllerAuthValue">Bearer disabled</strong>
+                  </div>
+                  <div class="detail-row">
+                    <span>Snapshot Cadence</span>
+                    <strong>5s state / 1s traffic</strong>
+                  </div>
+                  <div class="detail-row">
+                    <span>Startup Config</span>
+                    <strong id="startupConfigPathValue">-</strong>
+                  </div>
+                </div>
+              </article>
+
+              <article class="card shortcut-card">
+                <div class="card-header">
+                  <h2>Workspace</h2>
+                </div>
+
+                <div class="shortcut-grid">
+                  <button class="shortcut-button" data-open-view="controller" type="button">
+                    <span>External Controller</span>
+                    <strong>Connection details and log level</strong>
+                  </button>
+                  <button class="shortcut-button" data-open-view="proxies" type="button">
+                    <span>Proxies</span>
+                    <strong>Probe, switch, reset groups</strong>
+                  </button>
+                  <button class="shortcut-button" data-open-view="traffic" type="button">
+                    <span>Traffic</span>
+                    <strong>Live chart and totals</strong>
+                  </button>
+                  <button class="shortcut-button" data-open-view="configs" type="button">
+                    <span>Configs</span>
+                    <strong>Edit startup <code>config.dae</code></strong>
+                  </button>
+                  <button class="shortcut-button" data-open-view="logs" type="button">
+                    <span>Logs</span>
+                    <strong>Structured live stream from <code>/logs</code></strong>
+                  </button>
+                </div>
+              </article>
+            </section>
+          </section>
+
+          <section class="page" data-page="controller">
+            <section class="page-grid two-column">
+              <article class="card controller-card">
+                <div class="card-header">
+                  <h2>External Controller</h2>
+                </div>
+
+                <div class="detail-grid">
+                  <div class="detail-row">
+                    <span>Controller URL</span>
+                    <strong id="controllerDetailUrl">-</strong>
+                  </div>
+                  <div class="detail-row">
+                    <span>Embedded UI</span>
+                    <strong id="embeddedUiValue">-</strong>
+                  </div>
+                  <div class="detail-row">
+                    <span>Token</span>
+                    <strong id="controllerTokenValue">not set</strong>
+                  </div>
+                  <div class="detail-row">
+                    <span>Startup Config</span>
+                    <strong id="controllerConfigPathValue">-</strong>
+                  </div>
+                </div>
+
+                <p class="controller-page-note" id="controllerPageNote">
+                  HTTP requests use Bearer auth. WebSocket requests pass <code>token=...</code> when a secret is configured.
+                </p>
+              </article>
+
+              <article class="card stream-card">
+                <div class="card-header">
+                  <h2>Live Channels</h2>
+                </div>
+
+                <div class="stream-list" id="streamList"></div>
+              </article>
+
+              <article class="card log-level-card">
+                <div class="card-header">
+                  <h2>Runtime Log Level</h2>
+                </div>
+
+                <div class="inline-form">
+                  <label class="controller-field compact-field">
+                    <span>Level</span>
+                    <select id="runtimeLogLevelSelect">
+                      <option value="trace">trace</option>
+                      <option value="debug">debug</option>
+                      <option value="info">info</option>
+                      <option value="warn">warn</option>
+                      <option value="error">error</option>
+                    </select>
+                  </label>
+                  <button class="action-button subtle" id="applyLogLevelButton" type="button">Apply</button>
+                </div>
+
+                <p class="controller-page-note" id="runtimeLogLevelNote">
+                  Updates <code>/configs</code> with a PATCH request and keeps the runtime snapshot in sync.
+                </p>
+              </article>
+            </section>
+          </section>
+
+          <section class="page" data-page="proxies">
+            <section class="page-grid">
+              <article class="card proxies-card">
+                <div class="card-header">
+                  <h2>Proxies</h2>
+                </div>
+
+                <div class="proxy-layout">
+                  <div class="proxy-tabs" id="proxyTabs" role="tablist" aria-label="Proxy groups"></div>
+
+                  <div class="proxy-panel">
+                    <div class="proxy-toolbar">
+                      <div>
+                        <p class="proxy-current-label">Current Group</p>
+                        <h3 class="proxy-current-name" id="currentGroupName">No group</h3>
+                        <p class="proxy-current-meta" id="currentGroupMeta">Connect controller to load proxies.</p>
+                      </div>
+
+                      <div class="proxy-toolbar-actions">
+                        <button class="action-button faint" id="resetGroupButton" type="button">Reset Group</button>
+                        <button class="action-button ghost" id="reloadProxiesButton" type="button">Reload Stream</button>
+                      </div>
+                    </div>
+
+                    <div class="proxy-grid" id="proxyGrid"></div>
+                  </div>
+                </div>
+              </article>
+            </section>
+          </section>
+
+          <section class="page" data-page="traffic">
+            <section class="page-grid">
+              <article class="card traffic-card">
+                <div class="card-header">
+                  <h2>Traffic Flow</h2>
+                  <div class="chart-legend">
+                    <span class="legend-item upload">Upload</span>
+                    <span class="legend-item download">Download</span>
+                  </div>
+                </div>
+
+                <div class="chart-scale" id="chartScale"></div>
+
+                <div class="chart-shell">
+                  <canvas id="trafficChart" width="760" height="280"></canvas>
+                </div>
+
+                <div class="chart-time" id="chartTime"></div>
+
+                <div class="traffic-totals">
+                  <div class="mini-stat">
+                    <span>Upload Total</span>
+                    <strong id="uploadTotalValue">0 B</strong>
+                  </div>
+                  <div class="mini-stat">
+                    <span>Download Total</span>
+                    <strong id="downloadTotalValue">0 B</strong>
+                  </div>
+                  <div class="mini-stat">
+                    <span>Transport</span>
+                    <strong id="trafficTransportValue">idle</strong>
+                  </div>
+                </div>
+              </article>
+            </section>
+          </section>
+
+          <section class="page" data-page="configs">
+            <section class="page-grid two-column">
+              <article class="card runtime-config-card">
+                <div class="card-header">
+                  <h2>Config Snapshot</h2>
+                </div>
+
+                <div class="detail-grid">
+                  <div class="detail-row">
+                    <span>Mode</span>
+                    <strong id="configModeValue">-</strong>
+                  </div>
+                  <div class="detail-row">
+                    <span>Log Level</span>
+                    <strong id="configLogLevelValue">-</strong>
+                  </div>
+                  <div class="detail-row">
+                    <span>TProxy Port</span>
+                    <strong id="configTproxyValue">-</strong>
+                  </div>
+                  <div class="detail-row">
+                    <span>Allow LAN</span>
+                    <strong id="configAllowLanValue">-</strong>
+                  </div>
+                  <div class="detail-row">
+                    <span>Bind Address</span>
+                    <strong id="configBindValue">-</strong>
+                  </div>
+                </div>
+              </article>
+
+              <article class="card editor-card">
+                <div class="card-header">
+                  <h2>config.dae</h2>
+                </div>
+
+                <div class="editor-shell">
+                  <div class="editor-toolbar">
+                    <div class="editor-meta">
+                      <span class="editor-path-label">Loaded File</span>
+                      <code class="editor-path" id="configPathValue">-</code>
+                    </div>
+
+                    <div class="editor-actions">
+                      <button class="action-button ghost" id="refreshConfigButton" type="button">Reload File</button>
+                      <button class="action-button subtle" id="saveConfigButton" type="button">Save + Reload</button>
+                    </div>
+                  </div>
+
+                  <div class="editor-window">
+                    <div class="editor-lines" id="editorLines" aria-hidden="true"></div>
+                    <textarea
+                      class="editor-code"
+                      id="configView"
+                      spellcheck="false"
+                      wrap="off"
+                    ># Connect controller to load /etc/dae/config.dae</textarea>
+                  </div>
+
+                  <p class="editor-note" id="editorNote">
+                    Editing dae's startup config file. Save validates the dae syntax, writes the file, and triggers a live reload.
+                  </p>
+                </div>
+              </article>
+            </section>
+          </section>
+
+          <section class="page" data-page="logs">
+            <section class="page-grid">
+              <article class="card logs-card">
+                <div class="card-header">
+                  <h2>Logs</h2>
+                </div>
+
+                <div class="logs-toolbar">
+                  <label class="controller-field compact-field">
+                    <span>Stream Level</span>
+                    <select id="logsLevelSelect">
+                      <option value="trace">trace</option>
+                      <option value="debug">debug</option>
+                      <option value="info" selected>info</option>
+                      <option value="warn">warn</option>
+                      <option value="error">error</option>
+                    </select>
+                  </label>
 
                   <div class="proxy-toolbar-actions">
-                    <button class="action-button faint" id="resetGroupButton" type="button">Reset Group</button>
-                    <button class="action-button ghost" id="reloadProxiesButton" type="button">Reload</button>
+                    <button class="action-button faint" id="toggleLogsButton" type="button">Pause</button>
+                    <button class="action-button ghost" id="clearLogsButton" type="button">Clear</button>
                   </div>
                 </div>
 
-                <div class="proxy-grid" id="proxyGrid"></div>
-              </div>
-            </div>
-          </article>
+                <p class="controller-page-note" id="logsStatusText">
+                  Waiting for live events from <code>/logs?format=structured</code>.
+                </p>
 
-          <article class="card editor-card">
-            <div class="card-header">
-              <h2>config.dae</h2>
-            </div>
-
-            <div class="editor-shell">
-              <div class="editor-toolbar">
-                <div class="editor-meta">
-                  <span class="editor-path-label">Loaded File</span>
-                  <code class="editor-path" id="configPathValue">-</code>
+                <div class="logs-shell" id="logsShell">
+                  <div class="logs-empty" id="logsEmpty">No log events yet.</div>
+                  <div class="logs-list" id="logsList"></div>
                 </div>
-
-                <div class="editor-actions">
-                  <button class="action-button ghost" id="refreshConfigButton" type="button">Reload File</button>
-                  <button class="action-button subtle" id="saveConfigButton" type="button">Save + Reload</button>
-                </div>
-              </div>
-
-              <div class="editor-window">
-                <div class="editor-lines" id="editorLines" aria-hidden="true"></div>
-                <textarea
-                  class="editor-code"
-                  id="configView"
-                  spellcheck="false"
-                  wrap="off"
-                ># Connect controller to load /etc/dae/config.dae</textarea>
-              </div>
-
-              <p class="editor-note" id="editorNote">
-                Editing dae's startup config file. Save validates the dae syntax, writes the file, and triggers a live reload.
-              </p>
-            </div>
-          </article>
-        </section>
+              </article>
+            </section>
+          </section>
+        </div>
       </main>
     </div>
 

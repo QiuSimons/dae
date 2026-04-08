@@ -5,6 +5,40 @@ const DEFAULT_CONFIG_PLACEHOLDER = "# Connect controller to load /etc/dae/config
 const SAMPLE_SIZE = 20;
 const RELOAD_SYNC_ATTEMPTS = 8;
 const RELOAD_SYNC_DELAY_MS = 800;
+const MAX_LOG_ENTRIES = 200;
+const LOG_LEVELS = ["trace", "debug", "info", "warn", "error"];
+const VIEW_META = {
+  dashboard: {
+    eyebrow: "Dashboard",
+    title: "daed Dashboard",
+    banner: "Overview",
+  },
+  controller: {
+    eyebrow: "External Controller",
+    title: "Controller Workspace",
+    banner: "External Controller",
+  },
+  proxies: {
+    eyebrow: "Proxies",
+    title: "Proxy Runtime",
+    banner: "Proxy Groups",
+  },
+  traffic: {
+    eyebrow: "Traffic",
+    title: "Live Traffic",
+    banner: "Traffic Flow",
+  },
+  configs: {
+    eyebrow: "Configs",
+    title: "Config Workspace",
+    banner: "Runtime + Startup Config",
+  },
+  logs: {
+    eyebrow: "Logs",
+    title: "Live Logs",
+    banner: "Structured Log Stream",
+  },
+};
 const STORAGE_KEYS = {
   controller: "daed-demo-controller",
   token: "daed-demo-token",
@@ -16,9 +50,14 @@ const refs = {
   controllerToken: document.getElementById("controllerToken"),
   controllerHint: document.getElementById("controllerHint"),
   connectButton: document.getElementById("connectButton"),
-  refreshButton: document.getElementById("refreshButton"),
   apiStatusText: document.getElementById("apiStatusText"),
   apiStatusDot: document.getElementById("apiStatusDot"),
+  pageEyebrow: document.getElementById("pageEyebrow"),
+  pageTitle: document.getElementById("pageTitle"),
+  pageBanner: document.getElementById("pageBanner"),
+  navItems: Array.from(document.querySelectorAll(".nav-item[data-view]")),
+  viewButtons: Array.from(document.querySelectorAll("[data-open-view]")),
+  pages: Array.from(document.querySelectorAll(".page[data-page]")),
   versionLabel: document.getElementById("versionLabel"),
   uploadRate: document.getElementById("uploadRate"),
   downloadRate: document.getElementById("downloadRate"),
@@ -37,10 +76,22 @@ const refs = {
   aliveNodesBar: document.getElementById("aliveNodesBar"),
   groupCoverageBar: document.getElementById("groupCoverageBar"),
   memoryPressureBar: document.getElementById("memoryPressureBar"),
+  controllerUrlValue: document.getElementById("controllerUrlValue"),
+  controllerAuthValue: document.getElementById("controllerAuthValue"),
+  startupConfigPathValue: document.getElementById("startupConfigPathValue"),
   runtimeVersionValue: document.getElementById("runtimeVersionValue"),
   tproxyPortValue: document.getElementById("tproxyPortValue"),
   allowLanValue: document.getElementById("allowLanValue"),
   bindAddressValue: document.getElementById("bindAddressValue"),
+  controllerDetailUrl: document.getElementById("controllerDetailUrl"),
+  embeddedUiValue: document.getElementById("embeddedUiValue"),
+  controllerTokenValue: document.getElementById("controllerTokenValue"),
+  controllerConfigPathValue: document.getElementById("controllerConfigPathValue"),
+  controllerPageNote: document.getElementById("controllerPageNote"),
+  streamList: document.getElementById("streamList"),
+  runtimeLogLevelSelect: document.getElementById("runtimeLogLevelSelect"),
+  applyLogLevelButton: document.getElementById("applyLogLevelButton"),
+  runtimeLogLevelNote: document.getElementById("runtimeLogLevelNote"),
   proxyTabs: document.getElementById("proxyTabs"),
   proxyGrid: document.getElementById("proxyGrid"),
   currentGroupName: document.getElementById("currentGroupName"),
@@ -50,14 +101,27 @@ const refs = {
   saveConfigButton: document.getElementById("saveConfigButton"),
   refreshConfigButton: document.getElementById("refreshConfigButton"),
   configPathValue: document.getElementById("configPathValue"),
+  configModeValue: document.getElementById("configModeValue"),
+  configLogLevelValue: document.getElementById("configLogLevelValue"),
+  configTproxyValue: document.getElementById("configTproxyValue"),
+  configAllowLanValue: document.getElementById("configAllowLanValue"),
+  configBindValue: document.getElementById("configBindValue"),
   configView: document.getElementById("configView"),
   editorLines: document.getElementById("editorLines"),
   editorNote: document.getElementById("editorNote"),
+  logsLevelSelect: document.getElementById("logsLevelSelect"),
+  toggleLogsButton: document.getElementById("toggleLogsButton"),
+  clearLogsButton: document.getElementById("clearLogsButton"),
+  logsStatusText: document.getElementById("logsStatusText"),
+  logsShell: document.getElementById("logsShell"),
+  logsEmpty: document.getElementById("logsEmpty"),
+  logsList: document.getElementById("logsList"),
 };
 
 const state = {
   controllerUrl: "",
   token: "",
+  currentView: "dashboard",
   apiStatus: {
     kind: "offline",
     message: "Disconnected",
@@ -101,6 +165,13 @@ const state = {
   memoryWs: null,
   memoryWsCloseIntent: false,
   memoryWsRetryTimer: null,
+  logWs: null,
+  logWsCloseIntent: false,
+  logWsRetryTimer: null,
+  logLevelChanging: false,
+  logs: [],
+  logsPaused: false,
+  logsLevel: "info",
   refreshing: false,
   connecting: false,
   busyGroups: new Set(),
@@ -137,6 +208,8 @@ function resetLiveState() {
   state.proxySignature = "";
   state.groups = [];
   state.selectedGroup = "";
+  state.logs = [];
+  state.logsPaused = false;
 }
 
 function loadPersistedConnection() {
@@ -285,6 +358,61 @@ function proxySnapshotSignature(rawProxies) {
   );
 }
 
+function activeViewMeta() {
+  return VIEW_META[state.currentView] || VIEW_META.dashboard;
+}
+
+function renderViewState() {
+  const meta = activeViewMeta();
+  refs.pageEyebrow.textContent = meta.eyebrow;
+  refs.pageTitle.textContent = meta.title;
+  refs.pageBanner.textContent = meta.banner;
+  refs.navItems.forEach((item) => {
+    item.classList.toggle("active", item.dataset.view === state.currentView);
+  });
+  refs.pages.forEach((page) => {
+    page.classList.toggle("active", page.dataset.page === state.currentView);
+  });
+}
+
+function setActiveView(view) {
+  if (!VIEW_META[view]) {
+    return;
+  }
+  state.currentView = view;
+  renderViewState();
+  if (view === "logs" && state.controllerUrl && state.apiStatus.kind === "connected" && !state.logsPaused) {
+    connectLogSocket();
+  } else if (view !== "logs") {
+    closeLogSocket();
+  }
+  renderControllerPanel();
+  renderLogs();
+}
+
+function wsState(socket, retryTimer) {
+  if (!state.controllerUrl) {
+    return "idle";
+  }
+  if (socket?.readyState === WebSocket.OPEN) {
+    return "live";
+  }
+  if (socket?.readyState === WebSocket.CONNECTING) {
+    return "opening";
+  }
+  if (retryTimer) {
+    return "retrying";
+  }
+  return state.apiStatus.kind === "connected" ? "standby" : "offline";
+}
+
+function pushLogEntry(entry) {
+  state.logs.unshift(entry);
+  if (state.logs.length > MAX_LOG_ENTRIES) {
+    state.logs.length = MAX_LOG_ENTRIES;
+  }
+}
+
 function setApiStatus(kind, message) {
   state.apiStatus = { kind, message };
   renderHeaderStatus();
@@ -304,7 +432,7 @@ function renderHeaderStatus() {
 function setBusyState(busy) {
   state.connecting = busy;
   refs.connectButton.disabled = busy;
-  refs.refreshButton.disabled = busy;
+  refs.applyLogLevelButton.disabled = busy || state.logLevelChanging || !state.controllerUrl;
 }
 
 function closeTrafficSocket() {
@@ -380,6 +508,18 @@ function closeDaeConfigSocket() {
   }
 }
 
+function closeLogSocket() {
+  if (state.logWsRetryTimer) {
+    window.clearTimeout(state.logWsRetryTimer);
+    state.logWsRetryTimer = null;
+  }
+  if (state.logWs) {
+    state.logWsCloseIntent = true;
+    state.logWs.close();
+    state.logWs = null;
+  }
+}
+
 function connectTrafficSocket() {
   closeTrafficSocket();
 
@@ -396,6 +536,7 @@ function connectTrafficSocket() {
   state.ws = socket;
   state.trafficTransport = "ws connecting";
   renderTrafficMeta();
+  renderControllerPanel();
 
   socket.addEventListener("open", () => {
     if (state.ws !== socket) {
@@ -403,6 +544,7 @@ function connectTrafficSocket() {
     }
     state.trafficTransport = "websocket";
     renderTrafficMeta();
+    renderControllerPanel();
   });
 
   socket.addEventListener("message", (event) => {
@@ -423,10 +565,12 @@ function connectTrafficSocket() {
     }
     state.ws = null;
     if (state.wsCloseIntent) {
+      renderControllerPanel();
       return;
     }
     state.trafficTransport = "ws closed";
     renderTrafficMeta();
+    renderControllerPanel();
     state.wsRetryTimer = window.setTimeout(() => {
       if (state.controllerUrl) {
         connectTrafficSocket();
@@ -452,6 +596,14 @@ function connectMemorySocket() {
 
   state.memoryWsCloseIntent = false;
   state.memoryWs = socket;
+  renderControllerPanel();
+
+  socket.addEventListener("open", () => {
+    if (state.memoryWs !== socket) {
+      return;
+    }
+    renderControllerPanel();
+  });
 
   socket.addEventListener("message", (event) => {
     if (state.memoryWs !== socket) {
@@ -471,8 +623,10 @@ function connectMemorySocket() {
     }
     state.memoryWs = null;
     if (state.memoryWsCloseIntent) {
+      renderControllerPanel();
       return;
     }
+    renderControllerPanel();
     state.memoryWsRetryTimer = window.setTimeout(() => {
       if (state.controllerUrl) {
         connectMemorySocket();
@@ -544,6 +698,14 @@ function connectVersionSocket() {
 
   state.versionWsCloseIntent = false;
   state.versionWs = socket;
+  renderControllerPanel();
+
+  socket.addEventListener("open", () => {
+    if (state.versionWs !== socket) {
+      return;
+    }
+    renderControllerPanel();
+  });
 
   socket.addEventListener("message", (event) => {
     if (state.versionWs !== socket) {
@@ -562,8 +724,10 @@ function connectVersionSocket() {
     }
     state.versionWs = null;
     if (state.versionWsCloseIntent) {
+      renderControllerPanel();
       return;
     }
+    renderControllerPanel();
     state.versionWsRetryTimer = window.setTimeout(() => {
       if (state.controllerUrl) {
         connectVersionSocket();
@@ -589,6 +753,14 @@ function connectConfigSocket() {
 
   state.configWsCloseIntent = false;
   state.configWs = socket;
+  renderControllerPanel();
+
+  socket.addEventListener("open", () => {
+    if (state.configWs !== socket) {
+      return;
+    }
+    renderControllerPanel();
+  });
 
   socket.addEventListener("message", (event) => {
     if (state.configWs !== socket) {
@@ -607,8 +779,10 @@ function connectConfigSocket() {
     }
     state.configWs = null;
     if (state.configWsCloseIntent) {
+      renderControllerPanel();
       return;
     }
+    renderControllerPanel();
     state.configWsRetryTimer = window.setTimeout(() => {
       if (state.controllerUrl) {
         connectConfigSocket();
@@ -634,6 +808,14 @@ function connectProxySocket() {
 
   state.proxyWsCloseIntent = false;
   state.proxyWs = socket;
+  renderControllerPanel();
+
+  socket.addEventListener("open", () => {
+    if (state.proxyWs !== socket) {
+      return;
+    }
+    renderControllerPanel();
+  });
 
   socket.addEventListener("message", (event) => {
     if (state.proxyWs !== socket) {
@@ -653,8 +835,10 @@ function connectProxySocket() {
     }
     state.proxyWs = null;
     if (state.proxyWsCloseIntent) {
+      renderControllerPanel();
       return;
     }
+    renderControllerPanel();
     state.proxyWsRetryTimer = window.setTimeout(() => {
       if (state.controllerUrl) {
         connectProxySocket();
@@ -680,6 +864,14 @@ function connectDaeConfigSocket() {
 
   state.daeConfigWsCloseIntent = false;
   state.daeConfigWs = socket;
+  renderControllerPanel();
+
+  socket.addEventListener("open", () => {
+    if (state.daeConfigWs !== socket) {
+      return;
+    }
+    renderControllerPanel();
+  });
 
   socket.addEventListener("message", (event) => {
     if (state.daeConfigWs !== socket) {
@@ -698,13 +890,86 @@ function connectDaeConfigSocket() {
     }
     state.daeConfigWs = null;
     if (state.daeConfigWsCloseIntent) {
+      renderControllerPanel();
       return;
     }
+    renderControllerPanel();
     state.daeConfigWsRetryTimer = window.setTimeout(() => {
       if (state.controllerUrl) {
         connectDaeConfigSocket();
       }
     }, 3000);
+  });
+}
+
+function connectLogSocket() {
+  if (state.currentView !== "logs" || state.logsPaused) {
+    return;
+  }
+  closeLogSocket();
+
+  let socket;
+  try {
+    const url = buildHttpUrl("/logs");
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    if (state.token) {
+      url.searchParams.set("token", state.token);
+    }
+    url.searchParams.set("format", "structured");
+    url.searchParams.set("level", state.logsLevel);
+    socket = new WebSocket(url.toString());
+  } catch {
+    state.logWsRetryTimer = window.setTimeout(() => {
+      if (state.controllerUrl && state.currentView === "logs" && !state.logsPaused) {
+        connectLogSocket();
+      }
+    }, 3000);
+    renderLogs();
+    return;
+  }
+
+  state.logWsCloseIntent = false;
+  state.logWs = socket;
+  renderControllerPanel();
+  renderLogs();
+
+  socket.addEventListener("open", () => {
+    if (state.logWs !== socket) {
+      return;
+    }
+    renderControllerPanel();
+    renderLogs();
+  });
+
+  socket.addEventListener("message", (event) => {
+    if (state.logWs !== socket) {
+      return;
+    }
+    try {
+      pushLogEntry(JSON.parse(event.data));
+      renderLogs();
+    } catch {
+      // Ignore malformed frames and keep the current log buffer.
+    }
+  });
+
+  socket.addEventListener("close", () => {
+    if (state.logWs !== socket) {
+      return;
+    }
+    state.logWs = null;
+    if (state.logWsCloseIntent) {
+      renderControllerPanel();
+      renderLogs();
+      return;
+    }
+    renderControllerPanel();
+    state.logWsRetryTimer = window.setTimeout(() => {
+      if (state.controllerUrl && state.currentView === "logs" && !state.logsPaused) {
+        connectLogSocket();
+      }
+    }, 3000);
+    renderLogs();
   });
 }
 
@@ -800,6 +1065,9 @@ async function refreshSnapshot(updateStatus = true) {
       connectTrafficSocket();
       connectMemorySocket();
       connectDaeConfigSocket();
+      if (state.currentView === "logs" && !state.logsPaused) {
+        connectLogSocket();
+      }
       renderAll();
     }
   } catch (error) {
@@ -816,6 +1084,7 @@ function handleConnectionError(error) {
   closeTrafficSocket();
   closeMemorySocket();
   closeDaeConfigSocket();
+  closeLogSocket();
   resetLiveState();
 
   if (error.status === 401) {
@@ -849,6 +1118,7 @@ async function connectController() {
   closeTrafficSocket();
   closeMemorySocket();
   closeDaeConfigSocket();
+  closeLogSocket();
   resetLiveState();
   setBusyState(true);
   setApiStatus("warn", "Connecting");
@@ -901,12 +1171,56 @@ function renderSystemStatus() {
   refs.tproxyPortValue.textContent = state.config?.["tproxy-port"] ? String(state.config["tproxy-port"]) : "-";
   refs.allowLanValue.textContent = typeof state.config?.["allow-lan"] === "boolean" ? (state.config["allow-lan"] ? "yes" : "no") : "-";
   refs.bindAddressValue.textContent = state.config?.["bind-address"] || "-";
+  refs.controllerUrlValue.textContent = state.controllerUrl || "-";
+  refs.controllerAuthValue.textContent = state.token ? "Bearer + ws token" : "Bearer disabled";
+  refs.startupConfigPathValue.textContent = state.daeConfigPath || "-";
+  refs.configModeValue.textContent = state.config?.mode || "-";
+  refs.configLogLevelValue.textContent = state.config?.["log-level"] || "-";
+  refs.configTproxyValue.textContent = state.config?.["tproxy-port"] ? String(state.config["tproxy-port"]) : "-";
+  refs.configAllowLanValue.textContent = typeof state.config?.["allow-lan"] === "boolean" ? (state.config["allow-lan"] ? "yes" : "no") : "-";
+  refs.configBindValue.textContent = state.config?.["bind-address"] || "-";
+  if (!state.logLevelChanging) {
+    refs.runtimeLogLevelSelect.value = state.config?.["log-level"] || "info";
+  }
 
   refs.currentGroupName.textContent = group?.name || "No group";
   refs.currentGroupMeta.textContent = group
     ? `${group.type} · current: ${group.now || "none"} · ${group.all.length} node(s)`
     : "Connect controller to load proxies.";
   refs.resetGroupButton.disabled = !group || state.busyGroups.has(group.name);
+}
+
+function renderControllerPanel() {
+  refs.controllerDetailUrl.textContent = state.controllerUrl || "-";
+  refs.embeddedUiValue.textContent = state.controllerUrl ? `${state.controllerUrl}/ui/` : "-";
+  refs.controllerTokenValue.textContent = state.token ? `set (${state.token.length} chars)` : "not set";
+  refs.controllerConfigPathValue.textContent = state.daeConfigPath || "-";
+  refs.controllerPageNote.textContent = state.controllerUrl
+    ? "HTTP requests use Bearer auth. WebSocket requests append token=... when a controller secret is set."
+    : "Connect a dae controller to populate runtime details, startup config metadata, and live channels.";
+
+  const streams = [
+    ["version", wsState(state.versionWs, state.versionWsRetryTimer)],
+    ["configs", wsState(state.configWs, state.configWsRetryTimer)],
+    ["proxies", wsState(state.proxyWs, state.proxyWsRetryTimer)],
+    ["traffic", wsState(state.ws, state.wsRetryTimer)],
+    ["memory", wsState(state.memoryWs, state.memoryWsRetryTimer)],
+    ["config.dae", wsState(state.daeConfigWs, state.daeConfigWsRetryTimer)],
+    ["logs", wsState(state.logWs, state.logWsRetryTimer)],
+  ];
+
+  refs.streamList.innerHTML = streams
+    .map(
+      ([name, status]) => `
+        <div class="stream-pill ${escapeHtml(status)}">
+          <span>${escapeHtml(name)}</span>
+          <strong>${escapeHtml(status)}</strong>
+        </div>
+      `,
+    )
+    .join("");
+
+  refs.applyLogLevelButton.disabled = !state.controllerUrl || state.logLevelChanging || state.connecting;
 }
 
 function renderTrafficMeta() {
@@ -1194,16 +1508,58 @@ function renderVersionTitle() {
 function renderRuntimePanels() {
   renderVersionTitle();
   renderSystemStatus();
+  renderControllerPanel();
   renderProxyTabs();
   renderProxyGrid();
   refs.reloadProxiesButton.disabled = !state.controllerUrl;
 }
 
+function renderLogs() {
+  refs.logsLevelSelect.value = state.logsLevel;
+  refs.toggleLogsButton.textContent = state.logsPaused ? "Resume" : "Pause";
+  refs.toggleLogsButton.disabled = !state.controllerUrl;
+  refs.clearLogsButton.disabled = state.logs.length === 0;
+  refs.logsLevelSelect.disabled = !state.controllerUrl;
+
+  let statusText = `Waiting for live events from /logs?format=structured&level=${state.logsLevel}.`;
+  const currentState = wsState(state.logWs, state.logWsRetryTimer);
+  if (!state.controllerUrl) {
+    statusText = "Connect a controller to open the log stream.";
+  } else if (state.logsPaused) {
+    statusText = "Log stream paused locally. Resume to receive new events.";
+  } else if (currentState === "live") {
+    statusText = `Streaming live logs at level ${state.logsLevel}.`;
+  } else if (currentState === "retrying" || currentState === "opening") {
+    statusText = `Reconnecting /logs stream at level ${state.logsLevel}.`;
+  }
+  refs.logsStatusText.textContent = statusText;
+
+  refs.logsEmpty.hidden = state.logs.length > 0;
+  refs.logsList.innerHTML = state.logs
+    .map((entry) => {
+      const fields = Array.isArray(entry.fields) ? entry.fields : [];
+      const fieldsText = fields.length ? fields.map((field) => `${field.key}=${field.value}`).join(" ") : "";
+      return `
+        <article class="log-entry">
+          <div class="log-entry-top">
+            <span class="log-time">${escapeHtml(entry.time || "--:--:--")}</span>
+            <span class="log-level ${escapeHtml(entry.level || "info")}">${escapeHtml(entry.level || "info")}</span>
+          </div>
+          <p class="log-message">${escapeHtml(entry.message || "")}</p>
+          ${fieldsText ? `<p class="log-fields">${escapeHtml(fieldsText)}</p>` : ""}
+        </article>
+      `;
+    })
+    .join("");
+}
+
 function renderAll() {
+  renderViewState();
   renderHeaderStatus();
   renderTrafficMeta();
   renderRuntimePanels();
   renderDaeConfigEditor();
+  renderLogs();
   renderChart();
 }
 
@@ -1310,8 +1666,12 @@ async function resyncControllerAfterConfigSave() {
       connectTrafficSocket();
       connectMemorySocket();
       connectDaeConfigSocket();
+      if (state.currentView === "logs" && !state.logsPaused) {
+        connectLogSocket();
+      }
       renderRuntimePanels();
       renderDaeConfigEditor();
+      renderLogs();
       refs.editorNote.textContent = `Saved ${state.daeConfigPath || "config.dae"} and reloaded dae.`;
       return;
     } catch (error) {
@@ -1348,6 +1708,38 @@ async function saveDaeConfig() {
   }
 }
 
+async function updateRuntimeLogLevel() {
+  if (!state.controllerUrl) {
+    return;
+  }
+
+  const level = refs.runtimeLogLevelSelect.value;
+  if (!LOG_LEVELS.includes(level)) {
+    refs.runtimeLogLevelNote.textContent = `Unsupported log level: ${level}`;
+    return;
+  }
+
+  state.logLevelChanging = true;
+  renderControllerPanel();
+
+  try {
+    await apiFetch("/configs", {
+      method: "PATCH",
+      body: JSON.stringify({ "log-level": level }),
+    });
+    applyConfigSnapshot({
+      ...(state.config || {}),
+      "log-level": level,
+    });
+    refs.runtimeLogLevelNote.textContent = `Runtime log level updated to ${level}.`;
+  } catch (error) {
+    refs.runtimeLogLevelNote.textContent = `Failed to update runtime log level: ${error.message}`;
+  } finally {
+    state.logLevelChanging = false;
+    renderControllerPanel();
+  }
+}
+
 function handleProxyGridClick(event) {
   const button = event.target.closest("[data-action]");
   if (!button) {
@@ -1371,8 +1763,16 @@ function bindEvents() {
     connectController();
   });
 
-  refs.refreshButton.addEventListener("click", () => {
-    refreshSnapshot(true);
+  refs.navItems.forEach((item) => {
+    item.addEventListener("click", () => {
+      setActiveView(item.dataset.view);
+    });
+  });
+
+  refs.viewButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      setActiveView(button.dataset.openView);
+    });
   });
 
   refs.refreshConfigButton.addEventListener("click", () => {
@@ -1395,6 +1795,10 @@ function bindEvents() {
 
   refs.saveConfigButton.addEventListener("click", () => {
     saveDaeConfig();
+  });
+
+  refs.applyLogLevelButton.addEventListener("click", () => {
+    updateRuntimeLogLevel();
   });
 
   refs.resetGroupButton.addEventListener("click", () => {
@@ -1421,12 +1825,36 @@ function bindEvents() {
   refs.configView.addEventListener("scroll", () => {
     refs.editorLines.scrollTop = refs.configView.scrollTop;
   });
+  refs.logsLevelSelect.addEventListener("change", () => {
+    state.logsLevel = refs.logsLevelSelect.value;
+    if (state.currentView === "logs" && state.controllerUrl && !state.logsPaused) {
+      connectLogSocket();
+    }
+    renderLogs();
+  });
+  refs.toggleLogsButton.addEventListener("click", () => {
+    state.logsPaused = !state.logsPaused;
+    if (state.logsPaused) {
+      closeLogSocket();
+    } else if (state.currentView === "logs" && state.controllerUrl) {
+      connectLogSocket();
+    }
+    renderControllerPanel();
+    renderLogs();
+  });
+  refs.clearLogsButton.addEventListener("click", () => {
+    state.logs = [];
+    renderLogs();
+  });
   window.addEventListener("resize", renderChart);
 }
 
 function boot() {
   loadPersistedConnection();
   bindEvents();
+  refs.logsLevelSelect.value = state.logsLevel;
+  refs.runtimeLogLevelSelect.value = "info";
+  setActiveView(state.currentView);
   renderAll();
   if (state.controllerUrl) {
     connectController();
