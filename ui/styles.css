@@ -233,26 +233,55 @@ body.sidebar-collapsed .app-shell {
   border: 0;
   border-radius: 16px;
   background: transparent;
+  color: #55626a;
   cursor: pointer;
-  transition: transform 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
+  transition: transform 180ms ease, background-color 180ms ease, box-shadow 180ms ease, color 180ms ease;
 }
 
 .nav-item:hover,
 .nav-item.active {
   background: rgba(255, 255, 255, 0.8);
   box-shadow: var(--shadow-sm);
+  color: var(--accent-strong);
   transform: translateX(4px);
 }
 
 .nav-icon {
   flex: 0 0 auto;
-  width: 16px;
-  height: 16px;
-  border-radius: 5px;
-  border: 1.5px solid rgba(96, 105, 116, 0.48);
-  background:
-    linear-gradient(180deg, transparent 38%, rgba(96, 105, 116, 0.3) 39% 48%, transparent 49%),
-    linear-gradient(90deg, transparent 38%, rgba(96, 105, 116, 0.3) 39% 48%, transparent 49%);
+  width: 18px;
+  height: 18px;
+  background-color: currentColor;
+  -webkit-mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+  mask-position: center;
+  mask-repeat: no-repeat;
+  mask-size: contain;
+}
+
+.nav-item[data-view="dashboard"] .nav-icon {
+  -webkit-mask-image: url("./icons/dashboard.svg");
+  mask-image: url("./icons/dashboard.svg");
+}
+
+.nav-item[data-view="proxies"] .nav-icon {
+  -webkit-mask-image: url("./icons/proxies.svg");
+  mask-image: url("./icons/proxies.svg");
+}
+
+.nav-item[data-view="traffic"] .nav-icon {
+  -webkit-mask-image: url("./icons/traffic.svg");
+  mask-image: url("./icons/traffic.svg");
+}
+
+.nav-item[data-view="configs"] .nav-icon {
+  -webkit-mask-image: url("./icons/config.svg");
+  mask-image: url("./icons/config.svg");
+}
+
+.nav-item[data-view="logs"] .nav-icon {
+  -webkit-mask-image: url("./icons/logs.svg");
+  mask-image: url("./icons/logs.svg");
 }
 
 .nav-text {
