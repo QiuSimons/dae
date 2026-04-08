@@ -2637,7 +2637,7 @@ function proxyGridMarkup(group, { limit = 0, compact = false } = {}) {
       const active = group.now === proxyName;
       const address = proxy.addr || proxy.address || "address unavailable";
       const protocol = proxy.protocol || proxy.type || "unknown";
-      const delayText = delay === null ? "pending" : `${delay} ms`;
+      const delayText = !proxy.alive ? "0 ms" : delay === null ? "pending" : `${delay} ms`;
       const delayTone = proxyDelayTone(proxy, delay);
       const busyDelay = state.busyDelayNodes.has(proxyName);
       const busyGroup = state.busyGroups.has(group.name);
@@ -2657,7 +2657,7 @@ function proxyGridMarkup(group, { limit = 0, compact = false } = {}) {
           </div>
 
           <div class="proxy-meta">${escapeHtml(address)}</div>
-          ${proxy.alive ? `<p class="proxy-delay ${delayTone}">${escapeHtml(delayText)}</p>` : ""}
+          <p class="proxy-delay ${delayTone}">${escapeHtml(delayText)}</p>
 
           <div class="proxy-badges">
             <span class="proxy-badge">${escapeHtml(protocol)}</span>
