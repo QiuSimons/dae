@@ -1165,6 +1165,7 @@ body.controller-collapsed .controller-bar {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  min-width: 0;
 }
 
 .proxy-toolbar {
@@ -1195,12 +1196,13 @@ body.controller-collapsed .controller-bar {
 
 .proxy-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
   gap: 14px;
+  min-width: 0;
 }
 
 .compact-proxy-grid {
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
 }
 
 .dashboard-proxies-card .proxy-panel {
@@ -1208,9 +1210,10 @@ body.controller-collapsed .controller-bar {
 }
 
 .dashboard-proxies-card .compact-proxy-grid {
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
   max-height: 560px;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   align-content: start;
   padding-right: 4px;
 }
@@ -1453,12 +1456,14 @@ body.controller-collapsed .controller-bar {
   position: relative;
   padding: 0 18px 18px;
   max-height: 520px;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .connections-stream {
   display: grid;
   gap: 12px;
+  min-width: 0;
 }
 
 .table-sort {
@@ -1480,7 +1485,8 @@ body.controller-collapsed .controller-bar {
 }
 
 .table-sort select {
-  min-width: 132px;
+  min-width: 0;
+  max-width: 100%;
   border: 0;
   background: transparent;
   color: var(--text);
@@ -1497,6 +1503,7 @@ body.controller-collapsed .controller-bar {
   background:
     linear-gradient(145deg, rgba(255, 255, 255, 0.88), rgba(250, 246, 239, 0.74)),
     rgba(255, 255, 255, 0.78);
+  min-width: 0;
 }
 
 .connection-state-head,
@@ -1510,6 +1517,7 @@ body.controller-collapsed .controller-bar {
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
+  min-width: 0;
 }
 
 .connection-state-side {
@@ -1517,6 +1525,7 @@ body.controller-collapsed .controller-bar {
   flex-direction: column;
   align-items: flex-end;
   gap: 10px;
+  min-width: 0;
 }
 
 .connection-state-badges,
@@ -1536,6 +1545,7 @@ body.controller-collapsed .controller-bar {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
+  min-width: 0;
 }
 
 .connection-state-block {
@@ -1546,6 +1556,7 @@ body.controller-collapsed .controller-bar {
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.78);
   border: 1px solid rgba(111, 122, 136, 0.08);
+  min-width: 0;
 }
 
 .network-chip,
@@ -1882,7 +1893,8 @@ body.auth-required #controllerTopToggle {
 
   .proxy-tabs {
     flex-direction: row;
-    overflow: auto;
+    flex-wrap: wrap;
+    overflow: visible;
   }
 
   .stream-list {
@@ -1911,6 +1923,18 @@ body.auth-required #controllerTopToggle {
   .hero-traffic-stats,
   .traffic-totals {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .card-header,
+  .card-header-actions,
+  .connection-state-head,
+  .connection-state-side {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .connection-state-grid {
+    grid-template-columns: 1fr;
   }
 
   .detail-row strong {
