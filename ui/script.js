@@ -1,8 +1,11 @@
 const canvas = document.getElementById("trafficChart");
 const ctx = canvas.getContext("2d");
 
+const DEFAULT_CONFIG_PLACEHOLDER = "# Connect controller to load /etc/dae/config.dae";
 const SAMPLE_SIZE = 20;
 const REFRESH_INTERVAL_MS = 1000;
+const RELOAD_SYNC_ATTEMPTS = 8;
+const RELOAD_SYNC_DELAY_MS = 800;
 const STORAGE_KEYS = {
   controller: "daed-demo-controller",
   token: "daed-demo-token",
@@ -45,9 +48,9 @@ const refs = {
   currentGroupMeta: document.getElementById("currentGroupMeta"),
   resetGroupButton: document.getElementById("resetGroupButton"),
   reloadProxiesButton: document.getElementById("reloadProxiesButton"),
-  logLevelSelect: document.getElementById("logLevelSelect"),
   saveConfigButton: document.getElementById("saveConfigButton"),
   refreshConfigButton: document.getElementById("refreshConfigButton"),
+  configPathValue: document.getElementById("configPathValue"),
   configView: document.getElementById("configView"),
   editorLines: document.getElementById("editorLines"),
   editorNote: document.getElementById("editorNote"),
@@ -62,6 +65,8 @@ const state = {
   },
   version: null,
   config: null,
+  daeConfigPath: "",
+  daeConfigContent: DEFAULT_CONFIG_PLACEHOLDER,
   memory: null,
   traffic: {
     up: 0,
@@ -99,6 +104,8 @@ function createEmptySeries() {
 function resetLiveState() {
   state.version = null;
   state.config = null;
+  state.daeConfigPath = "";
+  state.daeConfigContent = DEFAULT_CONFIG_PLACEHOLDER;
   state.memory = null;
   state.traffic = {
     up: 0,
@@ -195,6 +202,12 @@ async function apiFetch(path, options = {}) {
     return null;
   }
   return JSON.parse(text);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
 }
 
 function setApiStatus(kind, message) {
@@ -385,7 +398,6 @@ function updateMemory(payload) {
     oslimit: Number(payload.oslimit || 0),
   };
   renderSystemStatus();
-  renderConfigSnapshot();
 }
 
 function trimTrafficSeries() {
@@ -447,9 +459,10 @@ async function refreshSnapshot(updateStatus = true) {
       connectTrafficSocket();
       connectMemorySocket();
       startRefreshLoop();
+      renderAll();
+    } else {
+      renderRuntimePanels();
     }
-
-    renderAll();
   } catch (error) {
     handleConnectionError(error);
   } finally {
@@ -494,9 +507,20 @@ async function connectController() {
   resetLiveState();
   setBusyState(true);
   setApiStatus("warn", "Connecting");
-  refs.controllerHint.textContent = "Opening live channels for `/traffic` and `/memory`, then synchronizing `/version`, `/configs`, and `/proxies`.";
+  refs.controllerHint.textContent =
+    "Opening live channels for `/traffic` and `/memory`, synchronizing `/version`, `/configs`, and `/proxies`, then loading startup `config.dae`.";
   renderAll();
   await refreshSnapshot(true);
+  if (state.apiStatus.kind === "connected") {
+    try {
+      await loadDaeConfigDocument();
+      refs.editorNote.textContent = state.daeConfigPath
+        ? `Loaded ${state.daeConfigPath}.`
+        : "Loaded startup config.dae.";
+    } catch (error) {
+      refs.editorNote.textContent = `Connected, but failed to load config.dae: ${error.message}`;
+    }
+  }
   setBusyState(false);
 }
 
@@ -799,54 +823,50 @@ function renderProxyGrid() {
     .join("");
 }
 
-function renderConfigSnapshot() {
-  const snapshot = {
-    controller: {
-      url: state.controllerUrl || null,
-      status: state.apiStatus.message,
-      trafficTransport: state.trafficTransport,
-    },
-    version: state.version,
-    configs: state.config,
-    memory: state.memory,
-    selectedGroup: currentGroup()
-      ? {
-          name: currentGroup().name,
-          now: currentGroup().now,
-          type: currentGroup().type,
-          all: currentGroup().all,
-        }
-      : null,
-  };
-
-  const content = JSON.stringify(snapshot, null, 2);
-  refs.configView.textContent = content;
-
-  const lines = content.split("\n").length;
+function syncEditorLines() {
+  const lines = Math.max(1, refs.configView.value.split("\n").length);
   refs.editorLines.innerHTML = Array.from({ length: lines }, (_, index) => `<span>${index + 1}</span>`).join("");
+  refs.editorLines.scrollTop = refs.configView.scrollTop;
+}
 
-  if (state.config?.["log-level"]) {
-    refs.logLevelSelect.value = state.config["log-level"];
+function renderDaeConfigEditor() {
+  refs.configPathValue.textContent = state.daeConfigPath || "-";
+  if (refs.configView.value !== state.daeConfigContent) {
+    refs.configView.value = state.daeConfigContent;
   }
+  syncEditorLines();
+  refs.saveConfigButton.disabled = !state.controllerUrl;
+  refs.refreshConfigButton.disabled = !state.controllerUrl;
+}
+
+async function loadDaeConfigDocument() {
+  if (!state.controllerUrl) {
+    return;
+  }
+  const doc = await apiFetch("/configs/dae");
+  state.daeConfigPath = doc.path || "";
+  state.daeConfigContent = typeof doc.content === "string" ? doc.content : "";
+  renderDaeConfigEditor();
 }
 
 function renderVersionTitle() {
   refs.versionLabel.textContent = state.version?.version || "unlinked";
 }
 
-function renderAll() {
-  renderHeaderStatus();
+function renderRuntimePanels() {
   renderVersionTitle();
   renderSystemStatus();
-  renderTrafficMeta();
   renderProxyTabs();
   renderProxyGrid();
-  renderConfigSnapshot();
-  renderChart();
-
-  refs.saveConfigButton.disabled = !state.config;
-  refs.refreshConfigButton.disabled = !state.controllerUrl;
   refs.reloadProxiesButton.disabled = !state.controllerUrl;
+}
+
+function renderAll() {
+  renderHeaderStatus();
+  renderTrafficMeta();
+  renderRuntimePanels();
+  renderDaeConfigEditor();
+  renderChart();
 }
 
 async function probeDelay(name) {
@@ -890,7 +910,8 @@ async function selectProxy(name) {
     refs.editorNote.textContent = `Failed to switch ${group.name} to ${name}: ${error.message}`;
   } finally {
     state.busyGroups.delete(group.name);
-    renderAll();
+    renderSystemStatus();
+    renderProxyGrid();
   }
 }
 
@@ -913,29 +934,70 @@ async function resetGroup() {
     refs.editorNote.textContent = `Failed to reset ${group.name}: ${error.message}`;
   } finally {
     state.busyGroups.delete(group.name);
-    renderAll();
+    renderSystemStatus();
+    renderProxyGrid();
   }
 }
 
-async function updateLogLevel() {
+async function resyncControllerAfterConfigSave() {
+  let lastError = null;
+  for (let attempt = 0; attempt < RELOAD_SYNC_ATTEMPTS; attempt += 1) {
+    await sleep(RELOAD_SYNC_DELAY_MS);
+    try {
+      const [version, config, proxiesPayload, daeConfig] = await Promise.all([
+        apiFetch("/version"),
+        apiFetch("/configs"),
+        apiFetch("/proxies"),
+        apiFetch("/configs/dae"),
+      ]);
+
+      state.version = version;
+      state.config = config;
+      refreshProxyCollections(proxiesPayload.proxies);
+      state.daeConfigPath = daeConfig.path || "";
+      state.daeConfigContent = typeof daeConfig.content === "string" ? daeConfig.content : "";
+
+      setApiStatus("connected", "Connected");
+      refs.controllerHint.textContent =
+        "Connected to dae external controller. `/traffic` and `/memory` stay live over WebSocket, while `/version`, `/configs`, and `/proxies` auto-refresh every second.";
+      connectTrafficSocket();
+      connectMemorySocket();
+      startRefreshLoop();
+      renderRuntimePanels();
+      renderDaeConfigEditor();
+      refs.editorNote.textContent = `Saved ${state.daeConfigPath || "config.dae"} and reloaded dae.`;
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  if (lastError) {
+    handleConnectionError(lastError);
+    refs.editorNote.textContent = `Config was written, but dae did not come back cleanly: ${lastError.message}`;
+  }
+}
+
+async function saveDaeConfig() {
   if (!state.controllerUrl) {
     return;
   }
 
-  const level = refs.logLevelSelect.value;
   refs.saveConfigButton.disabled = true;
+  refs.refreshConfigButton.disabled = true;
   try {
-    await apiFetch("/configs", {
-      method: "PATCH",
-      body: JSON.stringify({ "log-level": level }),
+    const content = refs.configView.value;
+    await apiFetch("/configs/dae", {
+      method: "PUT",
+      body: JSON.stringify({ content }),
     });
-    refs.editorNote.textContent = `Updated controller log level to ${level} via PATCH /configs.`;
-    await refreshSnapshot(false);
+    state.daeConfigContent = content;
+    refs.editorNote.textContent = `Saved ${state.daeConfigPath || "config.dae"}. Waiting for dae to reload...`;
+    await resyncControllerAfterConfigSave();
   } catch (error) {
-    refs.editorNote.textContent = `Failed to update log level: ${error.message}`;
+    refs.editorNote.textContent = `Failed to save config.dae: ${error.message}`;
   } finally {
-    refs.saveConfigButton.disabled = false;
-    renderAll();
+    renderDaeConfigEditor();
   }
 }
 
@@ -967,7 +1029,15 @@ function bindEvents() {
   });
 
   refs.refreshConfigButton.addEventListener("click", () => {
-    refreshSnapshot(false);
+    loadDaeConfigDocument()
+      .then(() => {
+        refs.editorNote.textContent = state.daeConfigPath
+          ? `Reloaded ${state.daeConfigPath} from disk.`
+          : "Reloaded config.dae from disk.";
+      })
+      .catch((error) => {
+        refs.editorNote.textContent = `Failed to reload config.dae: ${error.message}`;
+      });
   });
 
   refs.reloadProxiesButton.addEventListener("click", () => {
@@ -975,7 +1045,7 @@ function bindEvents() {
   });
 
   refs.saveConfigButton.addEventListener("click", () => {
-    updateLogLevel();
+    saveDaeConfig();
   });
 
   refs.resetGroupButton.addEventListener("click", () => {
@@ -988,10 +1058,18 @@ function bindEvents() {
       return;
     }
     state.selectedGroup = button.dataset.group;
-    renderAll();
+    renderSystemStatus();
+    renderProxyTabs();
+    renderProxyGrid();
   });
 
   refs.proxyGrid.addEventListener("click", handleProxyGridClick);
+  refs.configView.addEventListener("input", () => {
+    syncEditorLines();
+  });
+  refs.configView.addEventListener("scroll", () => {
+    refs.editorLines.scrollTop = refs.configView.scrollTop;
+  });
   window.addEventListener("resize", renderChart);
 }
 

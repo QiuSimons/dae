@@ -73,6 +73,11 @@ type Config struct {
 	IPv6        bool   `json:"ipv6"`
 }
 
+type DaeConfigDocument struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
 type DelayHistory struct {
 	Time  time.Time `json:"time"`
 	Delay uint16    `json:"delay"`
@@ -97,6 +102,7 @@ type Provider interface {
 	Version() string
 	Meta() bool
 	Config() Config
+	DaeConfigDocument() (DaeConfigDocument, error)
 	Memory() Memory
 	Traffic() Traffic
 	Proxies() map[string]Proxy
@@ -105,6 +111,7 @@ type Provider interface {
 	ResetProxy(groupName string) error
 	Delay(name, probeURL string, timeout time.Duration) (int, error)
 	SetLogLevel(level string) error
+	UpdateDaeConfig(content string) error
 }
 
 type structuredLogField struct {
@@ -174,6 +181,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("/", s.handleRoot)
 	mux.HandleFunc("/version", s.handleVersion)
 	mux.HandleFunc("/configs", s.handleConfigs)
+	mux.HandleFunc("/configs/dae", s.handleDaeConfig)
 	mux.HandleFunc("/proxies", s.handleProxies)
 	mux.HandleFunc("/proxies/", s.handleProxyByName)
 	mux.HandleFunc("/traffic", s.handleTraffic)
@@ -263,6 +271,33 @@ func (s *Server) handleConfigs(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, &HTTPError{Message: err.Error()})
 				return
 			}
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleDaeConfig(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		doc, err := s.provider.DaeConfigDocument()
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, &HTTPError{Message: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, doc)
+	case http.MethodPut:
+		req := struct {
+			Content string `json:"content"`
+		}{}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, errBadRequest)
+			return
+		}
+		if err := s.provider.UpdateDaeConfig(req.Content); err != nil {
+			writeError(w, http.StatusBadRequest, &HTTPError{Message: err.Error()})
+			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 	default:

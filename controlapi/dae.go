@@ -8,9 +8,12 @@ import (
 	"fmt"
 	"net/netip"
 	"net/url"
+	"os"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/daeuniverse/dae/common"
@@ -36,13 +39,14 @@ var (
 
 type DaeProvider struct {
 	version         string
+	configPath      string
 	conf            *config.Config
 	plane           *control.ControlPlane
 	defaultPolicies map[string]outbound.DialerSelectionPolicy
 	loggers         []*logrus.Logger
 }
 
-func NewDaeProvider(version string, conf *config.Config, plane *control.ControlPlane, loggers ...*logrus.Logger) (*DaeProvider, error) {
+func NewDaeProvider(version string, conf *config.Config, plane *control.ControlPlane, configPath string, loggers ...*logrus.Logger) (*DaeProvider, error) {
 	defaultPolicies := map[string]outbound.DialerSelectionPolicy{
 		consts.OutboundDirect.String(): {
 			Policy:     consts.DialerSelectionPolicy_Fixed,
@@ -62,6 +66,7 @@ func NewDaeProvider(version string, conf *config.Config, plane *control.ControlP
 	}
 	return &DaeProvider{
 		version:         version,
+		configPath:      configPath,
 		conf:            conf,
 		plane:           plane,
 		defaultPolicies: defaultPolicies,
@@ -94,6 +99,20 @@ func (p *DaeProvider) Config() Config {
 		LogLevel:    p.conf.Global.LogLevel,
 		IPv6:        true,
 	}
+}
+
+func (p *DaeProvider) DaeConfigDocument() (DaeConfigDocument, error) {
+	if p.configPath == "" {
+		return DaeConfigDocument{}, fmt.Errorf("config file path is unavailable")
+	}
+	content, err := os.ReadFile(p.configPath)
+	if err != nil {
+		return DaeConfigDocument{}, fmt.Errorf("read config file: %w", err)
+	}
+	return DaeConfigDocument{
+		Path:    p.configPath,
+		Content: string(content),
+	}, nil
 }
 
 func (p *DaeProvider) Memory() Memory {
@@ -204,6 +223,59 @@ func (p *DaeProvider) SetLogLevel(level string) error {
 		if logger != nil {
 			logger.SetLevel(parsed)
 		}
+	}
+	return nil
+}
+
+func (p *DaeProvider) UpdateDaeConfig(content string) error {
+	if p.configPath == "" {
+		return fmt.Errorf("config file path is unavailable")
+	}
+
+	dir := filepath.Dir(p.configPath)
+	tmp, err := os.CreateTemp(dir, ".dae-controller-*.dae")
+	if err != nil {
+		return fmt.Errorf("create temp config: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	mode := os.FileMode(0600)
+	if stat, err := os.Stat(p.configPath); err == nil {
+		mode = stat.Mode().Perm()
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("set temp config mode: %w", err)
+	}
+	if _, err := tmp.WriteString(content); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp config: %w", err)
+	}
+
+	if err := validateDaeConfigFile(tmpPath); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, p.configPath); err != nil {
+		return fmt.Errorf("replace config file: %w", err)
+	}
+	if err := syscall.Kill(os.Getpid(), syscall.SIGUSR1); err != nil {
+		return fmt.Errorf("send reload signal: %w", err)
+	}
+	return nil
+}
+
+func validateDaeConfigFile(path string) error {
+	merger := config.NewMerger(path)
+	sections, _, err := merger.Merge()
+	if err != nil {
+		return err
+	}
+	if _, err := config.New(sections); err != nil {
+		return err
 	}
 	return nil
 }

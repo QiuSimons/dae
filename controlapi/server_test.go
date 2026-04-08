@@ -12,6 +12,7 @@ import (
 
 type fakeProvider struct {
 	config       Config
+	daeConfig    DaeConfigDocument
 	traffic      Traffic
 	memory       Memory
 	proxies      map[string]Proxy
@@ -22,12 +23,16 @@ type fakeProvider struct {
 	delayValue   int
 	delayErr     error
 	lastLogLevel string
+	lastDaeConfig string
 }
 
 func (f *fakeProvider) Hello() string                   { return "dae" }
 func (f *fakeProvider) Version() string                 { return f.version }
 func (f *fakeProvider) Meta() bool                      { return f.meta }
 func (f *fakeProvider) Config() Config                  { return f.config }
+func (f *fakeProvider) DaeConfigDocument() (DaeConfigDocument, error) {
+	return f.daeConfig, nil
+}
 func (f *fakeProvider) Memory() Memory                  { return f.memory }
 func (f *fakeProvider) Traffic() Traffic                { return f.traffic }
 func (f *fakeProvider) Proxies() map[string]Proxy       { return f.proxies }
@@ -45,6 +50,10 @@ func (f *fakeProvider) Delay(name, probeURL string, timeout time.Duration) (int,
 }
 func (f *fakeProvider) SetLogLevel(level string) error {
 	f.lastLogLevel = level
+	return nil
+}
+func (f *fakeProvider) UpdateDaeConfig(content string) error {
+	f.lastDaeConfig = content
 	return nil
 }
 
@@ -171,6 +180,21 @@ func TestAuthAndPatchConfigs(t *testing.T) {
 		t.Fatalf("log level = %q", provider.lastLogLevel)
 	}
 
+	req, err = http.NewRequest(http.MethodPut, server.URL+"/configs/dae", bytes.NewBufferString(`{"content":"global{} routing{}"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if provider.lastDaeConfig != "global{} routing{}" {
+		t.Fatalf("dae config = %q", provider.lastDaeConfig)
+	}
+
 	req, err = http.NewRequest(http.MethodGet, server.URL+"/version", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -183,6 +207,38 @@ func TestAuthAndPatchConfigs(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected unauthorized, got %d body=%s", resp.StatusCode, string(body))
+	}
+}
+
+func TestGetEditableDaeConfig(t *testing.T) {
+	provider := &fakeProvider{
+		daeConfig: DaeConfigDocument{
+			Path:    "/etc/dae/config.dae",
+			Content: "global{} routing{}",
+		},
+		proxies: map[string]Proxy{},
+	}
+	server := httptest.NewServer(NewServer(ServerConfig{}, provider, nil).handler())
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/configs/dae")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("dae config status = %d", resp.StatusCode)
+	}
+
+	var got DaeConfigDocument
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Path != "/etc/dae/config.dae" {
+		t.Fatalf("config path = %q", got.Path)
+	}
+	if got.Content != "global{} routing{}" {
+		t.Fatalf("config content = %q", got.Content)
 	}
 }
 

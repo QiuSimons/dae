@@ -420,7 +420,7 @@ button {
 }
 
 .controller-field input:focus,
-.inline-field select:focus {
+.editor-code:focus {
   border-color: rgba(76, 192, 181, 0.56);
   box-shadow: 0 0 0 4px rgba(76, 192, 181, 0.12);
 }
@@ -936,6 +936,35 @@ button {
   gap: 16px;
 }
 
+.editor-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.editor-path-label {
+  color: #67737b;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.editor-path {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 7px 10px;
+  overflow: hidden;
+  border-radius: 12px;
+  background: rgba(244, 246, 247, 0.92);
+  color: #3a464d;
+  font-family: "SF Mono", "Monaco", "Courier New", monospace;
+  font-size: 0.82rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .editor-tab {
   padding: 10px 14px;
   border: 1px solid rgba(111, 122, 136, 0.12);
@@ -954,7 +983,7 @@ button {
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr);
   min-height: 246px;
-  overflow: auto;
+  overflow: hidden;
   border: 1px solid rgba(111, 122, 136, 0.14);
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.9);
@@ -973,12 +1002,20 @@ button {
 
 .editor-code {
   margin: 0;
+  width: 100%;
   padding: 14px 18px 14px 6px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  box-sizing: border-box;
   color: #334047;
   font-family: "SF Mono", "Monaco", "Courier New", monospace;
   font-size: 0.96rem;
   line-height: 1.7;
-  white-space: pre-wrap;
+  white-space: pre;
+  resize: none;
+  overflow: auto;
+  min-height: 246px;
 }
 
 .editor-actions {

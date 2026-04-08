@@ -66,7 +66,7 @@
             </button>
             <button class="nav-item" type="button">
               <span class="nav-icon"></span>
-              <span>`/configs` patches log-level</span>
+              <span>`/configs/dae` edits startup config</span>
             </button>
           </div>
         </nav>
@@ -295,37 +295,34 @@
 
           <article class="card editor-card">
             <div class="card-header">
-              <h2>Config Snapshot</h2>
+              <h2>config.dae</h2>
             </div>
 
             <div class="editor-shell">
               <div class="editor-toolbar">
-                <label class="inline-field" for="logLevelSelect">
-                  <span>Log Level</span>
-                  <select id="logLevelSelect">
-                    <option value="error">error</option>
-                    <option value="warn">warn</option>
-                    <option value="info">info</option>
-                    <option value="debug">debug</option>
-                    <option value="trace">trace</option>
-                  </select>
-                </label>
+                <div class="editor-meta">
+                  <span class="editor-path-label">Loaded File</span>
+                  <code class="editor-path" id="configPathValue">-</code>
+                </div>
 
                 <div class="editor-actions">
-                  <button class="action-button subtle" id="saveConfigButton" type="button">Update Log Level</button>
-                  <button class="action-button accent" id="refreshConfigButton" type="button">Refresh Snapshot</button>
+                  <button class="action-button ghost" id="refreshConfigButton" type="button">Reload File</button>
+                  <button class="action-button subtle" id="saveConfigButton" type="button">Save + Reload</button>
                 </div>
               </div>
 
               <div class="editor-window">
                 <div class="editor-lines" id="editorLines" aria-hidden="true"></div>
-                <pre class="editor-code"><code id="configView">{
-  "status": "disconnected"
-}</code></pre>
+                <textarea
+                  class="editor-code"
+                  id="configView"
+                  spellcheck="false"
+                  wrap="off"
+                ># Connect controller to load /etc/dae/config.dae</textarea>
               </div>
 
               <p class="editor-note" id="editorNote">
-                `/configs` currently supports `PATCH {"log-level": ...}`. Routing text is not exposed by the current backend.
+                Editing dae's startup config file. Save validates the dae syntax, writes the file, and triggers a live reload.
               </p>
             </div>
           </article>

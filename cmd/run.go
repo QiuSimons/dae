@@ -178,7 +178,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 			return nil
 		}
 		attachControllerLogHook(currentLog)
-		provider, err := controlapi.NewDaeProvider(Version, currentConf, plane, currentLog, logrus.StandardLogger())
+		provider, err := controlapi.NewDaeProvider(Version, currentConf, plane, cfgFile, currentLog, logrus.StandardLogger())
 		if err != nil {
 			return err
 		}
