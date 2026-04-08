@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -133,8 +134,25 @@ func (p *DaeProvider) Memory() Memory {
 	runtime.ReadMemStats(&stats)
 	return Memory{
 		Inuse:   stats.Alloc,
+		RSS:     readProcessRSS(),
 		OSLimit: 0,
 	}
+}
+
+func readProcessRSS() uint64 {
+	statm, err := os.ReadFile("/proc/self/statm")
+	if err != nil {
+		return 0
+	}
+	fields := strings.Fields(string(statm))
+	if len(fields) < 2 {
+		return 0
+	}
+	residentPages, err := strconv.ParseUint(fields[1], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return residentPages * uint64(os.Getpagesize())
 }
 
 func clampUint64ToInt64(value uint64) int64 {

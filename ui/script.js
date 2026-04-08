@@ -151,6 +151,7 @@ const refs = {
   dashboardModeValue: document.getElementById("dashboardModeValue"),
   dashboardLogLevelValue: document.getElementById("dashboardLogLevelValue"),
   dashboardMemoryValue: document.getElementById("dashboardMemoryValue"),
+  dashboardRssValue: document.getElementById("dashboardRssValue"),
   dashboardAliveValue: document.getElementById("dashboardAliveValue"),
   dashboardUpValue: document.getElementById("dashboardUpValue"),
   dashboardDownValue: document.getElementById("dashboardDownValue"),
@@ -1241,6 +1242,7 @@ function applyTrafficSnapshot(payload, appendSample) {
 function updateMemory(payload) {
   state.memory = {
     inuse: Number(payload?.inuse || 0),
+    rss: Number(payload?.rss || 0),
     oslimit: Number(payload?.oslimit || 0),
   };
   renderSystemStatus();
@@ -2168,10 +2170,12 @@ function renderHeaderStatus() {
 function renderSystemStatus() {
   const { leaves, alive } = computeLeafStats();
   const inUse = Number(state.memory?.inuse || 0);
+  const rss = Number(state.memory?.rss || 0);
 
   refs.dashboardModeValue.textContent = state.config?.mode || "-";
   refs.dashboardLogLevelValue.textContent = state.config?.["log-level"] || "-";
   refs.dashboardMemoryValue.textContent = inUse ? humanBytes(inUse) : "-";
+  refs.dashboardRssValue.textContent = rss ? humanBytes(rss) : "-";
   refs.dashboardAliveValue.textContent = `${alive} / ${leaves.length}`;
   refs.runtimeVersionValue.textContent = state.version?.version || "-";
 

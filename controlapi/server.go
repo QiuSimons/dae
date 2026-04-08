@@ -93,6 +93,7 @@ type Connection struct {
 
 type Memory struct {
 	Inuse   uint64 `json:"inuse"`
+	RSS     uint64 `json:"rss"`
 	OSLimit uint64 `json:"oslimit"`
 }
 

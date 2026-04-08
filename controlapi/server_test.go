@@ -261,6 +261,7 @@ func TestTrafficAndMemoryRoutesReturnSingleSnapshots(t *testing.T) {
 		},
 		memory: Memory{
 			Inuse:   1234,
+			RSS:     3456,
 			OSLimit: 5678,
 		},
 		proxies: map[string]Proxy{},
@@ -301,7 +302,7 @@ func TestTrafficAndMemoryRoutesReturnSingleSnapshots(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&memory); err != nil {
 		t.Fatal(err)
 	}
-	if memory.Inuse != 1234 || memory.OSLimit != 5678 {
+	if memory.Inuse != 1234 || memory.RSS != 3456 || memory.OSLimit != 5678 {
 		t.Fatalf("unexpected memory payload: %#v", memory)
 	}
 	if _, err := io.ReadAll(resp.Body); err != nil {
