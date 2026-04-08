@@ -85,6 +85,10 @@ type Connection struct {
 	HasRouting         bool      `json:"hasRouting"`
 	Mac                string    `json:"mac"`
 	LastSeen           time.Time `json:"lastSeen"`
+	UploadSpeed        int64     `json:"uploadSpeed"`
+	DownloadSpeed      int64     `json:"downloadSpeed"`
+	UploadTotal        int64     `json:"uploadTotal"`
+	DownloadTotal      int64     `json:"downloadTotal"`
 }
 
 type Memory struct {
@@ -607,7 +611,7 @@ func streamTraffic(w http.ResponseWriter, r *http.Request, snapshot func() Traff
 		}
 		defer conn.Close()
 
-		ticker := time.NewTicker(time.Second)
+		ticker := time.NewTicker(snapshotStreamInterval)
 		defer ticker.Stop()
 		for {
 			if err := conn.WriteJSON(snapshot()); err != nil {

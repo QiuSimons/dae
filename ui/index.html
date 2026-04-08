@@ -87,18 +87,16 @@
 
             <div class="speed-chip">
               <span>Up</span>
-              <strong id="uploadRate">0.0</strong>
-              <span>MB/s</span>
+              <strong id="uploadRate">0 B/s</strong>
             </div>
 
             <div class="speed-chip">
               <span>Down</span>
-              <strong id="downloadRate">0.0</strong>
-              <span>MB/s</span>
+              <strong id="downloadRate">0 B/s</strong>
             </div>
 
             <div class="speed-chip">
-              <span>Conn</span>
+              <span>Connections</span>
               <strong id="topConnectionsValue">0</strong>
             </div>
 
@@ -189,8 +187,7 @@
                   <div class="hero-badges">
                     <span class="hero-badge">Status <strong id="dashboardStatusValue">offline</strong></span>
                     <span class="hero-badge">Version <strong id="runtimeVersionValue">-</strong></span>
-                    <span class="hero-badge">Conn <strong id="dashboardConnectionValue">0</strong></span>
-                    <span class="hero-badge">Transport <strong id="dashboardTrafficTransportValue">idle</strong></span>
+                    <span class="hero-badge">Connections <strong id="dashboardConnectionValue">0</strong></span>
                   </div>
                 </div>
 
@@ -248,20 +245,12 @@
 
                     <div class="hero-traffic-stats">
                       <div class="mini-stat">
-                        <span>Current Up</span>
-                        <strong id="dashboardTrafficUpValue">0.0 MB/s</strong>
+                        <span>Upload</span>
+                        <strong id="dashboardUpValue">0 B/s</strong>
                       </div>
                       <div class="mini-stat">
-                        <span>Current Down</span>
-                        <strong id="dashboardTrafficDownValue">0.0 MB/s</strong>
-                      </div>
-                      <div class="mini-stat">
-                        <span>Realtime Up</span>
-                        <strong id="dashboardUpValue">0.0 MB/s</strong>
-                      </div>
-                      <div class="mini-stat">
-                        <span>Realtime Down</span>
-                        <strong id="dashboardDownValue">0.0 MB/s</strong>
+                        <span>Download</span>
+                        <strong id="dashboardDownValue">0 B/s</strong>
                       </div>
                     </div>
                   </div>
@@ -378,17 +367,28 @@
                     <span>Download Total</span>
                     <strong id="trafficDownloadTotalValue">0 B</strong>
                   </div>
-                  <div class="mini-stat">
-                    <span>Transport</span>
-                    <strong id="trafficTransportValue">idle</strong>
-                  </div>
                 </div>
               </article>
 
               <article class="card connections-live-card">
                 <div class="card-header">
                   <h2>Active Connections</h2>
-                  <span class="nav-badge">5S</span>
+
+                  <div class="card-header-actions">
+                    <span class="nav-badge">5S</span>
+
+                    <label class="table-sort">
+                      <span>Sort</span>
+                      <select id="trafficSortSelect">
+                        <option value="download-speed">Down Speed</option>
+                        <option value="upload-speed">Up Speed</option>
+                        <option value="download-total">Down Total</option>
+                        <option value="upload-total">Up Total</option>
+                        <option value="updated">Last Seen</option>
+                        <option value="process">Process</option>
+                      </select>
+                    </label>
+                  </div>
                 </div>
 
                 <div class="preview-stat-grid three-up">

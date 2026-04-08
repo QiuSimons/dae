@@ -44,6 +44,7 @@ const STORAGE_KEYS = {
   controller: "daed-demo-controller",
   token: "daed-demo-token",
   sidebarCollapsed: "daed-demo-sidebar-collapsed",
+  connectionSort: "daed-demo-connection-sort",
 };
 
 const CONFIG_SECTION_DESCRIPTIONS = {
@@ -94,9 +95,6 @@ const refs = {
   runtimeVersionValue: document.getElementById("runtimeVersionValue"),
   uploadTotalValue: document.getElementById("uploadTotalValue"),
   downloadTotalValue: document.getElementById("downloadTotalValue"),
-  dashboardTrafficTransportValue: document.getElementById("dashboardTrafficTransportValue"),
-  dashboardTrafficUpValue: document.getElementById("dashboardTrafficUpValue"),
-  dashboardTrafficDownValue: document.getElementById("dashboardTrafficDownValue"),
   dashboardTrafficChart: document.getElementById("dashboardTrafficChart"),
   dashboardChartScale: document.getElementById("dashboardChartScale"),
   dashboardChartTime: document.getElementById("dashboardChartTime"),
@@ -124,13 +122,13 @@ const refs = {
   chartTime: document.getElementById("chartTime"),
   trafficUploadTotalValue: document.getElementById("trafficUploadTotalValue"),
   trafficDownloadTotalValue: document.getElementById("trafficDownloadTotalValue"),
-  trafficTransportValue: document.getElementById("trafficTransportValue"),
   trafficConnectionsTotal: document.getElementById("trafficConnectionsTotal"),
   trafficConnectionsTcp: document.getElementById("trafficConnectionsTcp"),
   trafficConnectionsUdp: document.getElementById("trafficConnectionsUdp"),
   trafficConnectionsUpdated: document.getElementById("trafficConnectionsUpdated"),
   trafficConnectionsList: document.getElementById("trafficConnectionsList"),
   trafficConnectionsEmpty: document.getElementById("trafficConnectionsEmpty"),
+  trafficSortSelect: document.getElementById("trafficSortSelect"),
   configPathValue: document.getElementById("configPathValue"),
   configModeValue: document.getElementById("configModeValue"),
   configLogLevelValue: document.getElementById("configLogLevelValue"),
@@ -238,6 +236,7 @@ const state = {
   connecting: false,
   logLevelChanging: false,
   sidebarCollapsed: false,
+  connectionSort: "download-speed",
   controllerExpanded: true,
   busyGroups: new Set(),
   busyDelayNodes: new Set(),
@@ -318,6 +317,10 @@ function connectionsSnapshotSignature(payload, available = true) {
           hasRouting: Boolean(conn?.hasRouting),
           mac: conn?.mac || "",
           lastSeen: conn?.lastSeen || "",
+          uploadSpeed: Number(conn?.uploadSpeed || 0),
+          downloadSpeed: Number(conn?.downloadSpeed || 0),
+          uploadTotal: Number(conn?.uploadTotal || 0),
+          downloadTotal: Number(conn?.downloadTotal || 0),
         }))
       : [],
   });
@@ -382,6 +385,10 @@ function bytesToMegabytes(value) {
 
 function shortRate(value) {
   return bytesToMegabytes(value).toFixed(1);
+}
+
+function formatByteRate(value) {
+  return `${humanBytes(value)}/s`;
 }
 
 function formatYesNo(value) {
@@ -457,6 +464,48 @@ function formatConnectionLabel(label, address, port) {
     return primary;
   }
   return formatEndpoint(address, port);
+}
+
+function parseTimestamp(value) {
+  const time = new Date(value);
+  if (Number.isNaN(time.getTime())) {
+    return 0;
+  }
+  return time.getTime();
+}
+
+function sortTrafficConnections(connections) {
+  const ordered = [...connections];
+  const sortMode = state.connectionSort;
+  ordered.sort((left, right) => {
+    let result = 0;
+
+    if (sortMode === "upload-speed") {
+      result = (right.uploadSpeed || 0) - (left.uploadSpeed || 0);
+    } else if (sortMode === "download-total") {
+      result = (right.downloadTotal || 0) - (left.downloadTotal || 0);
+    } else if (sortMode === "upload-total") {
+      result = (right.uploadTotal || 0) - (left.uploadTotal || 0);
+    } else if (sortMode === "updated") {
+      result = parseTimestamp(right.lastSeen) - parseTimestamp(left.lastSeen);
+    } else if (sortMode === "process") {
+      result = String(left.process || "").localeCompare(String(right.process || ""), "zh-CN");
+    } else {
+      result = (right.downloadSpeed || 0) - (left.downloadSpeed || 0);
+    }
+
+    if (result !== 0) {
+      return result;
+    }
+
+    const bySeen = parseTimestamp(right.lastSeen) - parseTimestamp(left.lastSeen);
+    if (bySeen !== 0) {
+      return bySeen;
+    }
+
+    return String(left.id || "").localeCompare(String(right.id || ""), "zh-CN");
+  });
+  return ordered;
 }
 
 function resetLiveState() {
@@ -538,6 +587,7 @@ function applyLocationCredentialsAndReconnect() {
 
 function loadUiPrefs() {
   state.sidebarCollapsed = window.localStorage.getItem(STORAGE_KEYS.sidebarCollapsed) === "true";
+  state.connectionSort = window.localStorage.getItem(STORAGE_KEYS.connectionSort) || "download-speed";
 }
 
 function persistConnection() {
@@ -547,6 +597,7 @@ function persistConnection() {
 
 function persistUiPrefs() {
   window.localStorage.setItem(STORAGE_KEYS.sidebarCollapsed, String(state.sidebarCollapsed));
+  window.localStorage.setItem(STORAGE_KEYS.connectionSort, state.connectionSort);
 }
 
 function normalizeControllerUrl(value) {
@@ -1058,6 +1109,10 @@ function normalizeConnectionsSnapshot(payload) {
           hasRouting: Boolean(conn?.hasRouting),
           mac: conn?.mac || "-",
           lastSeen: conn?.lastSeen || "",
+          uploadSpeed: Number(conn?.uploadSpeed || 0),
+          downloadSpeed: Number(conn?.downloadSpeed || 0),
+          uploadTotal: Number(conn?.uploadTotal || 0),
+          downloadTotal: Number(conn?.downloadTotal || 0),
         }))
       : [],
   };
@@ -1122,8 +1177,8 @@ function applyTrafficSnapshot(payload, appendSample) {
   };
 
   if (appendSample) {
-    state.trafficSeries.up.push(bytesToMegabytes(state.traffic.up));
-    state.trafficSeries.down.push(bytesToMegabytes(state.traffic.down));
+    state.trafficSeries.up.push(state.traffic.up);
+    state.trafficSeries.down.push(state.traffic.down);
     state.trafficSeries.times.push(Date.now());
     trimTrafficSeries();
   }
@@ -1389,18 +1444,14 @@ function renderSystemStatus() {
 }
 
 function renderTrafficMeta() {
-  refs.uploadRate.textContent = shortRate(state.traffic.up);
-  refs.downloadRate.textContent = shortRate(state.traffic.down);
+  refs.uploadRate.textContent = formatByteRate(state.traffic.up);
+  refs.downloadRate.textContent = formatByteRate(state.traffic.down);
   refs.uploadTotalValue.textContent = humanBytes(state.traffic.upTotal);
   refs.downloadTotalValue.textContent = humanBytes(state.traffic.downTotal);
   refs.trafficUploadTotalValue.textContent = humanBytes(state.traffic.upTotal);
   refs.trafficDownloadTotalValue.textContent = humanBytes(state.traffic.downTotal);
-  refs.dashboardTrafficTransportValue.textContent = state.trafficTransport;
-  refs.trafficTransportValue.textContent = state.trafficTransport;
-  refs.dashboardTrafficUpValue.textContent = `${shortRate(state.traffic.up)} MB/s`;
-  refs.dashboardTrafficDownValue.textContent = `${shortRate(state.traffic.down)} MB/s`;
-  refs.dashboardUpValue.textContent = `${shortRate(state.traffic.up)} MB/s`;
-  refs.dashboardDownValue.textContent = `${shortRate(state.traffic.down)} MB/s`;
+  refs.dashboardUpValue.textContent = formatByteRate(state.traffic.up);
+  refs.dashboardDownValue.textContent = formatByteRate(state.traffic.down);
 }
 
 function renderConnectionPreviewList(target, connections, emptyMessage = "暂无活动连接。") {
@@ -1432,7 +1483,8 @@ function renderConnectionPreviewList(target, connections, emptyMessage = "暂无
 }
 
 function renderTrafficConnectionsTable(connections) {
-  refs.trafficConnectionsList.innerHTML = connections
+  const ordered = sortTrafficConnections(connections);
+  refs.trafficConnectionsList.innerHTML = ordered
     .map((conn) => {
       const stateClass = classToken(conn.state, "active");
       const processLabel = conn.process || "-";
@@ -1448,6 +1500,10 @@ function renderTrafficConnectionsTable(connections) {
       const macLabel = conn.mac || "-";
       const lastSeenAgo = formatTimeAgo(conn.lastSeen);
       const lastSeenClock = formatClock(conn.lastSeen);
+      const downloadRateLabel = formatByteRate(conn.downloadSpeed || 0);
+      const uploadRateLabel = formatByteRate(conn.uploadSpeed || 0);
+      const downloadTotalLabel = humanBytes(conn.downloadTotal || 0);
+      const uploadTotalLabel = humanBytes(conn.uploadTotal || 0);
 
       return `
         <article class="connection-state-card">
@@ -1457,14 +1513,33 @@ function renderTrafficConnectionsTable(connections) {
               <span class="table-secondary">${escapeHtml(pidLabel)} · ${escapeHtml(lastSeenAgo)}</span>
             </div>
 
-            <div class="connection-state-badges">
-              <span class="network-chip">${escapeHtml(conn.network || "-")}</span>
-              <span class="state-chip ${stateClass}">${escapeHtml(conn.state || "-")}</span>
-              <span class="direction-chip">${escapeHtml(conn.direction || "-")}</span>
+            <div class="connection-state-side">
+              <div class="connection-state-badges">
+                <span class="network-chip">${escapeHtml(conn.network || "-")}</span>
+                <span class="state-chip ${stateClass}">${escapeHtml(conn.state || "-")}</span>
+                <span class="direction-chip">${escapeHtml(conn.direction || "-")}</span>
+              </div>
+
+              <div class="connection-speed-pills">
+                <span class="speed-pill download">↓ ${escapeHtml(downloadRateLabel)}</span>
+                <span class="speed-pill upload">↑ ${escapeHtml(uploadRateLabel)}</span>
+              </div>
             </div>
           </div>
 
           <div class="connection-state-grid">
+            <div class="connection-state-block">
+              <span class="connection-state-label">Download</span>
+              <strong>${escapeHtml(downloadRateLabel)}</strong>
+              <span class="table-secondary">Total ${escapeHtml(downloadTotalLabel)}</span>
+            </div>
+
+            <div class="connection-state-block">
+              <span class="connection-state-label">Upload</span>
+              <strong>${escapeHtml(uploadRateLabel)}</strong>
+              <span class="table-secondary">Total ${escapeHtml(uploadTotalLabel)}</span>
+            </div>
+
             <div class="connection-state-block">
               <span class="connection-state-label">Source</span>
               <strong>${escapeHtml(sourceLabel)}</strong>
@@ -1494,6 +1569,8 @@ function renderTrafficConnectionsTable(connections) {
             <span class="meta-chip strong">Outbound ${escapeHtml(outboundLabel)}</span>
             <span class="meta-chip">${escapeHtml(pidLabel)}</span>
             <span class="meta-chip">Seen ${escapeHtml(lastSeenClock)}</span>
+            <span class="meta-chip">Down ${escapeHtml(downloadTotalLabel)}</span>
+            <span class="meta-chip">Up ${escapeHtml(uploadTotalLabel)}</span>
             <span class="meta-chip">${escapeHtml(routingLabel)}</span>
             <span class="meta-chip">${escapeHtml(policyLabel)}</span>
             <span class="meta-chip">MAC ${escapeHtml(macLabel)}</span>
@@ -1525,6 +1602,8 @@ function renderConnections() {
     : state.connections.updatedAt
       ? `最近更新 ${formatClock(state.connections.updatedAt)}`
       : "等待 /connections 数据。";
+  refs.trafficSortSelect.value = state.connectionSort;
+  refs.trafficSortSelect.disabled = !state.connectionsAvailable;
 
   if (!state.connectionsAvailable) {
     renderConnectionPreviewList(refs.dashboardConnectionList, [], "当前 controller 未提供 /connections。");
@@ -1590,9 +1669,9 @@ function renderControllerPanel() {
 }
 
 function chartBounds() {
-  const maxSeriesValue = Math.max(0.4, ...state.trafficSeries.up, ...state.trafficSeries.down);
+  const maxSeriesValue = Math.max(256, ...state.trafficSeries.up, ...state.trafficSeries.down);
   return {
-    max: Number((maxSeriesValue * 1.15).toFixed(2)),
+    max: Math.ceil(maxSeriesValue * 1.15),
   };
 }
 
@@ -1661,23 +1740,25 @@ function drawSeries(ctx, points, width, height, bounds, options) {
 
 function renderScaleLabels(target, bounds) {
   const labels = [
-    `${bounds.max.toFixed(1)} MB/s`,
-    `${(bounds.max * 0.75).toFixed(1)} MB/s`,
-    `${(bounds.max * 0.5).toFixed(1)} MB/s`,
-    `${(bounds.max * 0.25).toFixed(1)} MB/s`,
-    "0.0 MB/s",
+    formatByteRate(bounds.max),
+    formatByteRate(bounds.max * 0.75),
+    formatByteRate(bounds.max * 0.5),
+    formatByteRate(bounds.max * 0.25),
+    "0 B/s",
   ];
   target.innerHTML = labels.map((label) => `<span>${label}</span>`).join("");
 }
 
-function renderTimeLabels(target) {
-  const indexes = [0, 5, 10, 15, state.trafficSeries.times.length - 1];
+function renderTimeLabels(target, { withSeconds = false } = {}) {
+  const lastIndex = state.trafficSeries.times.length - 1;
+  const indexes = [0, Math.round(lastIndex * 0.25), Math.round(lastIndex * 0.5), Math.round(lastIndex * 0.75), lastIndex];
   target.innerHTML = indexes
     .map((index) => {
       const timestamp = state.trafficSeries.times[index] || Date.now();
       const label = new Date(timestamp).toLocaleTimeString("zh-CN", {
         hour: "2-digit",
         minute: "2-digit",
+        second: withSeconds ? "2-digit" : undefined,
         hour12: false,
       });
       return `<span>${label}</span>`;
@@ -1685,7 +1766,7 @@ function renderTimeLabels(target) {
     .join("");
 }
 
-function renderChartWidget(canvas, scaleTarget, timeTarget) {
+function renderChartWidget(canvas, scaleTarget, timeTarget, options = {}) {
   if (!canvas || !scaleTarget || !timeTarget) {
     return;
   }
@@ -1718,12 +1799,12 @@ function renderChartWidget(canvas, scaleTarget, timeTarget) {
   });
 
   renderScaleLabels(scaleTarget, scale);
-  renderTimeLabels(timeTarget);
+  renderTimeLabels(timeTarget, options);
 }
 
 function renderCharts() {
-  renderChartWidget(refs.dashboardTrafficChart, refs.dashboardChartScale, refs.dashboardChartTime);
-  renderChartWidget(refs.trafficChart, refs.chartScale, refs.chartTime);
+  renderChartWidget(refs.dashboardTrafficChart, refs.dashboardChartScale, refs.dashboardChartTime, { withSeconds: true });
+  renderChartWidget(refs.trafficChart, refs.chartScale, refs.chartTime, { withSeconds: true });
 }
 
 function proxyTabsMarkup() {
@@ -1813,7 +1894,7 @@ function renderProxyTabs() {
 function renderProxyGrid() {
   const group = currentGroup();
   refs.proxyGrid.innerHTML = proxyGridMarkup(group);
-  refs.dashboardProxyGrid.innerHTML = proxyGridMarkup(group, { limit: 6, compact: true });
+  refs.dashboardProxyGrid.innerHTML = proxyGridMarkup(group, { compact: true });
 }
 
 function renderConfigSectionTabs() {
@@ -2371,6 +2452,12 @@ function bindEvents() {
     renderLogs();
   });
 
+  refs.trafficSortSelect.addEventListener("change", () => {
+    state.connectionSort = refs.trafficSortSelect.value;
+    persistUiPrefs();
+    renderConnections();
+  });
+
   window.addEventListener("hashchange", applyLocationCredentialsAndReconnect);
   window.addEventListener("resize", renderCharts);
 }
@@ -2380,6 +2467,7 @@ function boot() {
   loadUiPrefs();
   bindEvents();
   refs.logsLevelSelect.value = state.logsLevel;
+  refs.trafficSortSelect.value = state.connectionSort;
   refs.runtimeLogLevelSelect.value = "info";
   renderAll();
   if (state.controllerUrl) {

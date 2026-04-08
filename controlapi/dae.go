@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/netip"
 	"net/url"
 	"os"
@@ -50,6 +51,11 @@ type DaeProvider struct {
 	trafficLastAt   time.Time
 	trafficLastUp   uint64
 	trafficLastDown uint64
+	conntrackLastAt time.Time
+	conntrackLast   map[conntrackTuple]conntrackCounter
+	conntrackUp     uint64
+	conntrackDown   uint64
+	conntrackCache  conntrackSnapshot
 }
 
 func NewDaeProvider(version string, conf *config.Config, plane *control.ControlPlane, configPath string, loggers ...*logrus.Logger) (*DaeProvider, error) {
@@ -131,7 +137,110 @@ func (p *DaeProvider) Memory() Memory {
 	}
 }
 
+func clampUint64ToInt64(value uint64) int64 {
+	if value > math.MaxInt64 {
+		return math.MaxInt64
+	}
+	return int64(value)
+}
+
+func (p *DaeProvider) conntrackTelemetrySnapshot(now time.Time) conntrackSnapshot {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.conntrackCache.available && !p.conntrackCache.updatedAt.IsZero() && now.Sub(p.conntrackCache.updatedAt) < conntrackCacheInterval {
+		return p.conntrackCache
+	}
+
+	counters, err := readConntrackCounters()
+	if err != nil {
+		if p.conntrackCache.available {
+			return p.conntrackCache
+		}
+		return conntrackSnapshot{}
+	}
+
+	telemetry := p.buildConntrackTelemetryLocked(now, counters)
+	p.conntrackCache = telemetry
+	return telemetry
+}
+
+func (p *DaeProvider) buildConntrackTelemetryLocked(now time.Time, counters map[conntrackTuple]conntrackCounter) conntrackSnapshot {
+	telemetry := conntrackSnapshot{
+		updatedAt: now,
+		available: true,
+		metrics:   make(map[conntrackTuple]conntrackMetric, len(counters)),
+	}
+
+	var (
+		currentUpSum   uint64
+		currentDownSum uint64
+		deltaUpSum     uint64
+		deltaDownSum   uint64
+	)
+
+	firstSample := p.conntrackLastAt.IsZero()
+	elapsed := now.Sub(p.conntrackLastAt)
+
+	for tuple, counter := range counters {
+		currentUpSum += counter.upload
+		currentDownSum += counter.download
+
+		var deltaUpload uint64
+		var deltaDownload uint64
+		if !firstSample {
+			previous, seen := p.conntrackLast[tuple]
+			if seen {
+				deltaUpload = diffConntrackCounter(counter.upload, previous.upload)
+				deltaDownload = diffConntrackCounter(counter.download, previous.download)
+			} else {
+				deltaUpload = counter.upload
+				deltaDownload = counter.download
+			}
+			deltaUpSum += deltaUpload
+			deltaDownSum += deltaDownload
+		}
+
+		telemetry.metrics[tuple] = conntrackMetric{
+			uploadTotal:   counter.upload,
+			downloadTotal: counter.download,
+			uploadRate:    conntrackRate(deltaUpload, elapsed),
+			downloadRate:  conntrackRate(deltaDownload, elapsed),
+		}
+	}
+
+	if firstSample {
+		p.conntrackUp = currentUpSum
+		p.conntrackDown = currentDownSum
+	} else {
+		p.conntrackUp += deltaUpSum
+		p.conntrackDown += deltaDownSum
+	}
+
+	p.conntrackLastAt = now
+	p.conntrackLast = counters
+
+	telemetry.uploadTotal = p.conntrackUp
+	telemetry.downloadTotal = p.conntrackDown
+	telemetry.uploadRate = conntrackRate(deltaUpSum, elapsed)
+	telemetry.downloadRate = conntrackRate(deltaDownSum, elapsed)
+	return telemetry
+}
+
 func (p *DaeProvider) Traffic() Traffic {
+	if p == nil {
+		return Traffic{}
+	}
+
+	if telemetry := p.conntrackTelemetrySnapshot(time.Now()); telemetry.available {
+		return Traffic{
+			Up:        clampUint64ToInt64(telemetry.uploadRate),
+			Down:      clampUint64ToInt64(telemetry.downloadRate),
+			UpTotal:   clampUint64ToInt64(telemetry.uploadTotal),
+			DownTotal: clampUint64ToInt64(telemetry.downloadTotal),
+		}
+	}
+
 	if p == nil || p.plane == nil {
 		return Traffic{}
 	}
@@ -173,8 +282,10 @@ func (p *DaeProvider) Traffic() Traffic {
 
 func (p *DaeProvider) Connections(limit int) ConnectionsSnapshot {
 	snapshot := p.plane.LiveConnections(limit)
+	telemetry := p.conntrackTelemetrySnapshot(time.Now())
 	connections := make([]Connection, 0, len(snapshot.Connections))
 	for _, conn := range snapshot.Connections {
+		metrics := telemetry.metricsFor(conn.Network, conn.SourceAddress, conn.SourcePort, conn.DestinationAddress, conn.DestinationPort)
 		connections = append(connections, Connection{
 			ID:                 conn.ID,
 			Network:            conn.Network,
@@ -195,6 +306,10 @@ func (p *DaeProvider) Connections(limit int) ConnectionsSnapshot {
 			HasRouting:         conn.HasRouting,
 			Mac:                conn.Mac,
 			LastSeen:           conn.LastSeen,
+			UploadSpeed:        clampUint64ToInt64(metrics.uploadRate),
+			DownloadSpeed:      clampUint64ToInt64(metrics.downloadRate),
+			UploadTotal:        clampUint64ToInt64(metrics.uploadTotal),
+			DownloadTotal:      clampUint64ToInt64(metrics.downloadTotal),
 		})
 	}
 	return ConnectionsSnapshot{

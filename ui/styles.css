@@ -694,6 +694,7 @@ body.controller-collapsed .controller-bar {
 
 .dashboard-grid {
   grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.15fr) minmax(300px, 0.72fr);
+  align-items: stretch;
 }
 
 .page-grid.two-column {
@@ -740,6 +741,14 @@ body.controller-collapsed .controller-bar {
   letter-spacing: -0.04em;
 }
 
+.card-header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .nav-badge {
   padding: 3px 10px;
   border-radius: 999px;
@@ -752,6 +761,9 @@ body.controller-collapsed .controller-bar {
 
 .hero-card {
   grid-column: 1 / span 2;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
   min-height: 0;
   padding-bottom: 18px;
 }
@@ -815,16 +827,19 @@ body.controller-collapsed .controller-bar {
 .hero-runtime-grid {
   display: grid;
   grid-template-columns: minmax(220px, 0.72fr) minmax(0, 1.25fr);
-  align-items: start;
+  align-items: stretch;
   gap: 14px;
   padding: 4px 24px 0;
+  flex: 1;
 }
 
 .hero-system-panel,
 .hero-traffic-panel {
-  align-self: start;
+  align-self: stretch;
   position: relative;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
   border: 1px solid rgba(111, 122, 136, 0.12);
   border-radius: 24px;
   background:
@@ -859,28 +874,28 @@ body.controller-collapsed .controller-bar {
 }
 
 .hero-chart-shell {
-  padding: 2px 18px 0 58px;
+  padding: 8px 18px 0 58px;
 }
 
 .dashboard-chart-scale {
   left: 18px;
-  top: 56px;
-  bottom: 88px;
+  top: 62px;
+  bottom: 76px;
 }
 
 .hero-chart-time {
-  padding: 0 20px 12px 58px;
+  padding: 0 20px 10px 58px;
 }
 
 #dashboardTrafficChart {
   width: 100%;
-  height: 160px;
+  height: 152px;
   display: block;
 }
 
 .hero-traffic-stats {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
   padding: 0 18px 14px;
 }
@@ -903,9 +918,18 @@ body.controller-collapsed .controller-bar {
 }
 
 .dashboard-grid > .preview-card,
-.dashboard-grid > .connections-preview-card,
 .dashboard-grid > .dashboard-proxies-card {
   align-self: start;
+}
+
+.connections-preview-card {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.connections-preview-card .section-note {
+  padding: 0 18px;
 }
 
 .preview-stat-grid {
@@ -967,6 +991,12 @@ body.controller-collapsed .controller-bar {
   display: grid;
   gap: 10px;
   padding: 0 18px 18px;
+}
+
+.connections-preview-card .connection-preview-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
 }
 
 .connection-pill {
@@ -1159,6 +1189,17 @@ body.controller-collapsed .controller-bar {
 
 .compact-proxy-grid {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.dashboard-proxies-card .proxy-panel {
+  min-width: 0;
+}
+
+.dashboard-proxies-card .compact-proxy-grid {
+  max-height: 560px;
+  overflow: auto;
+  align-content: start;
+  padding-right: 4px;
 }
 
 .proxy-card {
@@ -1407,6 +1448,32 @@ body.controller-collapsed .controller-bar {
   gap: 12px;
 }
 
+.table-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(111, 122, 136, 0.12);
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.table-sort span {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.table-sort select {
+  min-width: 132px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  outline: none;
+}
+
 .connection-state-card {
   display: flex;
   flex-direction: column;
@@ -1432,8 +1499,22 @@ body.controller-collapsed .controller-bar {
   gap: 16px;
 }
 
+.connection-state-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+}
+
 .connection-state-badges,
 .connection-state-meta {
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.connection-speed-pills {
+  display: flex;
+  justify-content: flex-end;
   gap: 8px;
   flex-wrap: wrap;
 }
@@ -1498,6 +1579,28 @@ body.controller-collapsed .controller-bar {
 }
 
 .meta-chip.strong {
+  background: rgba(29, 155, 140, 0.12);
+  color: var(--accent-strong);
+}
+
+.speed-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 104px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.speed-pill.download {
+  background: rgba(204, 125, 55, 0.12);
+  color: #9a5f23;
+}
+
+.speed-pill.upload {
   background: rgba(29, 155, 140, 0.12);
   color: var(--accent-strong);
 }
@@ -1857,7 +1960,10 @@ body.auth-required #controllerTopToggle {
   .controller-panel-head,
   .logs-toolbar,
   .editor-toolbar,
-  .proxy-toolbar {
+  .proxy-toolbar,
+  .card-header,
+  .connection-state-head,
+  .connection-state-side {
     flex-direction: column;
     align-items: flex-start;
   }
