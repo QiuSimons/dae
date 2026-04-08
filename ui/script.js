@@ -555,6 +555,10 @@ function sortTrafficConnections(connections) {
   return ordered;
 }
 
+function isCompactMobileViewport() {
+  return window.matchMedia("(max-width: 720px)").matches;
+}
+
 function resetLiveState() {
   state.version = null;
   state.versionSignature = "";
@@ -2226,6 +2230,49 @@ function renderTrafficConnectionsTable(connections) {
       const downloadTotalLabel = humanBytes(conn.downloadTotal || 0);
       const uploadTotalLabel = humanBytes(conn.uploadTotal || 0);
 
+      if (isCompactMobileViewport()) {
+        return `
+          <article class="connection-compact-card">
+            <div class="connection-compact-head">
+              <div class="table-stack">
+                <strong>${escapeHtml(processLabel)}</strong>
+                <span class="table-secondary">${escapeHtml(pidLabel)} · ${escapeHtml(lastSeenAgo)}</span>
+              </div>
+
+              <div class="connection-state-badges">
+                <span class="network-chip">${escapeHtml(conn.network || "-")}</span>
+                <span class="state-chip ${stateClass}">${escapeHtml(conn.state || "-")}</span>
+              </div>
+            </div>
+
+            <div class="connection-speed-pills connection-compact-speeds">
+              <span class="speed-pill download">↓ ${escapeHtml(downloadRateLabel)}</span>
+              <span class="speed-pill upload">↑ ${escapeHtml(uploadRateLabel)}</span>
+            </div>
+
+            <div class="connection-compact-route">
+              <div class="connection-compact-endpoint">
+                <span class="connection-state-label">From</span>
+                <strong>${escapeHtml(sourceLabel)}</strong>
+                <code class="table-route">${escapeHtml(sourceEndpoint)}</code>
+              </div>
+
+              <div class="connection-compact-endpoint">
+                <span class="connection-state-label">To</span>
+                <strong>${escapeHtml(destinationLabel)}</strong>
+                <code class="table-route">${escapeHtml(destinationEndpoint)}</code>
+              </div>
+            </div>
+
+            <div class="connection-state-meta connection-compact-meta">
+              <span class="meta-chip strong">Outbound ${escapeHtml(outboundLabel)}</span>
+              <span class="meta-chip">${escapeHtml(directionLabel)}</span>
+              <span class="meta-chip">↓ ${escapeHtml(downloadTotalLabel)} · ↑ ${escapeHtml(uploadTotalLabel)}</span>
+            </div>
+          </article>
+        `;
+      }
+
       return `
         <article class="connection-state-card">
           <div class="connection-state-head">
@@ -3892,7 +3939,10 @@ function bindEvents() {
   });
 
   window.addEventListener("hashchange", applyLocationCredentialsAndReconnect);
-  window.addEventListener("resize", scheduleChartRender);
+  window.addEventListener("resize", () => {
+    scheduleChartRender();
+    renderConnections();
+  });
 }
 
 function boot() {

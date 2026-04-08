@@ -1547,6 +1547,56 @@ body.controller-collapsed .controller-bar {
   min-width: 0;
 }
 
+.connection-compact-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(111, 122, 136, 0.1);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.88), rgba(250, 246, 239, 0.74)),
+    rgba(255, 255, 255, 0.78);
+  min-width: 0;
+}
+
+.connection-compact-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.connection-compact-speeds {
+  justify-content: flex-start;
+}
+
+.connection-compact-route {
+  display: grid;
+  gap: 10px;
+}
+
+.connection-compact-endpoint {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 11px 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(111, 122, 136, 0.08);
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.connection-compact-endpoint strong {
+  font-size: 0.94rem;
+  overflow-wrap: anywhere;
+}
+
+.connection-compact-meta {
+  gap: 6px;
+}
+
 .network-chip,
 .direction-chip,
 .state-chip,
@@ -2488,6 +2538,22 @@ body.auth-required #controllerTopToggle {
 
   .connections-stream {
     min-width: 0;
+  }
+
+  .connection-compact-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .connection-compact-speeds {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .connection-compact-speeds .speed-pill {
+    min-width: 0;
+    width: 100%;
   }
 
   .config-sections {
