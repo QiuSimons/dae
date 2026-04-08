@@ -2,6 +2,7 @@ const canvas = document.getElementById("trafficChart");
 const ctx = canvas.getContext("2d");
 
 const SAMPLE_SIZE = 20;
+const REFRESH_INTERVAL_MS = 1000;
 const STORAGE_KEYS = {
   controller: "daed-demo-controller",
   token: "daed-demo-token",
@@ -76,6 +77,9 @@ const state = {
   ws: null,
   wsCloseIntent: false,
   wsRetryTimer: null,
+  memoryWs: null,
+  memoryWsCloseIntent: false,
+  memoryWsRetryTimer: null,
   refreshTimer: null,
   refreshing: false,
   connecting: false,
@@ -193,70 +197,6 @@ async function apiFetch(path, options = {}) {
   return JSON.parse(text);
 }
 
-async function apiFetchStreamSnapshot(path, options = {}) {
-  const headers = new Headers(options.headers || {});
-  if (state.token) {
-    headers.set("Authorization", `Bearer ${state.token}`);
-  }
-
-  const response = await fetch(buildHttpUrl(path), {
-    ...options,
-    headers,
-  });
-
-  if (!response.ok) {
-    let message = `${response.status} ${response.statusText}`;
-    try {
-      const payload = await response.json();
-      if (payload && typeof payload.message === "string" && payload.message) {
-        message = payload.message;
-      }
-    } catch {
-      // Ignore response body parse failures and keep the default message.
-    }
-    const error = new Error(message);
-    error.status = response.status;
-    throw error;
-  }
-
-  if (!response.body) {
-    const text = await response.text();
-    return text ? JSON.parse(text) : null;
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  try {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) {
-        break;
-      }
-
-      buffer += decoder.decode(value, { stream: true });
-      const newlineIndex = buffer.indexOf("\n");
-      if (newlineIndex === -1) {
-        continue;
-      }
-
-      const line = buffer.slice(0, newlineIndex).trim();
-      return line ? JSON.parse(line) : null;
-    }
-
-    buffer += decoder.decode();
-    const line = buffer.trim();
-    return line ? JSON.parse(line) : null;
-  } finally {
-    try {
-      await reader.cancel();
-    } catch {
-      // Ignore cancellation failures from already-closed streams.
-    }
-  }
-}
-
 function setApiStatus(kind, message) {
   state.apiStatus = { kind, message };
   renderHeaderStatus();
@@ -283,7 +223,7 @@ function startRefreshLoop() {
   stopRefreshLoop();
   state.refreshTimer = window.setInterval(() => {
     refreshSnapshot(false);
-  }, 15000);
+  }, REFRESH_INTERVAL_MS);
 }
 
 function stopRefreshLoop() {
@@ -304,6 +244,18 @@ function closeTrafficSocket() {
     state.ws = null;
   }
   state.trafficTransport = "idle";
+}
+
+function closeMemorySocket() {
+  if (state.memoryWsRetryTimer) {
+    window.clearTimeout(state.memoryWsRetryTimer);
+    state.memoryWsRetryTimer = null;
+  }
+  if (state.memoryWs) {
+    state.memoryWsCloseIntent = true;
+    state.memoryWs.close();
+    state.memoryWs = null;
+  }
 }
 
 function connectTrafficSocket() {
@@ -361,6 +313,52 @@ function connectTrafficSocket() {
   });
 }
 
+function connectMemorySocket() {
+  closeMemorySocket();
+
+  let socket;
+  try {
+    socket = new WebSocket(buildWebSocketUrl("/memory"));
+  } catch {
+    state.memoryWsRetryTimer = window.setTimeout(() => {
+      if (state.controllerUrl) {
+        connectMemorySocket();
+      }
+    }, 3000);
+    return;
+  }
+
+  state.memoryWsCloseIntent = false;
+  state.memoryWs = socket;
+
+  socket.addEventListener("message", (event) => {
+    if (state.memoryWs !== socket) {
+      return;
+    }
+    try {
+      const payload = JSON.parse(event.data);
+      updateMemory(payload);
+    } catch {
+      // Ignore malformed frames and keep the current memory state.
+    }
+  });
+
+  socket.addEventListener("close", () => {
+    if (state.memoryWs !== socket) {
+      return;
+    }
+    state.memoryWs = null;
+    if (state.memoryWsCloseIntent) {
+      return;
+    }
+    state.memoryWsRetryTimer = window.setTimeout(() => {
+      if (state.controllerUrl) {
+        connectMemorySocket();
+      }
+    }, 3000);
+  });
+}
+
 function updateTraffic(payload) {
   state.traffic = {
     up: Number(payload.up || 0),
@@ -379,6 +377,15 @@ function updateTraffic(payload) {
   trimTrafficSeries();
   renderTrafficMeta();
   renderChart();
+}
+
+function updateMemory(payload) {
+  state.memory = {
+    inuse: Number(payload.inuse || 0),
+    oslimit: Number(payload.oslimit || 0),
+  };
+  renderSystemStatus();
+  renderConfigSnapshot();
 }
 
 function trimTrafficSeries() {
@@ -423,23 +430,22 @@ async function refreshSnapshot(updateStatus = true) {
   }
   state.refreshing = true;
   try {
-    const [version, config, memory, proxiesPayload] = await Promise.all([
+    const [version, config, proxiesPayload] = await Promise.all([
       apiFetch("/version"),
       apiFetch("/configs"),
-      apiFetchStreamSnapshot("/memory"),
       apiFetch("/proxies"),
     ]);
 
     state.version = version;
     state.config = config;
-    state.memory = memory;
     refreshProxyCollections(proxiesPayload.proxies);
 
     if (updateStatus) {
       setApiStatus("connected", "Connected");
       refs.controllerHint.textContent =
-        "Connected to dae external controller. Proxy switches call `/proxies/{group}` and latency probes call `/proxies/{name}/delay`.";
+        "Connected to dae external controller. `/traffic` and `/memory` stay live over WebSocket, while `/version`, `/configs`, and `/proxies` auto-refresh every second.";
       connectTrafficSocket();
+      connectMemorySocket();
       startRefreshLoop();
     }
 
@@ -453,6 +459,7 @@ async function refreshSnapshot(updateStatus = true) {
 
 function handleConnectionError(error) {
   closeTrafficSocket();
+  closeMemorySocket();
   stopRefreshLoop();
   resetLiveState();
 
@@ -481,10 +488,13 @@ async function connectController() {
   }
 
   persistConnection();
+  closeTrafficSocket();
+  closeMemorySocket();
+  stopRefreshLoop();
   resetLiveState();
   setBusyState(true);
   setApiStatus("warn", "Connecting");
-  refs.controllerHint.textContent = "Requesting `/version`, `/configs`, `/memory`, and `/proxies` from the configured controller.";
+  refs.controllerHint.textContent = "Opening live channels for `/traffic` and `/memory`, then synchronizing `/version`, `/configs`, and `/proxies`.";
   renderAll();
   await refreshSnapshot(true);
   setBusyState(false);
