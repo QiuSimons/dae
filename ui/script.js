@@ -151,7 +151,7 @@ const refs = {
   dashboardModeValue: document.getElementById("dashboardModeValue"),
   dashboardLogLevelValue: document.getElementById("dashboardLogLevelValue"),
   dashboardMemoryValue: document.getElementById("dashboardMemoryValue"),
-  dashboardRssValue: document.getElementById("dashboardRssValue"),
+  dashboardHeapValue: document.getElementById("dashboardHeapValue"),
   dashboardAliveValue: document.getElementById("dashboardAliveValue"),
   dashboardUpValue: document.getElementById("dashboardUpValue"),
   dashboardDownValue: document.getElementById("dashboardDownValue"),
@@ -2174,8 +2174,8 @@ function renderSystemStatus() {
 
   refs.dashboardModeValue.textContent = state.config?.mode || "-";
   refs.dashboardLogLevelValue.textContent = state.config?.["log-level"] || "-";
-  refs.dashboardMemoryValue.textContent = inUse ? humanBytes(inUse) : "-";
-  refs.dashboardRssValue.textContent = rss ? humanBytes(rss) : "-";
+  refs.dashboardMemoryValue.textContent = rss ? humanBytes(rss) : "-";
+  refs.dashboardHeapValue.textContent = inUse ? humanBytes(inUse) : "-";
   refs.dashboardAliveValue.textContent = `${alive} / ${leaves.length}`;
   refs.runtimeVersionValue.textContent = state.version?.version || "-";
 
