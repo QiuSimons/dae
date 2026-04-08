@@ -506,20 +506,46 @@ function resetLiveState() {
   state.runtimeLogLevelNoteText = DEFAULT_LOG_LEVEL_NOTE;
 }
 
+function isEmbeddedUIPath() {
+  return window.location.pathname === "/ui" || window.location.pathname === "/ui/" || window.location.pathname.startsWith("/ui/");
+}
+
+function locationHashParams() {
+  const raw = window.location.hash.replace(/^#\/?/, "").replace(/^\?/, "");
+  return new URLSearchParams(raw);
+}
+
+function syncControllerInputs() {
+  refs.controllerUrl.value = state.controllerUrl;
+  refs.controllerToken.value = state.token;
+}
+
 function loadPersistedConnection() {
   const query = new URLSearchParams(window.location.search);
-  const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const hash = locationHashParams();
   const urlFromQuery = query.get("controller");
   const tokenFromQuery = query.get("token");
   const tokenFromHash = hash.get("token");
-  const servedByEmbeddedUI = window.location.pathname === "/ui/" || window.location.pathname.startsWith("/ui/");
+  const servedByEmbeddedUI = isEmbeddedUIPath();
   const sameOriginController = servedByEmbeddedUI ? window.location.origin : "";
 
   state.controllerUrl = urlFromQuery || sameOriginController || window.localStorage.getItem(STORAGE_KEYS.controller) || "";
   state.token = tokenFromQuery || tokenFromHash || window.localStorage.getItem(STORAGE_KEYS.token) || "";
+  syncControllerInputs();
+}
 
-  refs.controllerUrl.value = state.controllerUrl;
-  refs.controllerToken.value = state.token;
+function applyLocationCredentialsAndReconnect() {
+  const previousUrl = state.controllerUrl;
+  const previousToken = state.token;
+  loadPersistedConnection();
+  renderControllerPanel();
+  if (!state.controllerUrl) {
+    return;
+  }
+  if (previousUrl === state.controllerUrl && previousToken === state.token) {
+    return;
+  }
+  connectController();
 }
 
 function loadUiPrefs() {
@@ -1553,9 +1579,12 @@ function renderControllerPanel() {
     : "连接控制器后在此查看外部控制器地址、内嵌 UI 入口和所有流式通道状态。";
   refs.runtimeLogLevelNote.textContent = state.runtimeLogLevelNoteText;
   refs.connectButton.disabled = state.connecting;
+  refs.connectButton.textContent = state.connecting ? "登录中..." : connected ? "重新连接" : "登录";
   refs.applyLogLevelButton.disabled = !state.controllerUrl || state.logLevelChanging || state.connecting;
   refs.controllerTopToggle.textContent = connected ? "Controller" : "登录";
   refs.controllerSummaryToggle.textContent = connected ? (state.controllerExpanded ? "收起" : "展开") : "登录";
+  refs.controllerTopToggle.hidden = !connected;
+  refs.controllerSummaryToggle.hidden = !connected;
 
   const streams = [
     ["version", wsState("version")],
@@ -1989,6 +2018,7 @@ async function connectController() {
     return;
   }
 
+  syncControllerInputs();
   persistConnection();
   closeAllSockets();
   resetLiveState();
@@ -2341,6 +2371,7 @@ function bindEvents() {
     renderLogs();
   });
 
+  window.addEventListener("hashchange", applyLocationCredentialsAndReconnect);
   window.addEventListener("resize", renderChart);
 }
 

@@ -1677,9 +1677,7 @@ body.auth-required .controller-bar {
 
 body.auth-required .controller-summary-button,
 body.auth-required #controllerTopToggle {
-  background: linear-gradient(135deg, rgba(29, 155, 140, 0.16), rgba(29, 155, 140, 0.06));
-  border-color: rgba(29, 155, 140, 0.24);
-  color: var(--accent-strong);
+  display: none;
 }
 
 @media (max-width: 1360px) {

@@ -98,6 +98,10 @@ func isWebUIPath(path string) bool {
 }
 
 func (u *webUI) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+
 	if r.URL.Path == "/ui" {
 		http.Redirect(w, r, "/ui/", http.StatusTemporaryRedirect)
 		return

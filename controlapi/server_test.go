@@ -362,6 +362,9 @@ func TestWebUIIsServedWithoutBreakingAPIAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if cacheControl := resp.Header.Get("Cache-Control"); cacheControl != "no-store, max-age=0" {
+		t.Fatalf("unexpected ui cache-control: %q", cacheControl)
+	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("ui script status = %d", resp.StatusCode)
