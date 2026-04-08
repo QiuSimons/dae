@@ -1268,20 +1268,6 @@ function computeLeafStats() {
   return { leaves, alive };
 }
 
-function inferFlagTone(name) {
-  const palette = ["us", "jp", "sg"];
-  let hash = 0;
-  for (const char of name) {
-    hash += char.charCodeAt(0);
-  }
-  return palette[hash % palette.length];
-}
-
-function inferProxyLabel(name) {
-  const match = name.match(/[A-Za-z]{2}/);
-  return match ? match[0].toUpperCase() : "PX";
-}
-
 function selectedConfigSection() {
   return state.daeConfigSections.find((section) => section.id === state.daeConfigSelected) || state.daeConfigSections[0] || null;
 }
@@ -2520,6 +2506,21 @@ function renderCharts() {
   renderChartWidget(refs.trafficChart, refs.chartScale, refs.chartTime, { withSeconds: true });
 }
 
+let chartRenderFrame = 0;
+
+function scheduleChartRender() {
+  if (chartRenderFrame) {
+    window.cancelAnimationFrame(chartRenderFrame);
+  }
+  chartRenderFrame = window.requestAnimationFrame(() => {
+    chartRenderFrame = 0;
+    renderCharts();
+    window.requestAnimationFrame(() => {
+      renderCharts();
+    });
+  });
+}
+
 function proxyTabsMarkup() {
   return state.groups.length
     ? state.groups
@@ -2550,7 +2551,6 @@ function proxyGridMarkup(group, { limit = 0, compact = false } = {}) {
       const proxy = state.proxies[proxyName] || { name: proxyName, alive: false };
       const delay = proxyDelay(proxy);
       const active = group.now === proxyName;
-      const tone = inferFlagTone(proxyName);
       const address = proxy.addr || proxy.address || "address unavailable";
       const protocol = proxy.protocol || proxy.type || "unknown";
       const delayText = delay === null ? "pending" : `${delay} ms`;
@@ -2560,7 +2560,7 @@ function proxyGridMarkup(group, { limit = 0, compact = false } = {}) {
       return `
         <article class="proxy-card ${compact ? "compact" : ""} ${active ? "current" : ""} ${busyDelay ? "busy" : ""}">
           <div class="proxy-top">
-            <span class="flag ${tone}">${escapeHtml(inferProxyLabel(proxyName))}</span>
+            <h3 class="proxy-title">${escapeHtml(proxyName)}</h3>
             <button
               class="refresh"
               type="button"
@@ -2571,7 +2571,6 @@ function proxyGridMarkup(group, { limit = 0, compact = false } = {}) {
             ></button>
           </div>
 
-          <h3>${escapeHtml(proxyName)}</h3>
           <div class="proxy-meta">${escapeHtml(address)}</div>
           <p class="proxy-delay">${escapeHtml(delayText)}</p>
 
@@ -3591,6 +3590,7 @@ function setActiveView(view) {
     renderLayoutState();
   }
   renderLogs();
+  scheduleChartRender();
 }
 
 function handleProxyGridClick(event) {
@@ -3892,7 +3892,7 @@ function bindEvents() {
   });
 
   window.addEventListener("hashchange", applyLocationCredentialsAndReconnect);
-  window.addEventListener("resize", renderCharts);
+  window.addEventListener("resize", scheduleChartRender);
 }
 
 function boot() {

@@ -1228,6 +1228,7 @@ body.controller-collapsed .controller-bar {
   background: rgba(255, 255, 255, 0.88);
   box-shadow: var(--shadow-md);
   transition: transform 180ms ease, opacity 180ms ease, border-color 180ms ease;
+  min-width: 0;
 }
 
 .proxy-card:hover {
@@ -1264,35 +1265,13 @@ body.controller-collapsed .controller-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-}
-
-.flag {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 24px;
-  border-radius: 999px;
-  color: #ffffff;
-  font-size: 0.72rem;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-}
-
-.flag.us {
-  background: linear-gradient(135deg, #2d8ab6, #d05f4a);
-}
-
-.flag.jp {
-  background: linear-gradient(135deg, #df6d63, #efb36b);
-}
-
-.flag.sg {
-  background: linear-gradient(135deg, #e26a57, #b9432f);
+  gap: 12px;
+  min-width: 0;
 }
 
 .refresh {
   position: relative;
+  flex: 0 0 auto;
   width: 30px;
   height: 30px;
   border: 0;
@@ -1332,12 +1311,21 @@ body.controller-collapsed .controller-bar {
 .proxy-card h3 {
   margin: 0;
   font-size: 1.08rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.proxy-title {
+  flex: 1 1 auto;
 }
 
 .proxy-meta {
   color: #6d757d;
   font-size: 0.92rem;
   line-height: 1.45;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .proxy-card p {
