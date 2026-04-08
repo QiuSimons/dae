@@ -1805,12 +1805,14 @@ body.controller-collapsed .controller-bar {
   overflow: hidden;
 }
 
+.config-section-card[open],
 .config-section-card.open {
   box-shadow: var(--shadow-md);
   border-color: rgba(29, 155, 140, 0.16);
 }
 
 .config-section-toggle {
+  list-style: none;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -1822,6 +1824,15 @@ body.controller-collapsed .controller-bar {
   color: inherit;
   text-align: left;
   cursor: pointer;
+}
+
+.config-section-toggle::-webkit-details-marker {
+  display: none;
+}
+
+.config-section-toggle::marker {
+  display: none;
+  content: "";
 }
 
 .config-section-copy {
@@ -1884,6 +1895,7 @@ body.controller-collapsed .controller-bar {
   transition: transform 180ms ease;
 }
 
+.config-section-card[open] .config-section-arrow,
 .config-section-card.open .config-section-arrow {
   transform: rotate(225deg);
 }

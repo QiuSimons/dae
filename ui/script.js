@@ -1276,6 +1276,29 @@ function selectedConfigSection() {
   return state.daeConfigSections.find((section) => section.id === state.daeConfigSelected) || state.daeConfigSections[0] || null;
 }
 
+function currentOpenConfigSectionIds() {
+  return Array.from(refs.configSectionTabs?.querySelectorAll("[data-section-panel][open]") || []).map(
+    (panel) => panel.dataset.sectionPanel || "",
+  );
+}
+
+function resolveOpenConfigSectionIds(openSectionIds) {
+  if (Array.isArray(openSectionIds)) {
+    return openSectionIds.filter((sectionId) => state.daeConfigSections.some((section) => section.id === sectionId));
+  }
+
+  const openIdsFromDom = currentOpenConfigSectionIds().filter((sectionId) =>
+    state.daeConfigSections.some((section) => section.id === sectionId),
+  );
+  if (openIdsFromDom.length) {
+    return openIdsFromDom;
+  }
+  if (refs.configSectionTabs?.querySelector("[data-section-panel]")) {
+    return [];
+  }
+  return state.daeConfigSelected ? [state.daeConfigSelected] : [];
+}
+
 function supportsGuiSection(name) {
   return GUI_CONFIG_SECTIONS.has(name);
 }
@@ -3217,21 +3240,21 @@ function renderConfigSectionBody(section) {
   }
 }
 
-function renderConfigSectionTabs() {
+function renderConfigSectionTabs(openSectionIds) {
   if (!state.daeConfigSections.length) {
     refs.configSectionTabs.innerHTML = '<div class="config-empty-state">暂无可编辑 section。</div>';
     return;
   }
 
+  const openSet = new Set(resolveOpenConfigSectionIds(openSectionIds));
   refs.configSectionTabs.innerHTML = state.daeConfigSections
     .map((section) => {
-      const open = section.id === state.daeConfigSelected;
+      const open = openSet.has(section.id);
       return `
-        <article class="config-section-card ${open ? "open" : ""}">
-          <button
+        <details class="config-section-card ${open ? "open" : ""}" data-section-panel="${escapeHtml(section.id)}" ${open ? "open" : ""}>
+          <summary
             class="config-section-toggle"
             data-section-toggle="${escapeHtml(section.id)}"
-            type="button"
           >
             <div class="config-section-copy">
               <p class="panel-kicker">${escapeHtml(section.name)}</p>
@@ -3243,9 +3266,9 @@ function renderConfigSectionTabs() {
               <span class="config-mode-chip ${section.mode === "raw" ? "raw" : ""}">${section.mode === "raw" ? "Raw" : "GUI"}</span>
               <span class="config-section-arrow" aria-hidden="true"></span>
             </div>
-          </button>
-          ${open ? `<div class="config-section-body">${renderConfigSectionBody(section)}</div>` : ""}
-        </article>
+          </summary>
+          <div class="config-section-body">${renderConfigSectionBody(section)}</div>
+        </details>
       `;
     })
     .join("");
@@ -3263,8 +3286,8 @@ function renderConfigMeta() {
   refs.editorNote.textContent = state.editorNoteText;
 }
 
-function renderDaeConfigEditor() {
-  renderConfigSectionTabs();
+function renderDaeConfigEditor(openSectionIds) {
+  renderConfigSectionTabs(openSectionIds);
   renderConfigMeta();
 }
 
@@ -3685,9 +3708,11 @@ function removeConfigSection(sectionId) {
     return;
   }
 
+  const openSectionIds = currentOpenConfigSectionIds().filter((id) => id !== sectionId);
   const [removed] = state.daeConfigSections.splice(index, 1);
   if (!state.daeConfigSections.length) {
     state.daeConfigSections = createFallbackSections("");
+    openSectionIds.push(state.daeConfigSections[0].id);
   }
 
   if (state.daeConfigSelected === sectionId || !findConfigSectionById(state.daeConfigSelected)) {
@@ -3696,7 +3721,7 @@ function removeConfigSection(sectionId) {
 
   state.editorNoteText = `Removed ${removed.title} section. Save to apply.`;
   updateConfigDirtyState();
-  renderDaeConfigEditor();
+  renderDaeConfigEditor(openSectionIds);
 }
 
 function handleConfigSectionInput(event) {
@@ -3754,8 +3779,14 @@ function handleConfigSectionInput(event) {
 function handleConfigSectionClick(event) {
   const toggleButton = event.target.closest("[data-section-toggle]");
   if (toggleButton) {
-    state.daeConfigSelected = toggleButton.dataset.sectionToggle || state.daeConfigSelected;
-    renderDaeConfigEditor();
+    const sectionId = toggleButton.dataset.sectionToggle || "";
+    if (!sectionId) {
+      return;
+    }
+    state.daeConfigSelected = sectionId;
+    window.requestAnimationFrame(() => {
+      renderConfigMeta();
+    });
     return;
   }
 
@@ -3767,7 +3798,7 @@ function handleConfigSectionClick(event) {
     }
     section.mode = modeButton.dataset.sectionMode === "raw" ? "raw" : "gui";
     state.daeConfigSelected = section.id;
-    renderDaeConfigEditor();
+    renderDaeConfigEditor([...currentOpenConfigSectionIds(), section.id]);
     return;
   }
 
@@ -3791,7 +3822,7 @@ function handleConfigSectionClick(event) {
     syncConfigSectionContent(section);
     state.daeConfigSelected = section.id;
     updateConfigDirtyState();
-    renderDaeConfigEditor();
+    renderDaeConfigEditor([...currentOpenConfigSectionIds(), section.id]);
     return;
   }
 
@@ -3810,7 +3841,7 @@ function handleConfigSectionClick(event) {
     syncConfigSectionContent(section);
     state.daeConfigSelected = section.id;
     updateConfigDirtyState();
-    renderDaeConfigEditor();
+    renderDaeConfigEditor([...currentOpenConfigSectionIds(), section.id]);
   }
 }
 
@@ -3863,7 +3894,7 @@ function bindEvents() {
     if (existing) {
       state.daeConfigSelected = existing.id;
       state.editorNoteText = `${existing.title} section already exists.`;
-      renderDaeConfigEditor();
+      renderDaeConfigEditor([...currentOpenConfigSectionIds(), existing.id]);
       return;
     }
     const section = createConfigSection(name);
@@ -3871,7 +3902,7 @@ function bindEvents() {
     state.daeConfigSelected = section.id;
     state.editorNoteText = `Added ${section.title} section.`;
     updateConfigDirtyState();
-    renderDaeConfigEditor();
+    renderDaeConfigEditor([...currentOpenConfigSectionIds(), section.id]);
   });
 
   refs.applyLogLevelButton.addEventListener("click", () => {
