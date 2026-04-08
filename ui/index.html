@@ -415,47 +415,13 @@
           </section>
 
           <section class="page" data-page="configs">
-            <section class="page-grid two-column">
-              <article class="card runtime-config-card">
+            <section class="page-grid">
+              <article class="card editor-card config-editor-card">
                 <div class="card-header">
-                  <h2>Startup Config Summary</h2>
-                </div>
-
-                <div class="detail-grid">
-                  <div class="detail-row">
-                    <span>Mode</span>
-                    <strong id="configModeValue">-</strong>
+                  <div>
+                    <h2>config.dae Builder</h2>
+                    <p class="section-note">按 section 折叠编辑，常见块走 GUI Builder，复杂语法随时切回 Raw。</p>
                   </div>
-                  <div class="detail-row">
-                    <span>Log Level</span>
-                    <strong id="configLogLevelValue">-</strong>
-                  </div>
-                  <div class="detail-row">
-                    <span>TProxy Port</span>
-                    <strong id="configTproxyValue">-</strong>
-                  </div>
-                  <div class="detail-row">
-                    <span>Allow LAN</span>
-                    <strong id="configAllowLanValue">-</strong>
-                  </div>
-                  <div class="detail-row">
-                    <span>Bind Address</span>
-                    <strong id="configBindValue">-</strong>
-                  </div>
-                  <div class="detail-row">
-                    <span>Sections</span>
-                    <strong id="configSectionsCountValue">0</strong>
-                  </div>
-                  <div class="detail-row">
-                    <span>Current Section</span>
-                    <strong id="configCurrentSectionValue">-</strong>
-                  </div>
-                </div>
-              </article>
-
-              <article class="card editor-card">
-                <div class="card-header">
-                  <h2>config.dae Sections</h2>
                 </div>
 
                 <div class="editor-shell">
@@ -463,37 +429,41 @@
                     <div class="editor-meta">
                       <span class="editor-path-label">Loaded File</span>
                       <code class="editor-path" id="configPathValue">-</code>
+                      <div class="config-toolbar-stats">
+                        <div class="config-stat-pill">
+                          <span>Sections</span>
+                          <strong id="configSectionsCountValue">0</strong>
+                        </div>
+                        <div class="config-stat-pill">
+                          <span>Current</span>
+                          <strong id="configCurrentSectionValue">-</strong>
+                        </div>
+                      </div>
                     </div>
 
                     <div class="editor-actions">
+                      <label class="controller-field compact-field config-add-field">
+                        <span>Add Section</span>
+                        <select id="configSectionTypeSelect">
+                          <option value="global">global</option>
+                          <option value="subscription">subscription</option>
+                          <option value="node">node</option>
+                          <option value="dns">dns</option>
+                          <option value="group">group</option>
+                          <option value="routing">routing</option>
+                          <option value="include">include</option>
+                        </select>
+                      </label>
+                      <button class="action-button ghost" id="addConfigSectionButton" type="button">Add Section</button>
                       <button class="action-button ghost" id="refreshConfigButton" type="button">Reload File</button>
                       <button class="action-button subtle" id="saveConfigButton" type="button">Save + Reload</button>
                     </div>
                   </div>
 
-                  <div class="section-workspace">
-                    <div class="section-list" id="configSectionTabs"></div>
-
-                    <div class="section-editor">
-                      <div class="section-editor-head">
-                        <div>
-                          <p class="panel-kicker">Selected Section</p>
-                          <h3 id="configSectionTitle">-</h3>
-                          <p class="section-note" id="configSectionSubtitle">连接控制器后读取 config.dae 顶层块。</p>
-                        </div>
-                      </div>
-
-                      <textarea
-                        class="editor-code section-code"
-                        id="configSectionView"
-                        spellcheck="false"
-                        wrap="off"
-                      ># Connect controller to load /etc/dae/config.dae</textarea>
-                    </div>
-                  </div>
+                  <div class="config-sections" id="configSectionTabs"></div>
 
                   <p class="editor-note" id="editorNote">
-                    按顶层块拆分编辑 startup config.dae。保存时会重组全文、校验并触发 dae 热重载。
+                    按 section 折叠编辑 config.dae；常见块走 GUI Builder，复杂语法可切到 Raw。
                   </p>
                 </div>
               </article>

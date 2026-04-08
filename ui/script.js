@@ -1,7 +1,7 @@
 const DEFAULT_CONFIG_PLACEHOLDER = "# Connect controller to load /etc/dae/config.dae";
 const DEFAULT_CONTROLLER_HINT =
   "登录后开始同步 Dashboard、Traffic、Proxies、Logs 和 Config。";
-const DEFAULT_EDITOR_NOTE = "按顶层块拆分编辑 startup config.dae。保存时会重组全文、校验并触发 dae 热重载。";
+const DEFAULT_EDITOR_NOTE = "按 section 折叠编辑 config.dae；常见块走 GUI Builder，复杂语法可切到 Raw。";
 const DEFAULT_LOG_LEVEL_NOTE = "通过 PATCH /configs 更新运行时日志级别，并保持页面状态同步。";
 const SAMPLE_SIZE = 20;
 const TRAFFIC_SAMPLE_INTERVAL_MS = 5000;
@@ -11,6 +11,70 @@ const RELOAD_SYNC_DELAY_MS = 800;
 const MAX_LOG_ENTRIES = 200;
 const RETRY_DELAY_MS = 3000;
 const LOG_LEVELS = ["trace", "debug", "info", "warn", "error"];
+const DIAL_MODES = ["ip", "domain", "domain+", "domain++"];
+const GUI_CONFIG_SECTIONS = new Set(["global", "subscription", "node", "dns", "group", "routing", "include"]);
+const CONFIG_SECTION_TYPES = ["global", "subscription", "node", "dns", "group", "routing", "include"];
+const GLOBAL_FIELD_DEFS = [
+  {
+    key: "log_level",
+    label: "Log Level",
+    type: "select",
+    options: LOG_LEVELS,
+    placeholder: "Select log level",
+  },
+  {
+    key: "external_controller",
+    label: "External Controller",
+    type: "text",
+    placeholder: "127.0.0.1:9090",
+  },
+  {
+    key: "external_controller_secret",
+    label: "Controller Token",
+    type: "text",
+    placeholder: "password",
+  },
+  {
+    key: "tproxy_port",
+    label: "TProxy Port",
+    type: "number",
+    placeholder: "12345",
+  },
+  {
+    key: "wan_interface",
+    label: "WAN Interface",
+    type: "text",
+    placeholder: "auto",
+  },
+  {
+    key: "lan_interface",
+    label: "LAN Interface",
+    type: "text",
+    placeholder: "eth0,br-lan",
+  },
+  {
+    key: "dial_mode",
+    label: "Dial Mode",
+    type: "select",
+    options: DIAL_MODES,
+    placeholder: "Select dial mode",
+  },
+  {
+    key: "allow_insecure",
+    label: "Allow Insecure",
+    type: "boolean",
+  },
+  {
+    key: "disable_waiting_network",
+    label: "Disable Waiting Network",
+    type: "boolean",
+  },
+  {
+    key: "auto_config_kernel_parameter",
+    label: "Auto Kernel Param",
+    type: "boolean",
+  },
+];
 
 const VIEW_META = {
   dashboard: {
@@ -31,7 +95,7 @@ const VIEW_META = {
   configs: {
     eyebrow: "Config",
     title: "Startup Config",
-    banner: "config.dae Sections",
+    banner: "config.dae Builder",
   },
   logs: {
     eyebrow: "Logs",
@@ -127,17 +191,11 @@ const refs = {
   trafficConnectionsEmpty: document.getElementById("trafficConnectionsEmpty"),
   trafficSortSelect: document.getElementById("trafficSortSelect"),
   configPathValue: document.getElementById("configPathValue"),
-  configModeValue: document.getElementById("configModeValue"),
-  configLogLevelValue: document.getElementById("configLogLevelValue"),
-  configTproxyValue: document.getElementById("configTproxyValue"),
-  configAllowLanValue: document.getElementById("configAllowLanValue"),
-  configBindValue: document.getElementById("configBindValue"),
   configSectionsCountValue: document.getElementById("configSectionsCountValue"),
   configCurrentSectionValue: document.getElementById("configCurrentSectionValue"),
+  configSectionTypeSelect: document.getElementById("configSectionTypeSelect"),
+  addConfigSectionButton: document.getElementById("addConfigSectionButton"),
   configSectionTabs: document.getElementById("configSectionTabs"),
-  configSectionTitle: document.getElementById("configSectionTitle"),
-  configSectionSubtitle: document.getElementById("configSectionSubtitle"),
-  configSectionView: document.getElementById("configSectionView"),
   saveConfigButton: document.getElementById("saveConfigButton"),
   refreshConfigButton: document.getElementById("refreshConfigButton"),
   editorNote: document.getElementById("editorNote"),
@@ -177,15 +235,7 @@ function createEmptyConnectionsSnapshot() {
 }
 
 function createFallbackSections(content) {
-  return [
-    {
-      id: "document-0",
-      name: "document",
-      title: "Whole Document",
-      summary: CONFIG_SECTION_DESCRIPTIONS.document,
-      content,
-    },
-  ];
+  return [buildConfigSection(content, 0, "document")];
 }
 
 const state = {
@@ -1236,7 +1286,688 @@ function selectedConfigSection() {
   return state.daeConfigSections.find((section) => section.id === state.daeConfigSelected) || state.daeConfigSections[0] || null;
 }
 
-function inferConfigSectionName(chunk, index) {
+function supportsGuiSection(name) {
+  return GUI_CONFIG_SECTIONS.has(name);
+}
+
+function normalizeConfigText(value) {
+  return String(value || "").replace(/\r\n?/g, "\n");
+}
+
+function findTopLevelDelimiter(text, delimiter) {
+  let quote = "";
+  let escaped = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === quote) {
+        quote = "";
+      }
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (char === delimiter) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function findMatchingBrace(text, openIndex) {
+  let depth = 0;
+  let comment = false;
+  let quote = "";
+  let escaped = false;
+
+  for (let index = openIndex; index < text.length; index += 1) {
+    const char = text[index];
+
+    if (comment) {
+      if (char === "\n") {
+        comment = false;
+      }
+      continue;
+    }
+
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === quote) {
+        quote = "";
+      }
+      continue;
+    }
+
+    if (char === "#") {
+      comment = true;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (char === "{") {
+      depth += 1;
+      continue;
+    }
+    if (char === "}") {
+      if (depth > 0) {
+        depth -= 1;
+      }
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+
+  return -1;
+}
+
+function findOuterBlockRange(content) {
+  const text = normalizeConfigText(content);
+  let comment = false;
+  let quote = "";
+  let escaped = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+
+    if (comment) {
+      if (char === "\n") {
+        comment = false;
+      }
+      continue;
+    }
+
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === quote) {
+        quote = "";
+      }
+      continue;
+    }
+
+    if (char === "#") {
+      comment = true;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (char === "{") {
+      const closeIndex = findMatchingBrace(text, index);
+      if (closeIndex >= 0) {
+        return { openIndex: index, closeIndex };
+      }
+      return null;
+    }
+  }
+
+  return null;
+}
+
+function extractSectionBody(content) {
+  const text = normalizeConfigText(content);
+  const range = findOuterBlockRange(text);
+  if (!range) {
+    return text.trim();
+  }
+  return text.slice(range.openIndex + 1, range.closeIndex);
+}
+
+function splitTopLevelChunks(content) {
+  const text = normalizeConfigText(content);
+  const chunks = [];
+  let depth = 0;
+  let comment = false;
+  let quote = "";
+  let escaped = false;
+  let chunkStart = 0;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+
+    if (comment) {
+      if (char === "\n") {
+        comment = false;
+        if (depth === 0) {
+          const chunk = text.slice(chunkStart, index + 1);
+          if (chunk.trim()) {
+            chunks.push(chunk.trim());
+          }
+          chunkStart = index + 1;
+        }
+      }
+      continue;
+    }
+
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === quote) {
+        quote = "";
+      }
+      continue;
+    }
+
+    if (char === "#") {
+      comment = true;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (char === "{") {
+      depth += 1;
+      continue;
+    }
+    if (char === "}") {
+      if (depth > 0) {
+        depth -= 1;
+      }
+      continue;
+    }
+    if (char === "\n" && depth === 0) {
+      const chunk = text.slice(chunkStart, index + 1);
+      if (chunk.trim()) {
+        chunks.push(chunk.trim());
+      }
+      chunkStart = index + 1;
+    }
+  }
+
+  const tail = text.slice(chunkStart);
+  if (tail.trim()) {
+    chunks.push(tail.trim());
+  }
+
+  return chunks;
+}
+
+function dedentBlockBody(content) {
+  const lines = normalizeConfigText(content).split("\n");
+  while (lines.length && !lines[0].trim()) {
+    lines.shift();
+  }
+  while (lines.length && !lines[lines.length - 1].trim()) {
+    lines.pop();
+  }
+  const indents = lines
+    .filter((line) => line.trim())
+    .map((line) => line.match(/^\s*/)?.[0].length || 0);
+  const minIndent = indents.length ? Math.min(...indents) : 0;
+  return lines.map((line) => line.slice(minIndent)).join("\n");
+}
+
+function parseNamedBlockChunk(chunk) {
+  const text = normalizeConfigText(chunk).trim();
+  if (!text || text.startsWith("#")) {
+    return null;
+  }
+  const range = findOuterBlockRange(text);
+  if (!range || range.openIndex <= 0) {
+    return null;
+  }
+  const name = text.slice(0, range.openIndex).trim();
+  const tail = text.slice(range.closeIndex + 1).trim();
+  if (!/^[A-Za-z_][\w-]*$/.test(name) || tail) {
+    return null;
+  }
+  return {
+    name,
+    body: dedentBlockBody(text.slice(range.openIndex + 1, range.closeIndex)),
+  };
+}
+
+function parseSimpleConfigLine(line) {
+  const text = normalizeConfigText(line).trim();
+  if (!text || text.startsWith("#")) {
+    return null;
+  }
+  if (findTopLevelDelimiter(text, "#") >= 0) {
+    return null;
+  }
+  const delimiterIndex = findTopLevelDelimiter(text, ":");
+  if (delimiterIndex <= 0 || delimiterIndex >= text.length - 1) {
+    return null;
+  }
+  return {
+    key: text.slice(0, delimiterIndex).trim(),
+    value: text.slice(delimiterIndex + 1).trim(),
+  };
+}
+
+function unquoteConfigValue(value) {
+  const text = String(value || "").trim();
+  if (text.length >= 2 && text[0] === text[text.length - 1] && (text[0] === "'" || text[0] === '"')) {
+    const quote = text[0];
+    return text
+      .slice(1, -1)
+      .replaceAll(`\\${quote}`, quote)
+      .replaceAll("\\\\", "\\");
+  }
+  return text;
+}
+
+function parseListLine(line) {
+  const text = normalizeConfigText(line).trim();
+  if (!text || text.startsWith("#")) {
+    return null;
+  }
+  if (findTopLevelDelimiter(text, "#") >= 0) {
+    return null;
+  }
+  if (text.startsWith("'") || text.startsWith('"') || /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(text)) {
+    return {
+      tag: "",
+      value: unquoteConfigValue(text),
+    };
+  }
+  const delimiterIndex = findTopLevelDelimiter(text, ":");
+  if (delimiterIndex <= 0 || delimiterIndex >= text.length - 1) {
+    return null;
+  }
+  return {
+    tag: unquoteConfigValue(text.slice(0, delimiterIndex).trim()),
+    value: unquoteConfigValue(text.slice(delimiterIndex + 1).trim()),
+  };
+}
+
+function quoteConfigString(value) {
+  return `'${String(value || "")
+    .replaceAll("\\", "\\\\")
+    .replaceAll("'", "\\'")}'`;
+}
+
+function formatConfigIdentifier(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+  if (/^[A-Za-z_][\w-]*$/.test(text)) {
+    return text;
+  }
+  return quoteConfigString(text);
+}
+
+function serializeNamedBlock(name, body) {
+  const blockName = String(name || "").trim();
+  if (!blockName) {
+    return "";
+  }
+  const text = normalizeConfigText(body).trim();
+  if (!text) {
+    return `${blockName} {}`;
+  }
+  const indented = text
+    .split("\n")
+    .map((line) => (line ? `    ${line}` : ""))
+    .join("\n");
+  return `${blockName} {\n${indented}\n}`;
+}
+
+function wrapConfigSection(name, body) {
+  const sectionName = String(name || "").trim();
+  if (!sectionName) {
+    return normalizeConfigText(body);
+  }
+  const text = normalizeConfigText(body).trim();
+  if (!text) {
+    return `${sectionName} {\n}\n`;
+  }
+  const indented = text
+    .split("\n")
+    .map((line) => (line ? `    ${line}` : ""))
+    .join("\n");
+  return `${sectionName} {\n${indented}\n}\n`;
+}
+
+function joinAdvancedChunks(chunks) {
+  return chunks
+    .map((chunk) => normalizeConfigText(chunk).trim())
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function joinConfigBodyParts(parts) {
+  return parts
+    .map((part) => normalizeConfigText(part).trim())
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function createEmptyGlobalFields() {
+  return GLOBAL_FIELD_DEFS.reduce((fields, field) => {
+    fields[field.key] = "";
+    return fields;
+  }, {});
+}
+
+function createEmptyConfigEditor(name) {
+  switch (name) {
+    case "global":
+      return {
+        kind: "global",
+        fields: createEmptyGlobalFields(),
+        extraOptions: [],
+        advancedRaw: "",
+      };
+    case "subscription":
+    case "node":
+    case "include":
+      return {
+        kind: name,
+        entries: [],
+        advancedRaw: "",
+      };
+    case "dns":
+      return {
+        kind: "dns",
+        options: [],
+        blocks: [],
+        advancedRaw: "",
+      };
+    case "group":
+      return {
+        kind: "group",
+        groups: [],
+        advancedRaw: "",
+      };
+    case "routing":
+      return {
+        kind: "routing",
+        rules: [],
+        fallback: "",
+        advancedRaw: "",
+      };
+    default:
+      return {
+        kind: "raw",
+      };
+  }
+}
+
+function normalizeConfigFieldValue(field, value) {
+  const text = String(value || "").trim();
+  if (field.type === "boolean") {
+    const lowered = text.toLowerCase();
+    return lowered === "true" || lowered === "false" ? lowered : "";
+  }
+  return unquoteConfigValue(text);
+}
+
+function serializeConfigFieldValue(field, value) {
+  const text = String(value || "").trim();
+  if (field.type === "boolean") {
+    return text === "true" || text === "false" ? text : "";
+  }
+  return text;
+}
+
+function parseGlobalEditor(content) {
+  const editor = createEmptyConfigEditor("global");
+  const advanced = [];
+
+  for (const chunk of splitTopLevelChunks(extractSectionBody(content))) {
+    const option = parseSimpleConfigLine(chunk);
+    if (!option) {
+      advanced.push(chunk);
+      continue;
+    }
+    const field = GLOBAL_FIELD_DEFS.find((item) => item.key === option.key);
+    if (field) {
+      editor.fields[option.key] = normalizeConfigFieldValue(field, option.value);
+    } else {
+      editor.extraOptions.push({
+        key: option.key,
+        value: option.value,
+      });
+    }
+  }
+
+  editor.advancedRaw = joinAdvancedChunks(advanced);
+  return editor;
+}
+
+function parseListEditor(name, content) {
+  const editor = createEmptyConfigEditor(name);
+  const advanced = [];
+
+  for (const chunk of splitTopLevelChunks(extractSectionBody(content))) {
+    const entry = parseListLine(chunk);
+    if (!entry) {
+      advanced.push(chunk);
+      continue;
+    }
+    if (name === "include" && entry.tag) {
+      advanced.push(chunk);
+      continue;
+    }
+    editor.entries.push(entry);
+  }
+
+  editor.advancedRaw = joinAdvancedChunks(advanced);
+  return editor;
+}
+
+function parseDnsEditor(content) {
+  const editor = createEmptyConfigEditor("dns");
+  const advanced = [];
+
+  for (const chunk of splitTopLevelChunks(extractSectionBody(content))) {
+    const block = parseNamedBlockChunk(chunk);
+    if (block) {
+      editor.blocks.push(block);
+      continue;
+    }
+    const option = parseSimpleConfigLine(chunk);
+    if (option) {
+      editor.options.push(option);
+      continue;
+    }
+    advanced.push(chunk);
+  }
+
+  editor.advancedRaw = joinAdvancedChunks(advanced);
+  return editor;
+}
+
+function parseGroupEditor(content) {
+  const editor = createEmptyConfigEditor("group");
+  const advanced = [];
+
+  for (const chunk of splitTopLevelChunks(extractSectionBody(content))) {
+    const block = parseNamedBlockChunk(chunk);
+    if (block) {
+      editor.groups.push(block);
+      continue;
+    }
+    advanced.push(chunk);
+  }
+
+  editor.advancedRaw = joinAdvancedChunks(advanced);
+  return editor;
+}
+
+function parseRoutingEditor(content) {
+  const editor = createEmptyConfigEditor("routing");
+  const advanced = [];
+
+  for (const chunk of splitTopLevelChunks(extractSectionBody(content))) {
+    const line = normalizeConfigText(chunk).trim();
+    if (!line) {
+      continue;
+    }
+    if (line.startsWith("#") || findTopLevelDelimiter(line, "#") >= 0 || parseNamedBlockChunk(line)) {
+      advanced.push(chunk);
+      continue;
+    }
+    const fallbackMatch = line.match(/^fallback\s*:\s*(.+)$/);
+    if (fallbackMatch) {
+      editor.fallback = fallbackMatch[1].trim();
+      continue;
+    }
+    editor.rules.push({ value: line });
+  }
+
+  editor.advancedRaw = joinAdvancedChunks(advanced);
+  return editor;
+}
+
+function parseConfigEditor(name, content) {
+  switch (name) {
+    case "global":
+      return parseGlobalEditor(content);
+    case "subscription":
+    case "node":
+    case "include":
+      return parseListEditor(name, content);
+    case "dns":
+      return parseDnsEditor(content);
+    case "group":
+      return parseGroupEditor(content);
+    case "routing":
+      return parseRoutingEditor(content);
+    default:
+      return createEmptyConfigEditor("raw");
+  }
+}
+
+function serializeGlobalEditor(editor) {
+  const lines = [];
+
+  for (const field of GLOBAL_FIELD_DEFS) {
+    const value = serializeConfigFieldValue(field, editor.fields[field.key]);
+    if (value) {
+      lines.push(`${field.key}: ${value}`);
+    }
+  }
+
+  for (const row of editor.extraOptions) {
+    const key = String(row.key || "").trim();
+    const value = String(row.value || "").trim();
+    if (key && value) {
+      lines.push(`${key}: ${value}`);
+    }
+  }
+
+  return wrapConfigSection("global", joinConfigBodyParts([lines.join("\n"), editor.advancedRaw]));
+}
+
+function serializeListEditor(name, editor) {
+  const lines = editor.entries
+    .map((entry) => {
+      const value = String(entry.value || "").trim();
+      if (!value) {
+        return "";
+      }
+      if (name !== "include") {
+        const tag = formatConfigIdentifier(entry.tag);
+        if (tag) {
+          return `${tag}: ${quoteConfigString(value)}`;
+        }
+      }
+      return quoteConfigString(value);
+    })
+    .filter(Boolean)
+    .join("\n");
+
+  return wrapConfigSection(name, joinConfigBodyParts([lines, editor.advancedRaw]));
+}
+
+function serializeDnsEditor(editor) {
+  const options = editor.options
+    .map((row) => {
+      const key = String(row.key || "").trim();
+      const value = String(row.value || "").trim();
+      return key && value ? `${key}: ${value}` : "";
+    })
+    .filter(Boolean)
+    .join("\n");
+
+  const blocks = editor.blocks
+    .map((block) => serializeNamedBlock(block.name, block.body))
+    .filter(Boolean)
+    .join("\n\n");
+
+  return wrapConfigSection("dns", joinConfigBodyParts([options, blocks, editor.advancedRaw]));
+}
+
+function serializeGroupEditor(editor) {
+  const blocks = editor.groups
+    .map((group) => serializeNamedBlock(group.name, group.body))
+    .filter(Boolean)
+    .join("\n\n");
+
+  return wrapConfigSection("group", joinConfigBodyParts([blocks, editor.advancedRaw]));
+}
+
+function serializeRoutingEditor(editor) {
+  const lines = editor.rules
+    .map((rule) => String(rule.value || "").trim())
+    .filter(Boolean);
+  if (String(editor.fallback || "").trim()) {
+    lines.push(`fallback: ${String(editor.fallback).trim()}`);
+  }
+
+  return wrapConfigSection("routing", joinConfigBodyParts([lines.join("\n"), editor.advancedRaw]));
+}
+
+function serializeConfigSectionContent(name, editorData, fallback = "") {
+  switch (editorData?.kind) {
+    case "global":
+      return serializeGlobalEditor(editorData);
+    case "subscription":
+    case "node":
+    case "include":
+      return serializeListEditor(name, editorData);
+    case "dns":
+      return serializeDnsEditor(editorData);
+    case "group":
+      return serializeGroupEditor(editorData);
+    case "routing":
+      return serializeRoutingEditor(editorData);
+    default:
+      return normalizeConfigText(fallback);
+  }
+}
+
+function inferConfigSectionName(chunk, index, forcedName = "") {
+  if (forcedName) {
+    return forcedName;
+  }
   const lines = String(chunk || "").split("\n");
   for (const line of lines) {
     const trimmed = line.trim();
@@ -1252,19 +1983,37 @@ function inferConfigSectionName(chunk, index) {
   return index === 0 ? "document" : `section-${index + 1}`;
 }
 
-function buildConfigSection(chunk, index) {
-  const name = inferConfigSectionName(chunk, index);
+function buildConfigSection(chunk, index, forcedName = "") {
+  const content = normalizeConfigText(chunk);
+  const name = inferConfigSectionName(content, index, forcedName);
+  const editorData = parseConfigEditor(name, content);
   return {
     id: `${name}-${index}`,
     name,
     title: name === "document" ? "Whole Document" : titleCase(name),
     summary: CONFIG_SECTION_DESCRIPTIONS[name] || "编辑该顶层 dae 配置块的原始文本。",
-    content: chunk,
+    content,
+    mode: supportsGuiSection(name) ? "gui" : "raw",
+    editorData,
+  };
+}
+
+function createConfigSection(name) {
+  const editorData = createEmptyConfigEditor(name);
+  const content = serializeConfigSectionContent(name, editorData, "");
+  return {
+    id: `${name}-${Date.now()}`,
+    name,
+    title: titleCase(name),
+    summary: CONFIG_SECTION_DESCRIPTIONS[name] || "编辑该顶层 dae 配置块的原始文本。",
+    content,
+    mode: supportsGuiSection(name) ? "gui" : "raw",
+    editorData,
   };
 }
 
 function parseConfigSections(content) {
-  const text = typeof content === "string" ? content : "";
+  const text = normalizeConfigText(content);
   if (!text.trim()) {
     return createFallbackSections("");
   }
@@ -1406,21 +2155,12 @@ function renderHeaderStatus() {
 function renderSystemStatus() {
   const { leaves, alive } = computeLeafStats();
   const inUse = Number(state.memory?.inuse || 0);
-  const currentSection = selectedConfigSection();
 
   refs.dashboardModeValue.textContent = state.config?.mode || "-";
   refs.dashboardLogLevelValue.textContent = state.config?.["log-level"] || "-";
   refs.dashboardMemoryValue.textContent = inUse ? humanBytes(inUse) : "-";
   refs.dashboardAliveValue.textContent = `${alive} / ${leaves.length}`;
   refs.runtimeVersionValue.textContent = state.version?.version || "-";
-
-  refs.configModeValue.textContent = state.config?.mode || "-";
-  refs.configLogLevelValue.textContent = state.config?.["log-level"] || "-";
-  refs.configTproxyValue.textContent = state.config?.["tproxy-port"] ? String(state.config["tproxy-port"]) : "-";
-  refs.configAllowLanValue.textContent = formatYesNo(state.config?.["allow-lan"]);
-  refs.configBindValue.textContent = state.config?.["bind-address"] || "-";
-  refs.configSectionsCountValue.textContent = String(state.daeConfigSections.length);
-  refs.configCurrentSectionValue.textContent = currentSection?.title || "-";
 
   if (!state.logLevelChanging) {
     refs.runtimeLogLevelSelect.value = state.config?.["log-level"] || "info";
@@ -1870,20 +2610,598 @@ function renderProxyGrid() {
   refs.dashboardProxyGrid.innerHTML = proxyGridMarkup(group, { compact: true });
 }
 
-function renderConfigSectionTabs() {
-  refs.configSectionTabs.innerHTML = state.daeConfigSections
+function configSectionCountText(section) {
+  const editor = section.editorData;
+  switch (editor?.kind) {
+    case "global": {
+      const fields = GLOBAL_FIELD_DEFS.filter((field) => serializeConfigFieldValue(field, editor.fields[field.key])).length;
+      const extras = editor.extraOptions.filter((row) => String(row.key || "").trim() && String(row.value || "").trim()).length;
+      return `${fields + extras} options`;
+    }
+    case "subscription":
+    case "node":
+    case "include":
+      return `${editor.entries.length} item${editor.entries.length === 1 ? "" : "s"}`;
+    case "dns":
+      return `${editor.options.length} options · ${editor.blocks.length} blocks`;
+    case "group":
+      return `${editor.groups.length} groups`;
+    case "routing": {
+      const total = editor.rules.filter((rule) => String(rule.value || "").trim()).length + (editor.fallback ? 1 : 0);
+      return `${total} rules`;
+    }
+    default:
+      return section.content.trim() ? "Raw section" : "Empty";
+  }
+}
+
+function renderConfigModeSwitch(section) {
+  if (!supportsGuiSection(section.name)) {
+    return "";
+  }
+  return `
+    <div class="config-mode-switch">
+      <button
+        class="config-mode-button ${section.mode === "gui" ? "active" : ""}"
+        data-section="${escapeHtml(section.id)}"
+        data-section-mode="gui"
+        type="button"
+      >
+        Builder
+      </button>
+      <button
+        class="config-mode-button ${section.mode === "raw" ? "active" : ""}"
+        data-section="${escapeHtml(section.id)}"
+        data-section-mode="raw"
+        type="button"
+      >
+        Raw
+      </button>
+    </div>
+  `;
+}
+
+function renderConfigAdvancedNote(section) {
+  if (!section.editorData?.advancedRaw?.trim()) {
+    return "";
+  }
+  return `<p class="config-advanced-note">检测到未结构化内容，保存时会保留；切到 Raw 可以直接编辑这些内容。</p>`;
+}
+
+function renderConfigSectionToolbar(section) {
+  return `
+    <div class="config-section-toolbar">
+      ${renderConfigModeSwitch(section)}
+      <button class="config-section-remove" data-remove-section="${escapeHtml(section.id)}" type="button">Delete Section</button>
+    </div>
+  `;
+}
+
+function renderConfigFieldControl(sectionId, field, value) {
+  if (field.type === "select") {
+    return `
+      <select data-section="${escapeHtml(sectionId)}" data-config-field="${escapeHtml(field.key)}">
+        <option value="">Not set</option>
+        ${field.options
+          .map(
+            (option) => `
+              <option value="${escapeHtml(option)}" ${value === option ? "selected" : ""}>${escapeHtml(option)}</option>
+            `,
+          )
+          .join("")}
+      </select>
+    `;
+  }
+
+  if (field.type === "boolean") {
+    return `
+      <select data-section="${escapeHtml(sectionId)}" data-config-field="${escapeHtml(field.key)}">
+        <option value="" ${!value ? "selected" : ""}>Not set</option>
+        <option value="true" ${value === "true" ? "selected" : ""}>true</option>
+        <option value="false" ${value === "false" ? "selected" : ""}>false</option>
+      </select>
+    `;
+  }
+
+  return `
+    <input
+      data-section="${escapeHtml(sectionId)}"
+      data-config-field="${escapeHtml(field.key)}"
+      type="${field.type === "number" ? "number" : "text"}"
+      inputmode="${field.type === "number" ? "numeric" : "text"}"
+      placeholder="${escapeHtml(field.placeholder || "")}"
+      value="${escapeHtml(value || "")}"
+    />
+  `;
+}
+
+function renderConfigGlobalBuilder(section) {
+  const editor = section.editorData;
+  const rows = editor.extraOptions
     .map(
-      (section) => `
-        <button
-          class="section-tab ${section.id === state.daeConfigSelected ? "active" : ""}"
-          data-section="${escapeHtml(section.id)}"
-          type="button"
-        >
-          <strong>${escapeHtml(section.title)}</strong>
-          <span>${escapeHtml(section.summary)}</span>
-        </button>
+      (row, index) => `
+        <div class="config-row">
+          <input
+            data-section="${escapeHtml(section.id)}"
+            data-config-collection="extraOptions"
+            data-index="${index}"
+            data-field="key"
+            type="text"
+            placeholder="option_key"
+            value="${escapeHtml(row.key || "")}"
+          />
+          <input
+            data-section="${escapeHtml(section.id)}"
+            data-config-collection="extraOptions"
+            data-index="${index}"
+            data-field="value"
+            type="text"
+            placeholder="option value"
+            value="${escapeHtml(row.value || "")}"
+          />
+          <div class="config-row-actions">
+            <button
+              class="config-row-remove"
+              data-section="${escapeHtml(section.id)}"
+              data-config-remove="extraOptions"
+              data-index="${index}"
+              type="button"
+            >
+              Remove
+            </button>
+          </div>
+        </div>
       `,
     )
+    .join("");
+
+  return `
+    ${renderConfigSectionToolbar(section)}
+    <div class="config-form-grid">
+      ${GLOBAL_FIELD_DEFS.map(
+        (field) => `
+          <div class="config-field">
+            <label>${escapeHtml(field.label)}</label>
+            ${renderConfigFieldControl(section.id, field, editor.fields[field.key])}
+          </div>
+        `,
+      ).join("")}
+    </div>
+
+    <div class="config-builder-panel">
+      <div class="config-panel-head">
+        <div>
+          <h4>Additional Options</h4>
+          <p>不在上面表单里的 global 键值，直接以 <code>key: value</code> 追加。</p>
+        </div>
+        <button
+          class="action-button ghost"
+          data-section="${escapeHtml(section.id)}"
+          data-config-add="extraOptions"
+          data-template="key-value"
+          type="button"
+        >
+          Add Option
+        </button>
+      </div>
+      <div class="config-row-list">
+        ${rows || '<div class="config-empty-state">暂无额外选项。</div>'}
+      </div>
+    </div>
+    ${renderConfigAdvancedNote(section)}
+  `;
+}
+
+function renderConfigListBuilder(section) {
+  const isInclude = section.name === "include";
+  const valuePlaceholder = isInclude
+    ? "rules/base.dae"
+    : section.name === "subscription"
+      ? "https://example.com/subscription"
+      : "ss://, vmess://, vless:// ...";
+
+  const rows = section.editorData.entries
+    .map(
+      (entry, index) => `
+        <div class="config-row ${isInclude ? "single-value" : ""}">
+          ${
+            isInclude
+              ? ""
+              : `
+                <input
+                  data-section="${escapeHtml(section.id)}"
+                  data-config-collection="entries"
+                  data-index="${index}"
+                  data-field="tag"
+                  type="text"
+                  placeholder="tag"
+                  value="${escapeHtml(entry.tag || "")}"
+                />
+              `
+          }
+          <input
+            data-section="${escapeHtml(section.id)}"
+            data-config-collection="entries"
+            data-index="${index}"
+            data-field="value"
+            type="text"
+            placeholder="${escapeHtml(valuePlaceholder)}"
+            value="${escapeHtml(entry.value || "")}"
+          />
+          <div class="config-row-actions">
+            <button
+              class="config-row-remove"
+              data-section="${escapeHtml(section.id)}"
+              data-config-remove="entries"
+              data-index="${index}"
+              type="button"
+            >
+              Remove
+            </button>
+          </div>
+        </div>
+      `,
+    )
+    .join("");
+
+  return `
+    ${renderConfigSectionToolbar(section)}
+    <div class="config-builder-panel">
+      <div class="config-panel-head">
+        <div>
+          <h4>${escapeHtml(section.title)} Entries</h4>
+          <p>${escapeHtml(section.summary)}</p>
+        </div>
+        <button
+          class="action-button ghost"
+          data-section="${escapeHtml(section.id)}"
+          data-config-add="entries"
+          data-template="tagged-entry"
+          type="button"
+        >
+          ${isInclude ? "Add Include" : `Add ${escapeHtml(section.title)}`}
+        </button>
+      </div>
+      <div class="config-row-list">
+        ${rows || '<div class="config-empty-state">暂无条目。</div>'}
+      </div>
+    </div>
+    ${renderConfigAdvancedNote(section)}
+  `;
+}
+
+function renderConfigDnsBuilder(section) {
+  const optionRows = section.editorData.options
+    .map(
+      (row, index) => `
+        <div class="config-row">
+          <input
+            data-section="${escapeHtml(section.id)}"
+            data-config-collection="options"
+            data-index="${index}"
+            data-field="key"
+            type="text"
+            placeholder="option_key"
+            value="${escapeHtml(row.key || "")}"
+          />
+          <input
+            data-section="${escapeHtml(section.id)}"
+            data-config-collection="options"
+            data-index="${index}"
+            data-field="value"
+            type="text"
+            placeholder="option value"
+            value="${escapeHtml(row.value || "")}"
+          />
+          <div class="config-row-actions">
+            <button
+              class="config-row-remove"
+              data-section="${escapeHtml(section.id)}"
+              data-config-remove="options"
+              data-index="${index}"
+              type="button"
+            >
+              Remove
+            </button>
+          </div>
+        </div>
+      `,
+    )
+    .join("");
+
+  const blockRows = section.editorData.blocks
+    .map(
+      (block, index) => `
+        <div class="config-block-card">
+          <div class="config-block-head">
+            <div>
+              <h4>Nested Block</h4>
+              <p>像 <code>upstream</code>、<code>routing</code> 这样的 dns 子块。</p>
+            </div>
+            <button
+              class="config-row-remove"
+              data-section="${escapeHtml(section.id)}"
+              data-config-remove="blocks"
+              data-index="${index}"
+              type="button"
+            >
+              Remove
+            </button>
+          </div>
+          <input
+            data-section="${escapeHtml(section.id)}"
+            data-config-collection="blocks"
+            data-index="${index}"
+            data-field="name"
+            type="text"
+            placeholder="upstream"
+            value="${escapeHtml(block.name || "")}"
+          />
+          <textarea
+            class="config-textarea"
+            data-section="${escapeHtml(section.id)}"
+            data-config-collection="blocks"
+            data-index="${index}"
+            data-field="body"
+            spellcheck="false"
+          >${escapeHtml(block.body || "")}</textarea>
+        </div>
+      `,
+    )
+    .join("");
+
+  return `
+    ${renderConfigSectionToolbar(section)}
+    <div class="config-builder-panel">
+      <div class="config-panel-head">
+        <div>
+          <h4>Top-level Options</h4>
+          <p>DNS 顶层的简单键值项。</p>
+        </div>
+        <button
+          class="action-button ghost"
+          data-section="${escapeHtml(section.id)}"
+          data-config-add="options"
+          data-template="key-value"
+          type="button"
+        >
+          Add Option
+        </button>
+      </div>
+      <div class="config-row-list">
+        ${optionRows || '<div class="config-empty-state">暂无顶层项。</div>'}
+      </div>
+    </div>
+
+    <div class="config-builder-panel">
+      <div class="config-panel-head">
+        <div>
+          <h4>Nested Blocks</h4>
+          <p>GUI 里直接新增 <code>upstream</code>、<code>routing</code> 等块。</p>
+        </div>
+        <button
+          class="action-button ghost"
+          data-section="${escapeHtml(section.id)}"
+          data-config-add="blocks"
+          data-template="named-block"
+          type="button"
+        >
+          Add Block
+        </button>
+      </div>
+      <div class="config-block-list">
+        ${blockRows || '<div class="config-empty-state">暂无嵌套块。</div>'}
+      </div>
+    </div>
+    ${renderConfigAdvancedNote(section)}
+  `;
+}
+
+function renderConfigGroupBuilder(section) {
+  const groups = section.editorData.groups
+    .map(
+      (group, index) => `
+        <div class="config-block-card">
+          <div class="config-block-head">
+            <div>
+              <h4>Proxy Group</h4>
+              <p>在这里添加分组名，并填 policy、filter 等规则。</p>
+            </div>
+            <button
+              class="config-row-remove"
+              data-section="${escapeHtml(section.id)}"
+              data-config-remove="groups"
+              data-index="${index}"
+              type="button"
+            >
+              Remove
+            </button>
+          </div>
+          <input
+            data-section="${escapeHtml(section.id)}"
+            data-config-collection="groups"
+            data-index="${index}"
+            data-field="name"
+            type="text"
+            placeholder="my_group"
+            value="${escapeHtml(group.name || "")}"
+          />
+          <textarea
+            class="config-textarea"
+            data-section="${escapeHtml(section.id)}"
+            data-config-collection="groups"
+            data-index="${index}"
+            data-field="body"
+            spellcheck="false"
+          >${escapeHtml(group.body || "")}</textarea>
+        </div>
+      `,
+    )
+    .join("");
+
+  return `
+    ${renderConfigSectionToolbar(section)}
+    <div class="config-builder-panel">
+      <div class="config-panel-head">
+        <div>
+          <h4>Groups</h4>
+          <p>每个 group 单独一个卡片，方便新增和整理策略块。</p>
+        </div>
+        <button
+          class="action-button ghost"
+          data-section="${escapeHtml(section.id)}"
+          data-config-add="groups"
+          data-template="named-block"
+          type="button"
+        >
+          Add Group
+        </button>
+      </div>
+      <div class="config-block-list">
+        ${groups || '<div class="config-empty-state">暂无 group。</div>'}
+      </div>
+    </div>
+    ${renderConfigAdvancedNote(section)}
+  `;
+}
+
+function renderConfigRoutingBuilder(section) {
+  const rules = section.editorData.rules
+    .map(
+      (rule, index) => `
+        <div class="config-row single-value">
+          <input
+            data-section="${escapeHtml(section.id)}"
+            data-config-collection="rules"
+            data-index="${index}"
+            data-field="value"
+            type="text"
+            placeholder="domain(geosite:cn) -> direct"
+            value="${escapeHtml(rule.value || "")}"
+          />
+          <div class="config-row-actions">
+            <button
+              class="config-row-remove"
+              data-section="${escapeHtml(section.id)}"
+              data-config-remove="rules"
+              data-index="${index}"
+              type="button"
+            >
+              Remove
+            </button>
+          </div>
+        </div>
+      `,
+    )
+    .join("");
+
+  return `
+    ${renderConfigSectionToolbar(section)}
+    <div class="config-builder-panel">
+      <div class="config-panel-head">
+        <div>
+          <h4>Routing Rules</h4>
+          <p>按顺序添加规则，右侧删除，最后单独维护 fallback。</p>
+        </div>
+        <button
+          class="action-button ghost"
+          data-section="${escapeHtml(section.id)}"
+          data-config-add="rules"
+          data-template="rule"
+          type="button"
+        >
+          Add Rule
+        </button>
+      </div>
+      <div class="config-row-list">
+        ${rules || '<div class="config-empty-state">暂无路由规则。</div>'}
+      </div>
+    </div>
+
+    <div class="config-form-grid">
+      <div class="config-field">
+        <label>Fallback</label>
+        <input
+          data-section="${escapeHtml(section.id)}"
+          data-config-field="fallback"
+          type="text"
+          placeholder="my_group"
+          value="${escapeHtml(section.editorData.fallback || "")}"
+        />
+      </div>
+    </div>
+    ${renderConfigAdvancedNote(section)}
+  `;
+}
+
+function renderConfigRawEditor(section) {
+  return `
+    ${renderConfigSectionToolbar(section)}
+    <div class="config-raw-shell">
+      <textarea
+        class="config-textarea config-raw-code"
+        data-section="${escapeHtml(section.id)}"
+        data-config-raw="content"
+        spellcheck="false"
+      >${escapeHtml(section.content || "")}</textarea>
+    </div>
+  `;
+}
+
+function renderConfigSectionBody(section) {
+  if (section.mode === "raw") {
+    return renderConfigRawEditor(section);
+  }
+
+  switch (section.editorData?.kind) {
+    case "global":
+      return renderConfigGlobalBuilder(section);
+    case "subscription":
+    case "node":
+    case "include":
+      return renderConfigListBuilder(section);
+    case "dns":
+      return renderConfigDnsBuilder(section);
+    case "group":
+      return renderConfigGroupBuilder(section);
+    case "routing":
+      return renderConfigRoutingBuilder(section);
+    default:
+      return renderConfigRawEditor(section);
+  }
+}
+
+function renderConfigSectionTabs() {
+  if (!state.daeConfigSections.length) {
+    refs.configSectionTabs.innerHTML = '<div class="config-empty-state">暂无可编辑 section。</div>';
+    return;
+  }
+
+  refs.configSectionTabs.innerHTML = state.daeConfigSections
+    .map((section) => {
+      const open = section.id === state.daeConfigSelected;
+      return `
+        <article class="config-section-card ${open ? "open" : ""}">
+          <button
+            class="config-section-toggle"
+            data-section-toggle="${escapeHtml(section.id)}"
+            type="button"
+          >
+            <div class="config-section-copy">
+              <p class="panel-kicker">${escapeHtml(section.name)}</p>
+              <h3>${escapeHtml(section.title)}</h3>
+              <p>${escapeHtml(section.summary)}</p>
+            </div>
+            <div class="config-section-side">
+              <span class="config-section-count">${escapeHtml(configSectionCountText(section))}</span>
+              <span class="config-mode-chip ${section.mode === "raw" ? "raw" : ""}">${section.mode === "raw" ? "Raw" : "GUI"}</span>
+              <span class="config-section-arrow" aria-hidden="true"></span>
+            </div>
+          </button>
+          ${open ? `<div class="config-section-body">${renderConfigSectionBody(section)}</div>` : ""}
+        </article>
+      `;
+    })
     .join("");
 }
 
@@ -1892,27 +3210,15 @@ function renderConfigMeta() {
   refs.configPathValue.textContent = state.daeConfigPath || "-";
   refs.saveConfigButton.disabled = !state.controllerUrl || !state.daeConfigDirty;
   refs.refreshConfigButton.disabled = !state.controllerUrl;
+  refs.configSectionTypeSelect.disabled = !state.controllerUrl;
+  refs.addConfigSectionButton.disabled = !state.controllerUrl;
   refs.configSectionsCountValue.textContent = String(state.daeConfigSections.length);
   refs.configCurrentSectionValue.textContent = section?.title || "-";
   refs.editorNote.textContent = state.editorNoteText;
 }
 
-function renderSelectedConfigSection() {
-  const section = selectedConfigSection();
-  refs.configSectionTitle.textContent = section?.title || "No section";
-  refs.configSectionSubtitle.textContent = section?.summary || "连接控制器后读取 config.dae 顶层块。";
-  refs.configSectionView.disabled = !state.controllerUrl || !section;
-  if (section && refs.configSectionView.value !== section.content) {
-    refs.configSectionView.value = section.content;
-  }
-  if (!section && refs.configSectionView.value !== DEFAULT_CONFIG_PLACEHOLDER) {
-    refs.configSectionView.value = DEFAULT_CONFIG_PLACEHOLDER;
-  }
-}
-
 function renderDaeConfigEditor() {
   renderConfigSectionTabs();
-  renderSelectedConfigSection();
   renderConfigMeta();
 }
 
@@ -2304,6 +3610,163 @@ function handleProxyGridClick(event) {
   }
 }
 
+function findConfigSectionById(sectionId) {
+  return state.daeConfigSections.find((section) => section.id === sectionId) || null;
+}
+
+function syncConfigSectionContent(section) {
+  section.content = serializeConfigSectionContent(section.name, section.editorData, section.content);
+}
+
+function createConfigTemplateItem(template) {
+  switch (template) {
+    case "key-value":
+      return { key: "", value: "" };
+    case "named-block":
+      return { name: "", body: "" };
+    case "rule":
+      return { value: "" };
+    case "tagged-entry":
+    default:
+      return { tag: "", value: "" };
+  }
+}
+
+function removeConfigSection(sectionId) {
+  const index = state.daeConfigSections.findIndex((section) => section.id === sectionId);
+  if (index < 0) {
+    return;
+  }
+
+  const [removed] = state.daeConfigSections.splice(index, 1);
+  if (!state.daeConfigSections.length) {
+    state.daeConfigSections = createFallbackSections("");
+  }
+
+  if (state.daeConfigSelected === sectionId || !findConfigSectionById(state.daeConfigSelected)) {
+    state.daeConfigSelected = state.daeConfigSections[Math.min(index, state.daeConfigSections.length - 1)]?.id || "";
+  }
+
+  state.editorNoteText = `Removed ${removed.title} section. Save to apply.`;
+  updateConfigDirtyState();
+  renderDaeConfigEditor();
+}
+
+function handleConfigSectionInput(event) {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement)) {
+    return;
+  }
+
+  const section = findConfigSectionById(target.dataset.section || "");
+  if (!section) {
+    return;
+  }
+
+  if (target.dataset.configRaw === "content") {
+    section.content = normalizeConfigText(target.value);
+    section.editorData = parseConfigEditor(section.name, section.content);
+    updateConfigDirtyState();
+    return;
+  }
+
+  const fieldName = target.dataset.configField;
+  if (fieldName) {
+    if (section.editorData?.kind === "global" && Object.hasOwn(section.editorData.fields, fieldName)) {
+      section.editorData.fields[fieldName] = target.value;
+      syncConfigSectionContent(section);
+      updateConfigDirtyState();
+      return;
+    }
+
+    if (section.editorData?.kind === "routing" && fieldName === "fallback") {
+      section.editorData.fallback = target.value;
+      syncConfigSectionContent(section);
+      updateConfigDirtyState();
+    }
+    return;
+  }
+
+  const collectionName = target.dataset.configCollection;
+  const field = target.dataset.field;
+  const index = Number(target.dataset.index);
+  if (!collectionName || !field || Number.isNaN(index)) {
+    return;
+  }
+
+  const collection = section.editorData?.[collectionName];
+  if (!Array.isArray(collection) || !collection[index]) {
+    return;
+  }
+
+  collection[index][field] = target.value;
+  syncConfigSectionContent(section);
+  updateConfigDirtyState();
+}
+
+function handleConfigSectionClick(event) {
+  const toggleButton = event.target.closest("[data-section-toggle]");
+  if (toggleButton) {
+    state.daeConfigSelected = toggleButton.dataset.sectionToggle || state.daeConfigSelected;
+    renderDaeConfigEditor();
+    return;
+  }
+
+  const modeButton = event.target.closest("[data-section-mode]");
+  if (modeButton) {
+    const section = findConfigSectionById(modeButton.dataset.section || "");
+    if (!section || !supportsGuiSection(section.name)) {
+      return;
+    }
+    section.mode = modeButton.dataset.sectionMode === "raw" ? "raw" : "gui";
+    state.daeConfigSelected = section.id;
+    renderDaeConfigEditor();
+    return;
+  }
+
+  const removeSectionButton = event.target.closest("[data-remove-section]");
+  if (removeSectionButton) {
+    removeConfigSection(removeSectionButton.dataset.removeSection || "");
+    return;
+  }
+
+  const addButton = event.target.closest("[data-config-add]");
+  if (addButton) {
+    const section = findConfigSectionById(addButton.dataset.section || "");
+    if (!section) {
+      return;
+    }
+    const collection = section.editorData?.[addButton.dataset.configAdd || ""];
+    if (!Array.isArray(collection)) {
+      return;
+    }
+    collection.push(createConfigTemplateItem(addButton.dataset.template || ""));
+    syncConfigSectionContent(section);
+    state.daeConfigSelected = section.id;
+    updateConfigDirtyState();
+    renderDaeConfigEditor();
+    return;
+  }
+
+  const removeButton = event.target.closest("[data-config-remove]");
+  if (removeButton) {
+    const section = findConfigSectionById(removeButton.dataset.section || "");
+    if (!section) {
+      return;
+    }
+    const collection = section.editorData?.[removeButton.dataset.configRemove || ""];
+    const index = Number(removeButton.dataset.index);
+    if (!Array.isArray(collection) || Number.isNaN(index) || !collection[index]) {
+      return;
+    }
+    collection.splice(index, 1);
+    syncConfigSectionContent(section);
+    state.daeConfigSelected = section.id;
+    updateConfigDirtyState();
+    renderDaeConfigEditor();
+  }
+}
+
 function bindEvents() {
   refs.controllerForm.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -2344,6 +3807,26 @@ function bindEvents() {
     saveDaeConfig();
   });
 
+  refs.addConfigSectionButton.addEventListener("click", () => {
+    const name = refs.configSectionTypeSelect.value;
+    if (!CONFIG_SECTION_TYPES.includes(name)) {
+      return;
+    }
+    const existing = state.daeConfigSections.find((section) => section.name === name);
+    if (existing) {
+      state.daeConfigSelected = existing.id;
+      state.editorNoteText = `${existing.title} section already exists.`;
+      renderDaeConfigEditor();
+      return;
+    }
+    const section = createConfigSection(name);
+    state.daeConfigSections.push(section);
+    state.daeConfigSelected = section.id;
+    state.editorNoteText = `Added ${section.title} section.`;
+    updateConfigDirtyState();
+    renderDaeConfigEditor();
+  });
+
   refs.applyLogLevelButton.addEventListener("click", () => {
     updateRuntimeLogLevel();
   });
@@ -2374,32 +3857,9 @@ function bindEvents() {
   refs.proxyGrid.addEventListener("click", handleProxyGridClick);
   refs.dashboardProxyGrid.addEventListener("click", handleProxyGridClick);
 
-  refs.configSectionTabs.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-section]");
-    if (!button) {
-      return;
-    }
-    state.daeConfigSelected = button.dataset.section;
-    renderConfigSectionTabs();
-    renderSelectedConfigSection();
-    renderConfigMeta();
-  });
-
-  refs.configSectionView.addEventListener("input", () => {
-    const section = selectedConfigSection();
-    if (!section) {
-      return;
-    }
-    const index = state.daeConfigSections.findIndex((item) => item.id === section.id);
-    if (index < 0) {
-      return;
-    }
-    state.daeConfigSections[index] = {
-      ...state.daeConfigSections[index],
-      content: refs.configSectionView.value,
-    };
-    updateConfigDirtyState();
-  });
+  refs.configSectionTabs.addEventListener("click", handleConfigSectionClick);
+  refs.configSectionTabs.addEventListener("input", handleConfigSectionInput);
+  refs.configSectionTabs.addEventListener("change", handleConfigSectionInput);
 
   refs.logsLevelSelect.addEventListener("change", () => {
     state.logsLevel = refs.logsLevelSelect.value;
