@@ -441,22 +441,27 @@
                       </div>
                     </div>
 
-                    <div class="editor-actions">
-                      <label class="controller-field compact-field config-add-field">
-                        <span>Add Section</span>
-                        <select id="configSectionTypeSelect">
-                          <option value="global">global</option>
-                          <option value="subscription">subscription</option>
-                          <option value="node">node</option>
-                          <option value="dns">dns</option>
-                          <option value="group">group</option>
-                          <option value="routing">routing</option>
-                          <option value="include">include</option>
-                        </select>
-                      </label>
-                      <button class="action-button ghost" id="addConfigSectionButton" type="button">Add Section</button>
-                      <button class="action-button ghost" id="refreshConfigButton" type="button">Reload File</button>
-                      <button class="action-button subtle" id="saveConfigButton" type="button">Save + Reload</button>
+                    <div class="editor-actions config-toolbar-actions">
+                      <div class="config-action-cluster">
+                        <label class="controller-field compact-field config-add-field">
+                          <span>Add Section</span>
+                          <select id="configSectionTypeSelect">
+                            <option value="global">global</option>
+                            <option value="subscription">subscription</option>
+                            <option value="node">node</option>
+                            <option value="dns">dns</option>
+                            <option value="group">group</option>
+                            <option value="routing">routing</option>
+                            <option value="include">include</option>
+                          </select>
+                        </label>
+                        <button class="action-button ghost" id="addConfigSectionButton" type="button">Add Section</button>
+                      </div>
+
+                      <div class="config-action-cluster config-action-buttons">
+                        <button class="action-button subtle" id="saveConfigButton" type="button">Save + Reload</button>
+                        <button class="action-button ghost" id="refreshConfigButton" type="button">Reload File</button>
+                      </div>
                     </div>
                   </div>
 

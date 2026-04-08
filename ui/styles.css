@@ -1671,7 +1671,15 @@ body.controller-collapsed .controller-bar {
   gap: 16px;
 }
 
+.config-editor-card .editor-toolbar {
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
 .editor-meta {
+  flex: 1 1 340px;
   min-width: 0;
 }
 
@@ -1690,6 +1698,23 @@ body.controller-collapsed .controller-bar {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.config-toolbar-actions {
+  flex: 0 1 auto;
+  align-items: flex-end;
+  justify-content: flex-end;
+}
+
+.config-action-cluster {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: nowrap;
+}
+
+.config-action-buttons {
+  flex-wrap: nowrap;
 }
 
 .config-editor-card .card-header {
@@ -1720,7 +1745,8 @@ body.controller-collapsed .controller-bar {
 }
 
 .config-add-field {
-  min-width: min(220px, 100%);
+  min-width: 220px;
+  max-width: 280px;
 }
 
 .config-sections {
@@ -2436,6 +2462,18 @@ body.auth-required #controllerTopToggle {
 
   .config-add-field {
     width: 100%;
+    max-width: none;
+    min-width: 0;
+  }
+
+  .config-toolbar-actions,
+  .config-action-cluster,
+  .config-action-buttons {
+    width: 100%;
+  }
+
+  .config-action-cluster {
+    flex-wrap: wrap;
   }
 
   body.auth-required .controller-bar {
