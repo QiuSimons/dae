@@ -100,6 +100,8 @@ type ControlPlane struct {
 	lastBpfOverflowAlertTime atomic.Int64
 	lastUdpPressureAlertTime atomic.Int64
 	lastTcpPressureAlertTime atomic.Int64
+	trafficUpBytes           atomic.Uint64
+	trafficDownBytes         atomic.Uint64
 
 	wanInterface []string
 	lanInterface []string
@@ -964,6 +966,35 @@ func (c *ControlPlane) currentBpf() *bpfObjects {
 		return nil
 	}
 	return c.core.PeekBpf()
+}
+
+type TrafficSnapshot struct {
+	UpTotal   uint64
+	DownTotal uint64
+}
+
+func (c *ControlPlane) AddUploadTraffic(bytes int64) {
+	if c == nil || bytes <= 0 {
+		return
+	}
+	c.trafficUpBytes.Add(uint64(bytes))
+}
+
+func (c *ControlPlane) AddDownloadTraffic(bytes int64) {
+	if c == nil || bytes <= 0 {
+		return
+	}
+	c.trafficDownBytes.Add(uint64(bytes))
+}
+
+func (c *ControlPlane) TrafficSnapshot() TrafficSnapshot {
+	if c == nil {
+		return TrafficSnapshot{}
+	}
+	return TrafficSnapshot{
+		UpTotal:   c.trafficUpBytes.Load(),
+		DownTotal: c.trafficDownBytes.Load(),
+	}
 }
 
 func (c *ControlPlane) CloneDnsCache() map[string]*DnsCache {

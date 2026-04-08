@@ -415,7 +415,7 @@ func sendPkt(log *logrus.Logger, data []byte, from netip.AddrPort, realTo netip.
 	return sendPktWithCacheProvider(log, data, from, realTo, afp, nil)
 }
 
-func forwardUdpEndpointReplyToClient(log *logrus.Logger, ue *UdpEndpoint, data []byte, from netip.AddrPort, clientAddr netip.AddrPort, send udpEndpointReplySender) error {
+func forwardUdpEndpointReplyToClientResult(log *logrus.Logger, ue *UdpEndpoint, data []byte, from netip.AddrPort, clientAddr netip.AddrPort, send udpEndpointReplySender) (bool, error) {
 	var cacheSlot **Anyfrom
 	var cacheProvider udpEndpointResponseConnCache
 	if ue != nil {
@@ -435,9 +435,9 @@ func forwardUdpEndpointReplyToClient(log *logrus.Logger, ue *UdpEndpoint, data [
 					"error":     err.Error(),
 				}).Debug("forwardUdpEndpointReplyToClient: reply to client failed (packet dropped)")
 			}
-			return nil
+			return false, nil
 		}
-		return nil
+		return true, nil
 	}
 	if err := send(log, data, from, clientAddr, cacheSlot); err != nil {
 		if log != nil && log.IsLevelEnabled(logrus.DebugLevel) {
@@ -448,9 +448,14 @@ func forwardUdpEndpointReplyToClient(log *logrus.Logger, ue *UdpEndpoint, data [
 				"error":     err.Error(),
 			}).Debug("forwardUdpEndpointReplyToClient: reply to client failed (packet dropped)")
 		}
-		return nil
+		return false, nil
 	}
-	return nil
+	return true, nil
+}
+
+func forwardUdpEndpointReplyToClient(log *logrus.Logger, ue *UdpEndpoint, data []byte, from netip.AddrPort, clientAddr netip.AddrPort, send udpEndpointReplySender) error {
+	_, err := forwardUdpEndpointReplyToClientResult(log, ue, data, from, clientAddr, send)
+	return err
 }
 
 func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst netip.AddrPort, routingResult *bpfRoutingResult, flowDecision UdpFlowDecision, skipSniffing bool) (err error) {
@@ -634,8 +639,10 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, realDst n
 				}
 
 				ue.TrackUdpConnStateTuplePair(realSrc, realDst)
-				_, err = ue.WriteTo(data, dialTarget)
+				written, writeErr := ue.WriteTo(data, dialTarget)
+				err = writeErr
 				if err == nil {
+					c.AddUploadTraffic(int64(written))
 					if lifecycle, ok := newUdpSessionLifecycleContext(ue, ""); ok {
 						lifecycle.reportTrafficSuccess()
 					}
@@ -890,7 +897,11 @@ getNew:
 			Ctx: c.ctx,
 			// Handler handles response packets and send it to the client.
 			Handler: func(ue *UdpEndpoint, data []byte, from netip.AddrPort) (err error) {
-				return forwardUdpEndpointReplyToClient(c.log, ue, data, from, realSrc, nil)
+				forwarded, err := forwardUdpEndpointReplyToClientResult(c.log, ue, data, from, realSrc, nil)
+				if forwarded {
+					c.AddDownloadTraffic(int64(len(data)))
+				}
+				return err
 			},
 			NatTimeout:     natTimeout,
 			ConnStateOwner: c.core,
@@ -980,7 +991,8 @@ getNew:
 	ue.TrackUdpConnStateTuplePair(realSrc, realDst)
 
 	for packetIndex < len(payloads) {
-		_, err = ue.WriteTo(payloads[packetIndex], dialTarget)
+		written, writeErr := ue.WriteTo(payloads[packetIndex], dialTarget)
+		err = writeErr
 		if err != nil {
 			if c.log.IsLevelEnabled(logrus.DebugLevel) {
 				c.log.WithFields(logrus.Fields{
@@ -1011,6 +1023,7 @@ getNew:
 			retry++
 			goto getNew
 		}
+		c.AddUploadTraffic(int64(written))
 		packetIndex++
 	}
 	if lifecycle, ok := newUdpSessionLifecycleContext(ue, ""); ok {

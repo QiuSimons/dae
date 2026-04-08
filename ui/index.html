@@ -13,10 +13,6 @@
     <div class="app-shell" id="appShell">
       <aside class="sidebar" id="sidebar">
         <div class="sidebar-head">
-          <button class="icon-button sidebar-toggle" data-sidebar-toggle type="button" aria-label="切换侧栏">
-            <span class="icon-bars"></span>
-          </button>
-
           <div class="brand">
             <div class="brand-mark" aria-hidden="true">
               <span></span>
@@ -117,31 +113,23 @@
         </header>
 
         <section class="controller-bar" id="controllerBar">
-          <div class="controller-summary">
+          <div class="controller-panel-head">
             <div>
               <p class="controller-summary-label">External Controller</p>
-              <strong id="controllerSummaryUrl">未连接</strong>
+              <h2 id="controllerPanelTitle">连接 dae External Controller</h2>
               <p class="controller-summary-meta" id="controllerSummaryMeta">输入地址与 token，连接 dae 控制器。</p>
             </div>
 
-            <button
-              class="action-button ghost controller-summary-button"
-              id="controllerSummaryToggle"
-              type="button"
-              aria-expanded="true"
-            >
-              登录
-            </button>
+            <div class="controller-status-pill">
+              <span>Target</span>
+              <strong id="controllerSummaryUrl">未连接</strong>
+            </div>
           </div>
 
           <div class="controller-body" id="controllerBody">
-            <div class="controller-intro">
-              <p class="panel-kicker">Controller Login</p>
-              <h2 id="controllerPanelTitle">连接 dae External Controller</h2>
-              <p class="controller-hint" id="controllerHint">
-                连接到 dae 的外部控制器后，Dashboard、Traffic、Proxies、Logs 和 config.dae 才会开始实时更新。
-              </p>
-            </div>
+            <p class="controller-hint" id="controllerHint">
+              连接到 dae 的外部控制器后，Dashboard、Traffic、Proxies、Logs 和 config.dae 才会开始实时更新。
+            </p>
 
             <form class="controller-form" id="controllerForm">
               <label class="controller-field" id="controllerUrlField">

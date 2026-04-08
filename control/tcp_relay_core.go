@@ -22,6 +22,7 @@ type relayCore struct {
 
 	copyEngine       relayCopyEngine
 	halfCloseTimeout time.Duration
+	observeBytes     func(direction string, written int64)
 }
 
 type relayDirection struct {
@@ -35,12 +36,13 @@ type relayResult struct {
 	err error
 }
 
-func newRelayCore(lConn, rConn netproxy.Conn, engine relayCopyEngine) *relayCore {
+func newRelayCore(lConn, rConn netproxy.Conn, engine relayCopyEngine, observeBytes func(direction string, written int64)) *relayCore {
 	return &relayCore{
 		left:             lConn,
 		right:            rConn,
 		copyEngine:       engine,
 		halfCloseTimeout: relayHalfCloseTimeout,
+		observeBytes:     observeBytes,
 	}
 }
 
@@ -77,7 +79,10 @@ func (c *relayCore) run(ctx context.Context) error {
 	}()
 
 	runDirection := func(dir relayDirection) {
-		_, err := c.copyEngine.Copy(ctx, dir.dst, dir.src)
+		written, err := c.copyEngine.Copy(ctx, dir.dst, dir.src)
+		if c.observeBytes != nil && written > 0 {
+			c.observeBytes(dir.name, written)
+		}
 
 		if wc, ok := dir.dst.(WriteCloser); ok {
 			_ = wc.CloseWrite()

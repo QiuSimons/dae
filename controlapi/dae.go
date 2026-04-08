@@ -47,6 +47,9 @@ type DaeProvider struct {
 	loggers         []*logrus.Logger
 	mu              sync.RWMutex
 	probeHistory    map[string]DelayHistory
+	trafficLastAt   time.Time
+	trafficLastUp   uint64
+	trafficLastDown uint64
 }
 
 func NewDaeProvider(version string, conf *config.Config, plane *control.ControlPlane, configPath string, loggers ...*logrus.Logger) (*DaeProvider, error) {
@@ -129,7 +132,43 @@ func (p *DaeProvider) Memory() Memory {
 }
 
 func (p *DaeProvider) Traffic() Traffic {
-	return Traffic{}
+	if p == nil || p.plane == nil {
+		return Traffic{}
+	}
+
+	snapshot := p.plane.TrafficSnapshot()
+	now := time.Now()
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	var upRate int64
+	var downRate int64
+	if !p.trafficLastAt.IsZero() {
+		if elapsed := now.Sub(p.trafficLastAt); elapsed > 0 {
+			var upDelta uint64
+			var downDelta uint64
+			if snapshot.UpTotal >= p.trafficLastUp {
+				upDelta = snapshot.UpTotal - p.trafficLastUp
+			}
+			if snapshot.DownTotal >= p.trafficLastDown {
+				downDelta = snapshot.DownTotal - p.trafficLastDown
+			}
+			upRate = int64(float64(upDelta) / elapsed.Seconds())
+			downRate = int64(float64(downDelta) / elapsed.Seconds())
+		}
+	}
+
+	p.trafficLastAt = now
+	p.trafficLastUp = snapshot.UpTotal
+	p.trafficLastDown = snapshot.DownTotal
+
+	return Traffic{
+		Up:        upRate,
+		Down:      downRate,
+		UpTotal:   int64(snapshot.UpTotal),
+		DownTotal: int64(snapshot.DownTotal),
+	}
 }
 
 func (p *DaeProvider) Connections(limit int) ConnectionsSnapshot {

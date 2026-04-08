@@ -7,6 +7,7 @@ const DEFAULT_CONTROLLER_HINT =
 const DEFAULT_EDITOR_NOTE = "按顶层块拆分编辑 startup config.dae。保存时会重组全文、校验并触发 dae 热重载。";
 const DEFAULT_LOG_LEVEL_NOTE = "通过 PATCH /configs 更新运行时日志级别，并保持页面状态同步。";
 const SAMPLE_SIZE = 20;
+const TRAFFIC_SAMPLE_INTERVAL_MS = 5000;
 const CONNECTION_LIMIT = 200;
 const RELOAD_SYNC_ATTEMPTS = 8;
 const RELOAD_SYNC_DELAY_MS = 800;
@@ -72,7 +73,6 @@ const refs = {
   controllerHint: document.getElementById("controllerHint"),
   connectButton: document.getElementById("connectButton"),
   controllerTopToggle: document.getElementById("controllerTopToggle"),
-  controllerSummaryToggle: document.getElementById("controllerSummaryToggle"),
   controllerSummaryUrl: document.getElementById("controllerSummaryUrl"),
   controllerSummaryMeta: document.getElementById("controllerSummaryMeta"),
   controllerPanelTitle: document.getElementById("controllerPanelTitle"),
@@ -180,7 +180,7 @@ function createEmptySeries() {
   return {
     up: Array(SAMPLE_SIZE).fill(0),
     down: Array(SAMPLE_SIZE).fill(0),
-    times: Array.from({ length: SAMPLE_SIZE }, (_, index) => now - (SAMPLE_SIZE - index - 1) * 1000),
+    times: Array.from({ length: SAMPLE_SIZE }, (_, index) => now - (SAMPLE_SIZE - index - 1) * TRAFFIC_SAMPLE_INTERVAL_MS),
   };
 }
 
@@ -1136,7 +1136,7 @@ function applyTrafficSnapshot(payload, appendSample) {
 
   if (appendSample) {
     state.trafficSeries.up.push(bytesToMegabytes(state.traffic.up));
-    state.trafficSeries.down.push(-bytesToMegabytes(state.traffic.down));
+    state.trafficSeries.down.push(bytesToMegabytes(state.traffic.down));
     state.trafficSeries.times.push(Date.now());
     trimTrafficSeries();
   }
@@ -1328,7 +1328,6 @@ function renderLayoutState() {
   document.body.classList.toggle("sidebar-collapsed", state.sidebarCollapsed);
   document.body.classList.toggle("controller-collapsed", connected && !state.controllerExpanded);
   refs.controllerTopToggle.setAttribute("aria-expanded", String(!connected || state.controllerExpanded));
-  refs.controllerSummaryToggle.setAttribute("aria-expanded", String(!connected || state.controllerExpanded));
 }
 
 function activeViewMeta() {
@@ -1594,9 +1593,7 @@ function renderControllerPanel() {
   refs.controllerUrl.placeholder = embedded ? window.location.origin : "http://127.0.0.1:9090";
   refs.applyLogLevelButton.disabled = !state.controllerUrl || state.logLevelChanging || state.connecting;
   refs.controllerTopToggle.textContent = connected ? "Controller" : "登录";
-  refs.controllerSummaryToggle.textContent = connected ? (state.controllerExpanded ? "收起" : "展开") : "登录";
   refs.controllerTopToggle.hidden = !connected;
-  refs.controllerSummaryToggle.hidden = !connected;
 
   const streams = [
     ["version", wsState("version")],
@@ -1624,16 +1621,17 @@ function renderControllerPanel() {
 }
 
 function chartBounds() {
-  const maxUp = Math.max(0.4, ...state.trafficSeries.up);
-  const maxDown = Math.max(0.2, ...state.trafficSeries.down.map((value) => Math.abs(value)));
+  const maxSeriesValue = Math.max(0.4, ...state.trafficSeries.up, ...state.trafficSeries.down);
   return {
-    maxUp: Number((maxUp * 1.15).toFixed(2)),
-    maxDown: Number((maxDown * 1.15).toFixed(2)),
+    max: Number((maxSeriesValue * 1.15).toFixed(2)),
   };
 }
 
 function mapToY(value, height, bounds) {
-  return ((bounds.maxUp - value) / (bounds.maxUp + bounds.maxDown)) * height;
+  if (bounds.max <= 0) {
+    return height;
+  }
+  return height - (value / bounds.max) * height;
 }
 
 function createSmoothPath(points, width, height, bounds) {
@@ -1694,11 +1692,11 @@ function drawSeries(points, width, height, bounds, options) {
 
 function renderScaleLabels(bounds) {
   const labels = [
-    `${bounds.maxUp.toFixed(1)} MB/s`,
-    `${(bounds.maxUp / 4).toFixed(1)} MB/s`,
+    `${bounds.max.toFixed(1)} MB/s`,
+    `${(bounds.max * 0.75).toFixed(1)} MB/s`,
+    `${(bounds.max * 0.5).toFixed(1)} MB/s`,
+    `${(bounds.max * 0.25).toFixed(1)} MB/s`,
     "0.0 MB/s",
-    `-${(bounds.maxDown / 2).toFixed(1)} MB/s`,
-    `-${bounds.maxDown.toFixed(1)} MB/s`,
   ];
   refs.chartScale.innerHTML = labels.map((label) => `<span>${label}</span>`).join("");
 }
@@ -2219,7 +2217,7 @@ function toggleControllerPanel() {
   if (state.apiStatus.kind !== "connected") {
     state.controllerExpanded = true;
     renderControllerPanel();
-    refs.controllerUrl.focus();
+    (refs.controllerUrlField.hidden ? refs.controllerToken : refs.controllerUrl).focus();
     return;
   }
   state.controllerExpanded = !state.controllerExpanded;
@@ -2285,7 +2283,6 @@ function bindEvents() {
   });
 
   refs.controllerTopToggle.addEventListener("click", toggleControllerPanel);
-  refs.controllerSummaryToggle.addEventListener("click", toggleControllerPanel);
 
   refs.refreshConfigButton.addEventListener("click", () => {
     loadDaeConfigDocument()

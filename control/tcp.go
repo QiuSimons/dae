@@ -264,7 +264,14 @@ func (c *ControlPlane) handleConn(ctx context.Context, lConn net.Conn) (err erro
 		return nil
 	}
 
-	if err = RelayTCPContext(ctx, lRelayConn, rConn); err != nil {
+	if err = RelayTCPContextWithObserver(ctx, lRelayConn, rConn, func(direction string, written int64) {
+		switch direction {
+		case "l2r":
+			c.AddUploadTraffic(written)
+		case "r2l":
+			c.AddDownloadTraffic(written)
+		}
+	}); err != nil {
 		if daerrors.IsIgnorableTCPRelayError(err) {
 			return nil // ignore normal connection closure errors
 		}
@@ -326,7 +333,11 @@ func RelayTCP(lConn, rConn netproxy.Conn) (err error) {
 // the given context. The context can be used to cancel the relay operation
 // or set a deadline. A nil context is treated as context.Background().
 func RelayTCPContext(ctx context.Context, lConn, rConn netproxy.Conn) (err error) {
-	core := newRelayCore(lConn, rConn, defaultRelayCopyEngine{})
+	return RelayTCPContextWithObserver(ctx, lConn, rConn, nil)
+}
+
+func RelayTCPContextWithObserver(ctx context.Context, lConn, rConn netproxy.Conn, observeBytes func(direction string, written int64)) (err error) {
+	core := newRelayCore(lConn, rConn, defaultRelayCopyEngine{}, observeBytes)
 	return core.run(ctx)
 }
 
