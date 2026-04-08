@@ -3,7 +3,6 @@ const ctx = canvas.getContext("2d");
 
 const DEFAULT_CONFIG_PLACEHOLDER = "# Connect controller to load /etc/dae/config.dae";
 const SAMPLE_SIZE = 20;
-const REFRESH_INTERVAL_MS = 1000;
 const RELOAD_SYNC_ATTEMPTS = 8;
 const RELOAD_SYNC_DELAY_MS = 800;
 const STORAGE_KEYS = {
@@ -65,8 +64,12 @@ const state = {
   },
   version: null,
   config: null,
+  versionSignature: "",
+  configSignature: "",
   daeConfigPath: "",
   daeConfigContent: DEFAULT_CONFIG_PLACEHOLDER,
+  daeConfigDirty: false,
+  daeConfigSignature: "",
   memory: null,
   traffic: {
     up: 0,
@@ -82,10 +85,22 @@ const state = {
   ws: null,
   wsCloseIntent: false,
   wsRetryTimer: null,
+  versionWs: null,
+  versionWsCloseIntent: false,
+  versionWsRetryTimer: null,
+  configWs: null,
+  configWsCloseIntent: false,
+  configWsRetryTimer: null,
+  daeConfigWs: null,
+  daeConfigWsCloseIntent: false,
+  daeConfigWsRetryTimer: null,
+  proxyWs: null,
+  proxyWsCloseIntent: false,
+  proxyWsRetryTimer: null,
+  proxySignature: "",
   memoryWs: null,
   memoryWsCloseIntent: false,
   memoryWsRetryTimer: null,
-  refreshTimer: null,
   refreshing: false,
   connecting: false,
   busyGroups: new Set(),
@@ -103,9 +118,13 @@ function createEmptySeries() {
 
 function resetLiveState() {
   state.version = null;
+  state.versionSignature = "";
   state.config = null;
+  state.configSignature = "";
   state.daeConfigPath = "";
   state.daeConfigContent = DEFAULT_CONFIG_PLACEHOLDER;
+  state.daeConfigDirty = false;
+  state.daeConfigSignature = "";
   state.memory = null;
   state.traffic = {
     up: 0,
@@ -115,6 +134,7 @@ function resetLiveState() {
   };
   state.trafficSeries = createEmptySeries();
   state.proxies = {};
+  state.proxySignature = "";
   state.groups = [];
   state.selectedGroup = "";
 }
@@ -210,6 +230,61 @@ function sleep(ms) {
   });
 }
 
+function stableJson(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableJson(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function versionSnapshotSignature(payload) {
+  return stableJson({
+    meta: Boolean(payload?.meta),
+    version: payload?.version || "",
+  });
+}
+
+function configSnapshotSignature(payload) {
+  return stableJson(payload || {});
+}
+
+function daeConfigDocumentSignature(doc) {
+  return stableJson({
+    path: doc?.path || "",
+    content: doc?.content || "",
+  });
+}
+
+function proxySnapshotSignature(rawProxies) {
+  const proxies = rawProxies || {};
+  return stableJson(
+    Object.keys(proxies)
+      .sort()
+      .map((name) => {
+        const proxy = proxies[name] || {};
+        return {
+          name,
+          type: proxy.type || "",
+          alive: Boolean(proxy.alive),
+          delay: proxyDelay(proxy),
+          now: proxy.now || "",
+          all: Array.isArray(proxy.all) ? proxy.all : [],
+          addr: proxy.addr || proxy.address || "",
+          protocol: proxy.protocol || "",
+          subscriptionTag: proxy.subscriptionTag || "",
+          udp: Boolean(proxy.udp),
+          xudp: Boolean(proxy.xudp),
+        };
+      }),
+  );
+}
+
 function setApiStatus(kind, message) {
   state.apiStatus = { kind, message };
   renderHeaderStatus();
@@ -230,20 +305,6 @@ function setBusyState(busy) {
   state.connecting = busy;
   refs.connectButton.disabled = busy;
   refs.refreshButton.disabled = busy;
-}
-
-function startRefreshLoop() {
-  stopRefreshLoop();
-  state.refreshTimer = window.setInterval(() => {
-    refreshSnapshot(false);
-  }, REFRESH_INTERVAL_MS);
-}
-
-function stopRefreshLoop() {
-  if (state.refreshTimer) {
-    window.clearInterval(state.refreshTimer);
-    state.refreshTimer = null;
-  }
 }
 
 function closeTrafficSocket() {
@@ -268,6 +329,54 @@ function closeMemorySocket() {
     state.memoryWsCloseIntent = true;
     state.memoryWs.close();
     state.memoryWs = null;
+  }
+}
+
+function closeVersionSocket() {
+  if (state.versionWsRetryTimer) {
+    window.clearTimeout(state.versionWsRetryTimer);
+    state.versionWsRetryTimer = null;
+  }
+  if (state.versionWs) {
+    state.versionWsCloseIntent = true;
+    state.versionWs.close();
+    state.versionWs = null;
+  }
+}
+
+function closeConfigSocket() {
+  if (state.configWsRetryTimer) {
+    window.clearTimeout(state.configWsRetryTimer);
+    state.configWsRetryTimer = null;
+  }
+  if (state.configWs) {
+    state.configWsCloseIntent = true;
+    state.configWs.close();
+    state.configWs = null;
+  }
+}
+
+function closeProxySocket() {
+  if (state.proxyWsRetryTimer) {
+    window.clearTimeout(state.proxyWsRetryTimer);
+    state.proxyWsRetryTimer = null;
+  }
+  if (state.proxyWs) {
+    state.proxyWsCloseIntent = true;
+    state.proxyWs.close();
+    state.proxyWs = null;
+  }
+}
+
+function closeDaeConfigSocket() {
+  if (state.daeConfigWsRetryTimer) {
+    window.clearTimeout(state.daeConfigWsRetryTimer);
+    state.daeConfigWsRetryTimer = null;
+  }
+  if (state.daeConfigWs) {
+    state.daeConfigWsCloseIntent = true;
+    state.daeConfigWs.close();
+    state.daeConfigWs = null;
   }
 }
 
@@ -372,6 +481,233 @@ function connectMemorySocket() {
   });
 }
 
+function applyVersionSnapshot(payload) {
+  const signature = versionSnapshotSignature(payload);
+  if (signature === state.versionSignature) {
+    return;
+  }
+  state.versionSignature = signature;
+  state.version = payload;
+  renderVersionTitle();
+  renderSystemStatus();
+}
+
+function applyConfigSnapshot(payload) {
+  const signature = configSnapshotSignature(payload);
+  if (signature === state.configSignature) {
+    return;
+  }
+  state.configSignature = signature;
+  state.config = payload;
+  renderSystemStatus();
+}
+
+function applyProxySnapshot(rawProxies) {
+  const signature = proxySnapshotSignature(rawProxies);
+  if (signature === state.proxySignature) {
+    return;
+  }
+  state.proxySignature = signature;
+  refreshProxyCollections(rawProxies);
+  renderSystemStatus();
+  renderProxyTabs();
+  renderProxyGrid();
+}
+
+function applyDaeConfigDocument(doc) {
+  const signature = daeConfigDocumentSignature(doc);
+  state.daeConfigPath = doc.path || "";
+  if (signature === state.daeConfigSignature) {
+    return;
+  }
+  state.daeConfigSignature = signature;
+  if (!state.daeConfigDirty) {
+    state.daeConfigContent = typeof doc.content === "string" ? doc.content : "";
+    renderDaeConfigEditor();
+  }
+}
+
+function connectVersionSocket() {
+  closeVersionSocket();
+
+  let socket;
+  try {
+    socket = new WebSocket(buildWebSocketUrl("/version"));
+  } catch {
+    state.versionWsRetryTimer = window.setTimeout(() => {
+      if (state.controllerUrl) {
+        connectVersionSocket();
+      }
+    }, 3000);
+    return;
+  }
+
+  state.versionWsCloseIntent = false;
+  state.versionWs = socket;
+
+  socket.addEventListener("message", (event) => {
+    if (state.versionWs !== socket) {
+      return;
+    }
+    try {
+      applyVersionSnapshot(JSON.parse(event.data));
+    } catch {
+      // Ignore malformed frames and keep the current version state.
+    }
+  });
+
+  socket.addEventListener("close", () => {
+    if (state.versionWs !== socket) {
+      return;
+    }
+    state.versionWs = null;
+    if (state.versionWsCloseIntent) {
+      return;
+    }
+    state.versionWsRetryTimer = window.setTimeout(() => {
+      if (state.controllerUrl) {
+        connectVersionSocket();
+      }
+    }, 3000);
+  });
+}
+
+function connectConfigSocket() {
+  closeConfigSocket();
+
+  let socket;
+  try {
+    socket = new WebSocket(buildWebSocketUrl("/configs"));
+  } catch {
+    state.configWsRetryTimer = window.setTimeout(() => {
+      if (state.controllerUrl) {
+        connectConfigSocket();
+      }
+    }, 3000);
+    return;
+  }
+
+  state.configWsCloseIntent = false;
+  state.configWs = socket;
+
+  socket.addEventListener("message", (event) => {
+    if (state.configWs !== socket) {
+      return;
+    }
+    try {
+      applyConfigSnapshot(JSON.parse(event.data));
+    } catch {
+      // Ignore malformed frames and keep the current config state.
+    }
+  });
+
+  socket.addEventListener("close", () => {
+    if (state.configWs !== socket) {
+      return;
+    }
+    state.configWs = null;
+    if (state.configWsCloseIntent) {
+      return;
+    }
+    state.configWsRetryTimer = window.setTimeout(() => {
+      if (state.controllerUrl) {
+        connectConfigSocket();
+      }
+    }, 3000);
+  });
+}
+
+function connectProxySocket() {
+  closeProxySocket();
+
+  let socket;
+  try {
+    socket = new WebSocket(buildWebSocketUrl("/proxies"));
+  } catch {
+    state.proxyWsRetryTimer = window.setTimeout(() => {
+      if (state.controllerUrl) {
+        connectProxySocket();
+      }
+    }, 3000);
+    return;
+  }
+
+  state.proxyWsCloseIntent = false;
+  state.proxyWs = socket;
+
+  socket.addEventListener("message", (event) => {
+    if (state.proxyWs !== socket) {
+      return;
+    }
+    try {
+      const payload = JSON.parse(event.data);
+      applyProxySnapshot(payload.proxies);
+    } catch {
+      // Ignore malformed frames and keep the current proxy state.
+    }
+  });
+
+  socket.addEventListener("close", () => {
+    if (state.proxyWs !== socket) {
+      return;
+    }
+    state.proxyWs = null;
+    if (state.proxyWsCloseIntent) {
+      return;
+    }
+    state.proxyWsRetryTimer = window.setTimeout(() => {
+      if (state.controllerUrl) {
+        connectProxySocket();
+      }
+    }, 3000);
+  });
+}
+
+function connectDaeConfigSocket() {
+  closeDaeConfigSocket();
+
+  let socket;
+  try {
+    socket = new WebSocket(buildWebSocketUrl("/configs/dae"));
+  } catch {
+    state.daeConfigWsRetryTimer = window.setTimeout(() => {
+      if (state.controllerUrl) {
+        connectDaeConfigSocket();
+      }
+    }, 3000);
+    return;
+  }
+
+  state.daeConfigWsCloseIntent = false;
+  state.daeConfigWs = socket;
+
+  socket.addEventListener("message", (event) => {
+    if (state.daeConfigWs !== socket) {
+      return;
+    }
+    try {
+      applyDaeConfigDocument(JSON.parse(event.data));
+    } catch {
+      // Ignore malformed frames and keep the current editor state.
+    }
+  });
+
+  socket.addEventListener("close", () => {
+    if (state.daeConfigWs !== socket) {
+      return;
+    }
+    state.daeConfigWs = null;
+    if (state.daeConfigWsCloseIntent) {
+      return;
+    }
+    state.daeConfigWsRetryTimer = window.setTimeout(() => {
+      if (state.controllerUrl) {
+        connectDaeConfigSocket();
+      }
+    }, 3000);
+  });
+}
+
 function updateTraffic(payload) {
   state.traffic = {
     up: Number(payload.up || 0),
@@ -442,26 +778,29 @@ async function refreshSnapshot(updateStatus = true) {
   }
   state.refreshing = true;
   try {
-    const [version, config, proxiesPayload] = await Promise.all([
+    const [version, config, proxiesPayload, daeConfig] = await Promise.all([
       apiFetch("/version"),
       apiFetch("/configs"),
       apiFetch("/proxies"),
+      apiFetch("/configs/dae"),
     ]);
 
-    state.version = version;
-    state.config = config;
-    refreshProxyCollections(proxiesPayload.proxies);
+    applyVersionSnapshot(version);
+    applyConfigSnapshot(config);
+    applyProxySnapshot(proxiesPayload.proxies);
+    applyDaeConfigDocument(daeConfig);
 
     if (updateStatus) {
       setApiStatus("connected", "Connected");
       refs.controllerHint.textContent =
-        "Connected to dae external controller. `/traffic` and `/memory` stay live over WebSocket, while `/version`, `/configs`, and `/proxies` auto-refresh every second.";
+        "Connected to dae external controller. Runtime state snapshots stream every 5 seconds over WebSocket, and config edits write back to startup `config.dae`.";
+      connectVersionSocket();
+      connectConfigSocket();
+      connectProxySocket();
       connectTrafficSocket();
       connectMemorySocket();
-      startRefreshLoop();
+      connectDaeConfigSocket();
       renderAll();
-    } else {
-      renderRuntimePanels();
     }
   } catch (error) {
     handleConnectionError(error);
@@ -471,9 +810,12 @@ async function refreshSnapshot(updateStatus = true) {
 }
 
 function handleConnectionError(error) {
+  closeVersionSocket();
+  closeConfigSocket();
+  closeProxySocket();
   closeTrafficSocket();
   closeMemorySocket();
-  stopRefreshLoop();
+  closeDaeConfigSocket();
   resetLiveState();
 
   if (error.status === 401) {
@@ -501,25 +843,21 @@ async function connectController() {
   }
 
   persistConnection();
+  closeVersionSocket();
+  closeConfigSocket();
+  closeProxySocket();
   closeTrafficSocket();
   closeMemorySocket();
-  stopRefreshLoop();
+  closeDaeConfigSocket();
   resetLiveState();
   setBusyState(true);
   setApiStatus("warn", "Connecting");
   refs.controllerHint.textContent =
-    "Opening live channels for `/traffic` and `/memory`, synchronizing `/version`, `/configs`, and `/proxies`, then loading startup `config.dae`.";
+    "Opening live channels for `/version`, `/configs`, `/proxies`, `/traffic`, `/memory`, and startup `config.dae`.";
   renderAll();
   await refreshSnapshot(true);
   if (state.apiStatus.kind === "connected") {
-    try {
-      await loadDaeConfigDocument();
-      refs.editorNote.textContent = state.daeConfigPath
-        ? `Loaded ${state.daeConfigPath}.`
-        : "Loaded startup config.dae.";
-    } catch (error) {
-      refs.editorNote.textContent = `Connected, but failed to load config.dae: ${error.message}`;
-    }
+    refs.editorNote.textContent = state.daeConfigPath ? `Loaded ${state.daeConfigPath}.` : "Loaded startup config.dae.";
   }
   setBusyState(false);
 }
@@ -835,7 +1173,7 @@ function renderDaeConfigEditor() {
     refs.configView.value = state.daeConfigContent;
   }
   syncEditorLines();
-  refs.saveConfigButton.disabled = !state.controllerUrl;
+  refs.saveConfigButton.disabled = !state.controllerUrl || !state.daeConfigDirty;
   refs.refreshConfigButton.disabled = !state.controllerUrl;
 }
 
@@ -844,8 +1182,8 @@ async function loadDaeConfigDocument() {
     return;
   }
   const doc = await apiFetch("/configs/dae");
-  state.daeConfigPath = doc.path || "";
-  state.daeConfigContent = typeof doc.content === "string" ? doc.content : "";
+  state.daeConfigDirty = false;
+  applyDaeConfigDocument(doc);
   renderDaeConfigEditor();
 }
 
@@ -879,6 +1217,7 @@ async function probeDelay(name) {
     const payload = await apiFetch(`/proxies/${encodeURIComponent(name)}/delay?timeout=5000`);
     if (state.proxies[name]) {
       state.proxies[name].history = [{ delay: payload.delay, time: new Date().toISOString() }];
+      state.proxySignature = proxySnapshotSignature(state.proxies);
     }
     refs.editorNote.textContent = `Latency probe for ${name} returned ${payload.delay} ms from /proxies/${name}/delay.`;
   } catch (error) {
@@ -904,8 +1243,14 @@ async function selectProxy(name) {
       method: "PUT",
       body: JSON.stringify({ name }),
     });
+    if (state.proxies[group.name]) {
+      state.proxies[group.name] = {
+        ...state.proxies[group.name],
+        now: name,
+      };
+      state.proxySignature = proxySnapshotSignature(state.proxies);
+    }
     refs.editorNote.textContent = `Switched group ${group.name} to ${name} through /proxies/${group.name}.`;
-    await refreshSnapshot(false);
   } catch (error) {
     refs.editorNote.textContent = `Failed to switch ${group.name} to ${name}: ${error.message}`;
   } finally {
@@ -929,7 +1274,6 @@ async function resetGroup() {
       method: "DELETE",
     });
     refs.editorNote.textContent = `Reset group ${group.name} to its default policy via DELETE /proxies/${group.name}.`;
-    await refreshSnapshot(false);
   } catch (error) {
     refs.editorNote.textContent = `Failed to reset ${group.name}: ${error.message}`;
   } finally {
@@ -951,18 +1295,21 @@ async function resyncControllerAfterConfigSave() {
         apiFetch("/configs/dae"),
       ]);
 
-      state.version = version;
-      state.config = config;
-      refreshProxyCollections(proxiesPayload.proxies);
-      state.daeConfigPath = daeConfig.path || "";
-      state.daeConfigContent = typeof daeConfig.content === "string" ? daeConfig.content : "";
+      applyVersionSnapshot(version);
+      applyConfigSnapshot(config);
+      applyProxySnapshot(proxiesPayload.proxies);
+      state.daeConfigDirty = false;
+      applyDaeConfigDocument(daeConfig);
 
       setApiStatus("connected", "Connected");
       refs.controllerHint.textContent =
-        "Connected to dae external controller. `/traffic` and `/memory` stay live over WebSocket, while `/version`, `/configs`, and `/proxies` auto-refresh every second.";
+        "Connected to dae external controller. Runtime state snapshots stream every 5 seconds over WebSocket, and config edits write back to startup `config.dae`.";
+      connectVersionSocket();
+      connectConfigSocket();
+      connectProxySocket();
       connectTrafficSocket();
       connectMemorySocket();
-      startRefreshLoop();
+      connectDaeConfigSocket();
       renderRuntimePanels();
       renderDaeConfigEditor();
       refs.editorNote.textContent = `Saved ${state.daeConfigPath || "config.dae"} and reloaded dae.`;
@@ -1041,7 +1388,9 @@ function bindEvents() {
   });
 
   refs.reloadProxiesButton.addEventListener("click", () => {
-    refreshSnapshot(false);
+    closeProxySocket();
+    connectProxySocket();
+    refs.editorNote.textContent = "Reconnected proxy stream.";
   });
 
   refs.saveConfigButton.addEventListener("click", () => {
@@ -1065,7 +1414,9 @@ function bindEvents() {
 
   refs.proxyGrid.addEventListener("click", handleProxyGridClick);
   refs.configView.addEventListener("input", () => {
+    state.daeConfigDirty = refs.configView.value !== state.daeConfigContent;
     syncEditorLines();
+    refs.saveConfigButton.disabled = !state.controllerUrl || !state.daeConfigDirty;
   });
   refs.configView.addEventListener("scroll", () => {
     refs.editorLines.scrollTop = refs.configView.scrollTop;

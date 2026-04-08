@@ -24,6 +24,8 @@ var (
 	errNotFound     = &HTTPError{Message: "Resource not found"}
 )
 
+const snapshotStreamInterval = 5 * time.Second
+
 type HTTPError struct {
 	Message string `json:"message"`
 }
@@ -248,15 +250,26 @@ func (s *Server) handleWebUI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"meta":    s.provider.Meta(),
-		"version": s.provider.Version(),
-	})
+	payload := func() any {
+		return map[string]any{
+			"meta":    s.provider.Meta(),
+			"version": s.provider.Version(),
+		}
+	}
+	if wantsWebsocket(r) {
+		streamJSONSnapshots(w, r, payload)
+		return
+	}
+	writeJSON(w, http.StatusOK, payload())
 }
 
 func (s *Server) handleConfigs(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
+		if wantsWebsocket(r) {
+			streamJSONSnapshots(w, r, func() any { return s.provider.Config() })
+			return
+		}
 		writeJSON(w, http.StatusOK, s.provider.Config())
 	case http.MethodPatch:
 		req := struct {
@@ -281,6 +294,12 @@ func (s *Server) handleConfigs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDaeConfig(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
+		if wantsWebsocket(r) {
+			streamJSONSnapshotsWithError(w, r, func() (any, error) {
+				return s.provider.DaeConfigDocument()
+			})
+			return
+		}
 		doc, err := s.provider.DaeConfigDocument()
 		if err != nil {
 			writeError(w, http.StatusServiceUnavailable, &HTTPError{Message: err.Error()})
@@ -310,7 +329,16 @@ func (s *Server) handleProxies(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	proxies := s.provider.Proxies()
+	if wantsWebsocket(r) {
+		streamJSONSnapshots(w, r, func() any {
+			return map[string]any{"proxies": orderedProxyMap(s.provider.Proxies())}
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"proxies": orderedProxyMap(s.provider.Proxies())})
+}
+
+func orderedProxyMap(proxies map[string]Proxy) map[string]Proxy {
 	names := make([]string, 0, len(proxies))
 	for name := range proxies {
 		names = append(names, name)
@@ -320,7 +348,7 @@ func (s *Server) handleProxies(w http.ResponseWriter, r *http.Request) {
 	for _, name := range names {
 		ordered[name] = proxies[name]
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"proxies": ordered})
+	return ordered
 }
 
 func (s *Server) handleProxyByName(w http.ResponseWriter, r *http.Request) {
@@ -585,6 +613,37 @@ func streamMemory(w http.ResponseWriter, r *http.Request, snapshot func() Memory
 			return
 		}
 		flusher.Flush()
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func streamJSONSnapshots(w http.ResponseWriter, r *http.Request, snapshot func() any) {
+	streamJSONSnapshotsWithError(w, r, func() (any, error) {
+		return snapshot(), nil
+	})
+}
+
+func streamJSONSnapshotsWithError(w http.ResponseWriter, r *http.Request, snapshot func() (any, error)) {
+	conn, err := websocketUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	ticker := time.NewTicker(snapshotStreamInterval)
+	defer ticker.Stop()
+	for {
+		payload, err := snapshot()
+		if err != nil {
+			return
+		}
+		if err := conn.WriteJSON(payload); err != nil {
+			return
+		}
 		select {
 		case <-r.Context().Done():
 			return

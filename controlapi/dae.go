@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -44,6 +45,8 @@ type DaeProvider struct {
 	plane           *control.ControlPlane
 	defaultPolicies map[string]outbound.DialerSelectionPolicy
 	loggers         []*logrus.Logger
+	mu              sync.RWMutex
+	probeHistory    map[string]DelayHistory
 }
 
 func NewDaeProvider(version string, conf *config.Config, plane *control.ControlPlane, configPath string, loggers ...*logrus.Logger) (*DaeProvider, error) {
@@ -71,6 +74,7 @@ func NewDaeProvider(version string, conf *config.Config, plane *control.ControlP
 		plane:           plane,
 		defaultPolicies: defaultPolicies,
 		loggers:         loggers,
+		probeHistory:    map[string]DelayHistory{},
 	}, nil
 }
 
@@ -207,10 +211,21 @@ func (p *DaeProvider) Delay(name, probeURL string, timeout time.Duration) (int, 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
+	var delay int
 	if probeURL == "" {
-		return p.defaultDelay(ctx, target)
+		delay, err = p.defaultDelay(ctx, target)
+	} else {
+		delay, err = p.urlDelay(ctx, target, probeURL)
 	}
-	return p.urlDelay(ctx, target, probeURL)
+	if err != nil {
+		return 0, err
+	}
+
+	p.recordProbeDelay(name, delay)
+	if target.Property() != nil {
+		p.recordProbeDelay(target.Property().Name, delay)
+	}
+	return delay, nil
 }
 
 func (p *DaeProvider) SetLogLevel(level string) error {
@@ -297,7 +312,7 @@ func (p *DaeProvider) buildGroupProxy(group *outbound.DialerGroup) Proxy {
 	history := []DelayHistory{}
 	if preferred := p.preferredDialer(group); preferred != nil && preferred.Property() != nil {
 		now = preferred.Property().Name
-		history = p.buildHistory(preferred)
+		history = p.historyForName(group.Name, preferred)
 	}
 
 	return Proxy{
@@ -318,13 +333,20 @@ func (p *DaeProvider) buildLeafProxy(d *dialer.Dialer) Proxy {
 		Name:            prop.Name,
 		Type:            protocolProxyType(prop.Protocol),
 		Alive:           dialerAlive(d),
-		History:         p.buildHistory(d),
+		History:         p.historyForName(prop.Name, d),
 		UDP:             true,
 		XUDP:            false,
 		Address:         prop.Address,
 		Protocol:        prop.Protocol,
 		SubscriptionTag: prop.SubscriptionTag,
 	}
+}
+
+func (p *DaeProvider) historyForName(name string, d *dialer.Dialer) []DelayHistory {
+	if cached, ok := p.cachedProbeDelay(name); ok {
+		return []DelayHistory{cached}
+	}
+	return p.buildHistory(d)
 }
 
 func (p *DaeProvider) buildHistory(d *dialer.Dialer) []DelayHistory {
@@ -343,6 +365,31 @@ func (p *DaeProvider) buildHistory(d *dialer.Dialer) []DelayHistory {
 		Time:  time.Now(),
 		Delay: uint16(ms),
 	}}
+}
+
+func (p *DaeProvider) cachedProbeDelay(name string) (DelayHistory, bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	history, ok := p.probeHistory[name]
+	return history, ok
+}
+
+func (p *DaeProvider) recordProbeDelay(name string, delay int) {
+	if name == "" {
+		return
+	}
+	if delay < 0 {
+		delay = 0
+	}
+	if delay > 65535 {
+		delay = 65535
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.probeHistory[name] = DelayHistory{
+		Time:  time.Now(),
+		Delay: uint16(delay),
+	}
 }
 
 func (p *DaeProvider) resolveProxyTarget(name string) (*dialer.Dialer, error) {
