@@ -193,6 +193,70 @@ async function apiFetch(path, options = {}) {
   return JSON.parse(text);
 }
 
+async function apiFetchStreamSnapshot(path, options = {}) {
+  const headers = new Headers(options.headers || {});
+  if (state.token) {
+    headers.set("Authorization", `Bearer ${state.token}`);
+  }
+
+  const response = await fetch(buildHttpUrl(path), {
+    ...options,
+    headers,
+  });
+
+  if (!response.ok) {
+    let message = `${response.status} ${response.statusText}`;
+    try {
+      const payload = await response.json();
+      if (payload && typeof payload.message === "string" && payload.message) {
+        message = payload.message;
+      }
+    } catch {
+      // Ignore response body parse failures and keep the default message.
+    }
+    const error = new Error(message);
+    error.status = response.status;
+    throw error;
+  }
+
+  if (!response.body) {
+    const text = await response.text();
+    return text ? JSON.parse(text) : null;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+      const newlineIndex = buffer.indexOf("\n");
+      if (newlineIndex === -1) {
+        continue;
+      }
+
+      const line = buffer.slice(0, newlineIndex).trim();
+      return line ? JSON.parse(line) : null;
+    }
+
+    buffer += decoder.decode();
+    const line = buffer.trim();
+    return line ? JSON.parse(line) : null;
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      // Ignore cancellation failures from already-closed streams.
+    }
+  }
+}
+
 function setApiStatus(kind, message) {
   state.apiStatus = { kind, message };
   renderHeaderStatus();
@@ -362,7 +426,7 @@ async function refreshSnapshot(updateStatus = true) {
     const [version, config, memory, proxiesPayload] = await Promise.all([
       apiFetch("/version"),
       apiFetch("/configs"),
-      apiFetch("/memory"),
+      apiFetchStreamSnapshot("/memory"),
       apiFetch("/proxies"),
     ]);
 
