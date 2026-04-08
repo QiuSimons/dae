@@ -1669,10 +1669,23 @@ body.auth-required .controller-bar {
   position: fixed;
   top: 50%;
   left: 50%;
-  width: min(760px, calc(100vw - 32px));
+  width: min(460px, calc(100vw - 32px));
   margin: 0;
   transform: translate(-50%, -50%);
   z-index: 80;
+}
+
+body.auth-required .controller-summary {
+  display: none;
+}
+
+body.auth-required .controller-body {
+  margin-top: 0;
+}
+
+body.auth-required .controller-form {
+  grid-template-columns: 1fr;
+  align-items: stretch;
 }
 
 body.auth-required .controller-summary-button,

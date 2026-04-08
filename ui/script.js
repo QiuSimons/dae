@@ -3,7 +3,7 @@ const ctx = canvas.getContext("2d");
 
 const DEFAULT_CONFIG_PLACEHOLDER = "# Connect controller to load /etc/dae/config.dae";
 const DEFAULT_CONTROLLER_HINT =
-  "连接到 dae 的外部控制器后，Dashboard、Traffic、Proxies、Logs 和 config.dae 才会开始实时更新。";
+  "登录后开始同步 Dashboard、Traffic、Proxies、Logs 和 Config。";
 const DEFAULT_EDITOR_NOTE = "按顶层块拆分编辑 startup config.dae。保存时会重组全文、校验并触发 dae 热重载。";
 const DEFAULT_LOG_LEVEL_NOTE = "通过 PATCH /configs 更新运行时日志级别，并保持页面状态同步。";
 const SAMPLE_SIZE = 20;
@@ -66,6 +66,7 @@ const CONFIG_SECTION_DESCRIPTIONS = {
 
 const refs = {
   controllerForm: document.getElementById("controllerForm"),
+  controllerUrlField: document.getElementById("controllerUrlField"),
   controllerUrl: document.getElementById("controllerUrl"),
   controllerToken: document.getElementById("controllerToken"),
   controllerHint: document.getElementById("controllerHint"),
@@ -1564,12 +1565,20 @@ function renderConnections() {
 
 function renderControllerPanel() {
   const connected = state.apiStatus.kind === "connected";
-  refs.controllerSummaryUrl.textContent = state.controllerUrl || "未连接";
+  const embedded = isEmbeddedUIPath();
+  const authOnlyMode = embedded && !connected;
+  const summaryUrl = state.controllerUrl || (embedded ? window.location.origin : "") || "未连接";
+  refs.controllerSummaryUrl.textContent = summaryUrl;
   refs.controllerSummaryMeta.textContent = connected
     ? `已连接，${state.token ? "使用 Bearer token" : "未配置 token"}。`
-    : "输入地址与 token，连接 dae 控制器。";
-  refs.controllerPanelTitle.textContent = connected ? "Controller 已连接" : "连接 dae External Controller";
-  refs.controllerHint.textContent = state.controllerHintText;
+    : authOnlyMode
+      ? "当前页面已经运行在 dae 控制器上，只需要输入 token。"
+      : "输入地址与 token，连接 dae 控制器。";
+  refs.controllerPanelTitle.textContent = connected ? "Controller 已连接" : authOnlyMode ? "登录 dae 控制台" : "连接 dae External Controller";
+  refs.controllerHint.textContent =
+    authOnlyMode && state.controllerHintText === DEFAULT_CONTROLLER_HINT
+      ? "正在访问当前控制器。输入 token 后直接建立连接。"
+      : state.controllerHintText;
   refs.controllerDetailUrl.textContent = state.controllerUrl || "-";
   refs.embeddedUiValue.textContent = state.controllerUrl ? `${state.controllerUrl}/ui/` : "-";
   refs.controllerTokenValue.textContent = state.token ? `set (${state.token.length} chars)` : "not set";
@@ -1580,6 +1589,9 @@ function renderControllerPanel() {
   refs.runtimeLogLevelNote.textContent = state.runtimeLogLevelNoteText;
   refs.connectButton.disabled = state.connecting;
   refs.connectButton.textContent = state.connecting ? "登录中..." : connected ? "重新连接" : "登录";
+  refs.controllerUrlField.hidden = authOnlyMode;
+  refs.controllerUrl.readOnly = authOnlyMode;
+  refs.controllerUrl.placeholder = embedded ? window.location.origin : "http://127.0.0.1:9090";
   refs.applyLogLevelButton.disabled = !state.controllerUrl || state.logLevelChanging || state.connecting;
   refs.controllerTopToggle.textContent = connected ? "Controller" : "登录";
   refs.controllerSummaryToggle.textContent = connected ? (state.controllerExpanded ? "收起" : "展开") : "登录";
@@ -1978,7 +1990,7 @@ async function refreshSnapshot(updateStatus = true) {
     if (updateStatus) {
       setApiStatus("connected", "Connected");
       state.controllerHintText =
-        "Connected to dae external controller. 状态类接口使用 5 秒流式快照，Traffic 与 Logs 保持实时流。";
+        "已连接，实时数据正在同步。";
       state.controllerExpanded = false;
       openLiveChannels();
       renderAll();
@@ -1997,11 +2009,10 @@ function handleConnectionError(error) {
 
   if (error.status === 401) {
     setApiStatus("warn", "Unauthorized");
-    state.controllerHintText = "Controller rejected the request. 请确认 external_controller_secret 对应的 Bearer token 正确。";
+    state.controllerHintText = "登录失败，请确认 token 正确。";
   } else {
     setApiStatus("offline", "Unavailable");
-    state.controllerHintText =
-      "Failed to reach the controller. 请确认 dae 正在运行，且 global.external_controller 正在目标地址监听。";
+    state.controllerHintText = "无法连接 controller，请确认 dae 正在运行。";
   }
 
   renderAll();
@@ -2024,8 +2035,7 @@ async function connectController() {
   resetLiveState();
   setBusyState(true);
   setApiStatus("warn", "Connecting");
-  state.controllerHintText =
-    "Opening live channels for /version, /configs, /proxies, /traffic, /connections, /memory, /logs and startup config.dae.";
+  state.controllerHintText = "正在连接 controller 并建立实时通道。";
   renderAll();
   await refreshSnapshot(true);
   setBusyState(false);
@@ -2049,8 +2059,7 @@ async function resyncControllerAfterConfigSave() {
       state.daeConfigDirty = false;
       applyFullSnapshot(snapshot);
       setApiStatus("connected", "Connected");
-      state.controllerHintText =
-        "Connected to dae external controller. 状态类接口使用 5 秒流式快照，Traffic 与 Logs 保持实时流。";
+      state.controllerHintText = "已连接，实时数据正在同步。";
       openLiveChannels();
       state.editorNoteText = `Saved ${state.daeConfigPath || "config.dae"} and reloaded dae.`;
       renderAll();
