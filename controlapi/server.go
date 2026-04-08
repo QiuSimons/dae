@@ -57,6 +57,36 @@ type Traffic struct {
 	DownTotal int64 `json:"downTotal"`
 }
 
+type ConnectionsSnapshot struct {
+	UpdatedAt   time.Time    `json:"updatedAt"`
+	Total       int          `json:"total"`
+	TCP         int          `json:"tcp"`
+	UDP         int          `json:"udp"`
+	Connections []Connection `json:"connections"`
+}
+
+type Connection struct {
+	ID                 string    `json:"id"`
+	Network            string    `json:"network"`
+	State              string    `json:"state"`
+	Source             string    `json:"source"`
+	SourceAddress      string    `json:"sourceAddress"`
+	SourcePort         uint16    `json:"sourcePort"`
+	Destination        string    `json:"destination"`
+	DestinationAddress string    `json:"destinationAddress"`
+	DestinationPort    uint16    `json:"destinationPort"`
+	Process            string    `json:"process"`
+	PID                uint32    `json:"pid"`
+	Outbound           string    `json:"outbound"`
+	Direction          string    `json:"direction"`
+	Mark               uint32    `json:"mark"`
+	DSCP               uint8     `json:"dscp"`
+	Must               bool      `json:"must"`
+	HasRouting         bool      `json:"hasRouting"`
+	Mac                string    `json:"mac"`
+	LastSeen           time.Time `json:"lastSeen"`
+}
+
 type Memory struct {
 	Inuse   uint64 `json:"inuse"`
 	OSLimit uint64 `json:"oslimit"`
@@ -107,6 +137,7 @@ type Provider interface {
 	DaeConfigDocument() (DaeConfigDocument, error)
 	Memory() Memory
 	Traffic() Traffic
+	Connections(limit int) ConnectionsSnapshot
 	Proxies() map[string]Proxy
 	Proxy(name string) (Proxy, bool)
 	UpdateProxy(groupName, proxyName string) error
@@ -187,6 +218,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("/proxies", s.handleProxies)
 	mux.HandleFunc("/proxies/", s.handleProxyByName)
 	mux.HandleFunc("/traffic", s.handleTraffic)
+	mux.HandleFunc("/connections", s.handleConnections)
 	mux.HandleFunc("/memory", s.handleMemory)
 	mux.HandleFunc("/logs", s.handleLogs)
 	return s.withMiddleware(mux)
@@ -446,6 +478,32 @@ func (s *Server) handleTraffic(w http.ResponseWriter, r *http.Request) {
 	streamTraffic(w, r, func() Traffic { return s.provider.Traffic() })
 }
 
+func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	limit := 200
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n <= 0 {
+			writeError(w, http.StatusBadRequest, errBadRequest)
+			return
+		}
+		limit = n
+	}
+
+	snapshot := func() any {
+		return s.provider.Connections(limit)
+	}
+	if wantsWebsocket(r) {
+		streamJSONSnapshots(w, r, snapshot)
+		return
+	}
+	writeJSON(w, http.StatusOK, snapshot())
+}
+
 func (s *Server) handleMemory(w http.ResponseWriter, r *http.Request) {
 	streamMemory(w, r, func() Memory { return s.provider.Memory() })
 }
@@ -622,19 +680,27 @@ func streamMemory(w http.ResponseWriter, r *http.Request, snapshot func() Memory
 }
 
 func streamJSONSnapshots(w http.ResponseWriter, r *http.Request, snapshot func() any) {
-	streamJSONSnapshotsWithError(w, r, func() (any, error) {
+	streamJSONSnapshotsEvery(w, r, snapshotStreamInterval, snapshot)
+}
+
+func streamJSONSnapshotsEvery(w http.ResponseWriter, r *http.Request, interval time.Duration, snapshot func() any) {
+	streamJSONSnapshotsWithErrorEvery(w, r, interval, func() (any, error) {
 		return snapshot(), nil
 	})
 }
 
 func streamJSONSnapshotsWithError(w http.ResponseWriter, r *http.Request, snapshot func() (any, error)) {
+	streamJSONSnapshotsWithErrorEvery(w, r, snapshotStreamInterval, snapshot)
+}
+
+func streamJSONSnapshotsWithErrorEvery(w http.ResponseWriter, r *http.Request, interval time.Duration, snapshot func() (any, error)) {
 	conn, err := websocketUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
 	defer conn.Close()
 
-	ticker := time.NewTicker(snapshotStreamInterval)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		payload, err := snapshot()

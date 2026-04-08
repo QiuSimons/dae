@@ -11,30 +11,40 @@ import (
 )
 
 type fakeProvider struct {
-	config       Config
-	daeConfig    DaeConfigDocument
-	traffic      Traffic
-	memory       Memory
-	proxies      map[string]Proxy
-	version      string
-	meta         bool
-	updateCalls  []string
-	resetCalls   []string
-	delayValue   int
-	delayErr     error
-	lastLogLevel string
+	config        Config
+	daeConfig     DaeConfigDocument
+	traffic       Traffic
+	connections   ConnectionsSnapshot
+	memory        Memory
+	proxies       map[string]Proxy
+	version       string
+	meta          bool
+	updateCalls   []string
+	resetCalls    []string
+	delayValue    int
+	delayErr      error
+	lastLogLevel  string
 	lastDaeConfig string
 }
 
-func (f *fakeProvider) Hello() string                   { return "dae" }
-func (f *fakeProvider) Version() string                 { return f.version }
-func (f *fakeProvider) Meta() bool                      { return f.meta }
-func (f *fakeProvider) Config() Config                  { return f.config }
+func (f *fakeProvider) Hello() string   { return "dae" }
+func (f *fakeProvider) Version() string { return f.version }
+func (f *fakeProvider) Meta() bool      { return f.meta }
+func (f *fakeProvider) Config() Config  { return f.config }
 func (f *fakeProvider) DaeConfigDocument() (DaeConfigDocument, error) {
 	return f.daeConfig, nil
 }
-func (f *fakeProvider) Memory() Memory                  { return f.memory }
-func (f *fakeProvider) Traffic() Traffic                { return f.traffic }
+func (f *fakeProvider) Memory() Memory   { return f.memory }
+func (f *fakeProvider) Traffic() Traffic { return f.traffic }
+func (f *fakeProvider) Connections(limit int) ConnectionsSnapshot {
+	if limit > 0 && len(f.connections.Connections) > limit {
+		snapshot := f.connections
+		snapshot.Connections = append([]Connection(nil), snapshot.Connections[:limit]...)
+		snapshot.Total = len(f.connections.Connections)
+		return snapshot
+	}
+	return f.connections
+}
 func (f *fakeProvider) Proxies() map[string]Proxy       { return f.proxies }
 func (f *fakeProvider) Proxy(name string) (Proxy, bool) { p, ok := f.proxies[name]; return p, ok }
 func (f *fakeProvider) UpdateProxy(groupName, proxyName string) error {
@@ -156,6 +166,88 @@ func TestProxyRoutes(t *testing.T) {
 	}
 	if delay["delay"] != 42 {
 		t.Fatalf("delay = %d", delay["delay"])
+	}
+}
+
+func TestConnectionsRoute(t *testing.T) {
+	provider := &fakeProvider{
+		connections: ConnectionsSnapshot{
+			Total: 2,
+			TCP:   1,
+			UDP:   1,
+			Connections: []Connection{
+				{
+					ID:                 "tcp|a",
+					Network:            "tcp",
+					State:              "established",
+					Source:             "10.0.0.2:34567",
+					SourceAddress:      "10.0.0.2",
+					SourcePort:         34567,
+					Destination:        "1.1.1.1:443",
+					DestinationAddress: "1.1.1.1",
+					DestinationPort:    443,
+					Process:            "Safari",
+					PID:                123,
+					Outbound:           "proxy",
+					Direction:          "lan-egress",
+					Mark:               12,
+					DSCP:               46,
+					Must:               true,
+					HasRouting:         true,
+					Mac:                "aa:bb:cc:dd:ee:ff",
+				},
+				{
+					ID:                 "udp|b",
+					Network:            "udp",
+					State:              "active",
+					Source:             "10.0.0.2:5353",
+					SourceAddress:      "10.0.0.2",
+					SourcePort:         5353,
+					Destination:        "8.8.8.8:53",
+					DestinationAddress: "8.8.8.8",
+					DestinationPort:    53,
+					Process:            "mDNSResponder",
+					PID:                55,
+					Outbound:           "direct",
+					Direction:          "lan-egress",
+				},
+			},
+		},
+		proxies: map[string]Proxy{},
+	}
+	server := httptest.NewServer(NewServer(ServerConfig{}, provider, nil).handler())
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/connections?limit=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("connections status = %d", resp.StatusCode)
+	}
+
+	var got ConnectionsSnapshot
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Total != 2 {
+		t.Fatalf("total = %d", got.Total)
+	}
+	if len(got.Connections) != 1 {
+		t.Fatalf("connections len = %d", len(got.Connections))
+	}
+	if got.Connections[0].ID != "tcp|a" {
+		t.Fatalf("first connection id = %q", got.Connections[0].ID)
+	}
+	if got.Connections[0].State != "established" {
+		t.Fatalf("first connection state = %q", got.Connections[0].State)
+	}
+	if got.Connections[0].SourceAddress != "10.0.0.2" || got.Connections[0].DestinationPort != 443 {
+		t.Fatalf("unexpected connection endpoint payload: %#v", got.Connections[0])
+	}
+	if !got.Connections[0].Must || !got.Connections[0].HasRouting || got.Connections[0].Mac == "" {
+		t.Fatalf("unexpected connection flags: %#v", got.Connections[0])
 	}
 }
 

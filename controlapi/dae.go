@@ -132,6 +132,41 @@ func (p *DaeProvider) Traffic() Traffic {
 	return Traffic{}
 }
 
+func (p *DaeProvider) Connections(limit int) ConnectionsSnapshot {
+	snapshot := p.plane.LiveConnections(limit)
+	connections := make([]Connection, 0, len(snapshot.Connections))
+	for _, conn := range snapshot.Connections {
+		connections = append(connections, Connection{
+			ID:                 conn.ID,
+			Network:            conn.Network,
+			State:              conn.State,
+			Source:             conn.Source,
+			SourceAddress:      conn.SourceAddress,
+			SourcePort:         conn.SourcePort,
+			Destination:        conn.Destination,
+			DestinationAddress: conn.DestinationAddress,
+			DestinationPort:    conn.DestinationPort,
+			Process:            conn.Process,
+			PID:                conn.PID,
+			Outbound:           conn.Outbound,
+			Direction:          conn.Direction,
+			Mark:               conn.Mark,
+			DSCP:               conn.DSCP,
+			Must:               conn.Must,
+			HasRouting:         conn.HasRouting,
+			Mac:                conn.Mac,
+			LastSeen:           conn.LastSeen,
+		})
+	}
+	return ConnectionsSnapshot{
+		UpdatedAt:   snapshot.UpdatedAt,
+		Total:       snapshot.Total,
+		TCP:         snapshot.TCP,
+		UDP:         snapshot.UDP,
+		Connections: connections,
+	}
+}
+
 func (p *DaeProvider) Proxies() map[string]Proxy {
 	proxies := make(map[string]Proxy)
 	for _, group := range p.plane.Outbounds() {

@@ -2,11 +2,18 @@ const canvas = document.getElementById("trafficChart");
 const ctx = canvas.getContext("2d");
 
 const DEFAULT_CONFIG_PLACEHOLDER = "# Connect controller to load /etc/dae/config.dae";
+const DEFAULT_CONTROLLER_HINT =
+  "连接到 dae 的外部控制器后，Dashboard、Traffic、Proxies、Logs 和 config.dae 才会开始实时更新。";
+const DEFAULT_EDITOR_NOTE = "按顶层块拆分编辑 startup config.dae。保存时会重组全文、校验并触发 dae 热重载。";
+const DEFAULT_LOG_LEVEL_NOTE = "通过 PATCH /configs 更新运行时日志级别，并保持页面状态同步。";
 const SAMPLE_SIZE = 20;
+const CONNECTION_LIMIT = 200;
 const RELOAD_SYNC_ATTEMPTS = 8;
 const RELOAD_SYNC_DELAY_MS = 800;
 const MAX_LOG_ENTRIES = 200;
+const RETRY_DELAY_MS = 3000;
 const LOG_LEVELS = ["trace", "debug", "info", "warn", "error"];
+
 const VIEW_META = {
   dashboard: {
     eyebrow: "Dashboard",
@@ -14,7 +21,7 @@ const VIEW_META = {
     banner: "Overview",
   },
   controller: {
-    eyebrow: "External Controller",
+    eyebrow: "Controller",
     title: "Controller Workspace",
     banner: "External Controller",
   },
@@ -25,13 +32,13 @@ const VIEW_META = {
   },
   traffic: {
     eyebrow: "Traffic",
-    title: "Live Traffic",
+    title: "Realtime Traffic",
     banner: "Traffic Flow",
   },
   configs: {
-    eyebrow: "Configs",
-    title: "Config Workspace",
-    banner: "Runtime + Startup Config",
+    eyebrow: "Config",
+    title: "Startup Config",
+    banner: "config.dae Sections",
   },
   logs: {
     eyebrow: "Logs",
@@ -39,9 +46,22 @@ const VIEW_META = {
     banner: "Structured Log Stream",
   },
 };
+
 const STORAGE_KEYS = {
   controller: "daed-demo-controller",
   token: "daed-demo-token",
+  sidebarCollapsed: "daed-demo-sidebar-collapsed",
+};
+
+const CONFIG_SECTION_DESCRIPTIONS = {
+  include: "拆分配置入口和 include 路径。",
+  global: "全局运行参数、控制器、网络接口和拨号行为。",
+  subscription: "订阅链接和订阅标签。",
+  node: "手工添加的节点链接。",
+  dns: "DNS 上游、绑定地址与 DNS routing。",
+  group: "代理组、选路策略和组内筛选。",
+  routing: "流量分流与 fallback 规则。",
+  document: "无法拆分时按整份文档编辑。",
 };
 
 const refs = {
@@ -50,39 +70,53 @@ const refs = {
   controllerToken: document.getElementById("controllerToken"),
   controllerHint: document.getElementById("controllerHint"),
   connectButton: document.getElementById("connectButton"),
-  apiStatusText: document.getElementById("apiStatusText"),
-  apiStatusDot: document.getElementById("apiStatusDot"),
+  controllerTopToggle: document.getElementById("controllerTopToggle"),
+  controllerSummaryToggle: document.getElementById("controllerSummaryToggle"),
+  controllerSummaryUrl: document.getElementById("controllerSummaryUrl"),
+  controllerSummaryMeta: document.getElementById("controllerSummaryMeta"),
+  controllerPanelTitle: document.getElementById("controllerPanelTitle"),
   pageEyebrow: document.getElementById("pageEyebrow"),
   pageTitle: document.getElementById("pageTitle"),
   pageBanner: document.getElementById("pageBanner"),
+  versionLabel: document.getElementById("versionLabel"),
   navItems: Array.from(document.querySelectorAll(".nav-item[data-view]")),
   viewButtons: Array.from(document.querySelectorAll("[data-open-view]")),
   pages: Array.from(document.querySelectorAll(".page[data-page]")),
-  versionLabel: document.getElementById("versionLabel"),
+  sidebarToggles: Array.from(document.querySelectorAll("[data-sidebar-toggle]")),
+  apiStatusText: document.getElementById("apiStatusText"),
+  apiStatusDot: document.getElementById("apiStatusDot"),
+  sidebarControllerText: document.getElementById("sidebarControllerText"),
+  sidebarConnectionsValue: document.getElementById("sidebarConnectionsValue"),
+  topConnectionsValue: document.getElementById("topConnectionsValue"),
   uploadRate: document.getElementById("uploadRate"),
   downloadRate: document.getElementById("downloadRate"),
+  dashboardHeroText: document.getElementById("dashboardHeroText"),
+  dashboardStatusValue: document.getElementById("dashboardStatusValue"),
+  dashboardModeValue: document.getElementById("dashboardModeValue"),
+  dashboardLogLevelValue: document.getElementById("dashboardLogLevelValue"),
+  dashboardMemoryValue: document.getElementById("dashboardMemoryValue"),
+  dashboardAliveValue: document.getElementById("dashboardAliveValue"),
+  dashboardConnectionValue: document.getElementById("dashboardConnectionValue"),
+  dashboardUpValue: document.getElementById("dashboardUpValue"),
+  dashboardDownValue: document.getElementById("dashboardDownValue"),
+  dashboardConfigPathValue: document.getElementById("dashboardConfigPathValue"),
+  runtimeVersionValue: document.getElementById("runtimeVersionValue"),
   uploadTotalValue: document.getElementById("uploadTotalValue"),
   downloadTotalValue: document.getElementById("downloadTotalValue"),
-  trafficTransportValue: document.getElementById("trafficTransportValue"),
-  chartScale: document.getElementById("chartScale"),
-  chartTime: document.getElementById("chartTime"),
-  controllerStateValue: document.getElementById("controllerStateValue"),
-  modeValue: document.getElementById("modeValue"),
-  logLevelValue: document.getElementById("logLevelValue"),
-  memoryValue: document.getElementById("memoryValue"),
-  aliveNodesValue: document.getElementById("aliveNodesValue"),
-  groupCoverageValue: document.getElementById("groupCoverageValue"),
-  memoryPressureValue: document.getElementById("memoryPressureValue"),
-  aliveNodesBar: document.getElementById("aliveNodesBar"),
-  groupCoverageBar: document.getElementById("groupCoverageBar"),
-  memoryPressureBar: document.getElementById("memoryPressureBar"),
-  controllerUrlValue: document.getElementById("controllerUrlValue"),
-  controllerAuthValue: document.getElementById("controllerAuthValue"),
-  startupConfigPathValue: document.getElementById("startupConfigPathValue"),
-  runtimeVersionValue: document.getElementById("runtimeVersionValue"),
+  dashboardTrafficTransportValue: document.getElementById("dashboardTrafficTransportValue"),
+  dashboardTrafficUpValue: document.getElementById("dashboardTrafficUpValue"),
+  dashboardTrafficDownValue: document.getElementById("dashboardTrafficDownValue"),
+  dashboardConnectionsTotal: document.getElementById("dashboardConnectionsTotal"),
+  dashboardConnectionsTcp: document.getElementById("dashboardConnectionsTcp"),
+  dashboardConnectionsUdp: document.getElementById("dashboardConnectionsUdp"),
+  dashboardConnectionsUpdated: document.getElementById("dashboardConnectionsUpdated"),
+  dashboardConnectionList: document.getElementById("dashboardConnectionList"),
   tproxyPortValue: document.getElementById("tproxyPortValue"),
   allowLanValue: document.getElementById("allowLanValue"),
   bindAddressValue: document.getElementById("bindAddressValue"),
+  controllerUrlValue: document.getElementById("controllerUrlValue"),
+  controllerAuthValue: document.getElementById("controllerAuthValue"),
+  startupConfigPathValue: document.getElementById("startupConfigPathValue"),
   controllerDetailUrl: document.getElementById("controllerDetailUrl"),
   embeddedUiValue: document.getElementById("embeddedUiValue"),
   controllerTokenValue: document.getElementById("controllerTokenValue"),
@@ -98,85 +132,47 @@ const refs = {
   currentGroupMeta: document.getElementById("currentGroupMeta"),
   resetGroupButton: document.getElementById("resetGroupButton"),
   reloadProxiesButton: document.getElementById("reloadProxiesButton"),
-  saveConfigButton: document.getElementById("saveConfigButton"),
-  refreshConfigButton: document.getElementById("refreshConfigButton"),
+  chartScale: document.getElementById("chartScale"),
+  chartTime: document.getElementById("chartTime"),
+  trafficUploadTotalValue: document.getElementById("trafficUploadTotalValue"),
+  trafficDownloadTotalValue: document.getElementById("trafficDownloadTotalValue"),
+  trafficTransportValue: document.getElementById("trafficTransportValue"),
+  trafficConnectionsTotal: document.getElementById("trafficConnectionsTotal"),
+  trafficConnectionsTcp: document.getElementById("trafficConnectionsTcp"),
+  trafficConnectionsUdp: document.getElementById("trafficConnectionsUdp"),
+  trafficConnectionsUpdated: document.getElementById("trafficConnectionsUpdated"),
+  trafficConnectionsList: document.getElementById("trafficConnectionsList"),
+  trafficConnectionsEmpty: document.getElementById("trafficConnectionsEmpty"),
   configPathValue: document.getElementById("configPathValue"),
   configModeValue: document.getElementById("configModeValue"),
   configLogLevelValue: document.getElementById("configLogLevelValue"),
   configTproxyValue: document.getElementById("configTproxyValue"),
   configAllowLanValue: document.getElementById("configAllowLanValue"),
   configBindValue: document.getElementById("configBindValue"),
-  configView: document.getElementById("configView"),
-  editorLines: document.getElementById("editorLines"),
+  configSectionsCountValue: document.getElementById("configSectionsCountValue"),
+  configCurrentSectionValue: document.getElementById("configCurrentSectionValue"),
+  configSectionTabs: document.getElementById("configSectionTabs"),
+  configSectionTitle: document.getElementById("configSectionTitle"),
+  configSectionSubtitle: document.getElementById("configSectionSubtitle"),
+  configSectionView: document.getElementById("configSectionView"),
+  saveConfigButton: document.getElementById("saveConfigButton"),
+  refreshConfigButton: document.getElementById("refreshConfigButton"),
   editorNote: document.getElementById("editorNote"),
   logsLevelSelect: document.getElementById("logsLevelSelect"),
   toggleLogsButton: document.getElementById("toggleLogsButton"),
   clearLogsButton: document.getElementById("clearLogsButton"),
   logsStatusText: document.getElementById("logsStatusText"),
-  logsShell: document.getElementById("logsShell"),
   logsEmpty: document.getElementById("logsEmpty"),
   logsList: document.getElementById("logsList"),
 };
 
-const state = {
-  controllerUrl: "",
-  token: "",
-  currentView: "dashboard",
-  apiStatus: {
-    kind: "offline",
-    message: "Disconnected",
-  },
-  version: null,
-  config: null,
-  versionSignature: "",
-  configSignature: "",
-  daeConfigPath: "",
-  daeConfigContent: DEFAULT_CONFIG_PLACEHOLDER,
-  daeConfigDirty: false,
-  daeConfigSignature: "",
-  memory: null,
-  traffic: {
-    up: 0,
-    down: 0,
-    upTotal: 0,
-    downTotal: 0,
-  },
-  trafficSeries: createEmptySeries(),
-  trafficTransport: "idle",
-  proxies: {},
-  groups: [],
-  selectedGroup: "",
-  ws: null,
-  wsCloseIntent: false,
-  wsRetryTimer: null,
-  versionWs: null,
-  versionWsCloseIntent: false,
-  versionWsRetryTimer: null,
-  configWs: null,
-  configWsCloseIntent: false,
-  configWsRetryTimer: null,
-  daeConfigWs: null,
-  daeConfigWsCloseIntent: false,
-  daeConfigWsRetryTimer: null,
-  proxyWs: null,
-  proxyWsCloseIntent: false,
-  proxyWsRetryTimer: null,
-  proxySignature: "",
-  memoryWs: null,
-  memoryWsCloseIntent: false,
-  memoryWsRetryTimer: null,
-  logWs: null,
-  logWsCloseIntent: false,
-  logWsRetryTimer: null,
-  logLevelChanging: false,
-  logs: [],
-  logsPaused: false,
-  logsLevel: "info",
-  refreshing: false,
-  connecting: false,
-  busyGroups: new Set(),
-  busyDelayNodes: new Set(),
-};
+function createSocketRecord() {
+  return {
+    socket: null,
+    retryTimer: null,
+    closeIntent: false,
+  };
+}
 
 function createEmptySeries() {
   const now = Date.now();
@@ -187,15 +183,299 @@ function createEmptySeries() {
   };
 }
 
+function createEmptyConnectionsSnapshot() {
+  return {
+    updatedAt: "",
+    total: 0,
+    tcp: 0,
+    udp: 0,
+    connections: [],
+  };
+}
+
+function createFallbackSections(content) {
+  return [
+    {
+      id: "document-0",
+      name: "document",
+      title: "Whole Document",
+      summary: CONFIG_SECTION_DESCRIPTIONS.document,
+      content,
+    },
+  ];
+}
+
+const state = {
+  controllerUrl: "",
+  token: "",
+  currentView: "dashboard",
+  apiStatus: {
+    kind: "offline",
+    message: "Disconnected",
+  },
+  controllerHintText: DEFAULT_CONTROLLER_HINT,
+  editorNoteText: DEFAULT_EDITOR_NOTE,
+  runtimeLogLevelNoteText: DEFAULT_LOG_LEVEL_NOTE,
+  version: null,
+  versionSignature: "",
+  config: null,
+  configSignature: "",
+  memory: null,
+  traffic: {
+    up: 0,
+    down: 0,
+    upTotal: 0,
+    downTotal: 0,
+  },
+  trafficSeries: createEmptySeries(),
+  trafficTransport: "idle",
+  connections: createEmptyConnectionsSnapshot(),
+  connectionsSignature: "",
+  connectionsAvailable: false,
+  proxies: {},
+  groups: [],
+  selectedGroup: "",
+  proxySignature: "",
+  daeConfigPath: "",
+  daeConfigOriginal: DEFAULT_CONFIG_PLACEHOLDER,
+  daeConfigContent: DEFAULT_CONFIG_PLACEHOLDER,
+  daeConfigSignature: "",
+  daeConfigSections: createFallbackSections(DEFAULT_CONFIG_PLACEHOLDER),
+  daeConfigSelected: "document-0",
+  daeConfigDirty: false,
+  logs: [],
+  logsPaused: false,
+  logsLevel: "info",
+  refreshing: false,
+  connecting: false,
+  logLevelChanging: false,
+  sidebarCollapsed: false,
+  controllerExpanded: true,
+  busyGroups: new Set(),
+  busyDelayNodes: new Set(),
+  sockets: {
+    traffic: createSocketRecord(),
+    memory: createSocketRecord(),
+    version: createSocketRecord(),
+    config: createSocketRecord(),
+    daeConfig: createSocketRecord(),
+    connections: createSocketRecord(),
+    proxies: createSocketRecord(),
+    logs: createSocketRecord(),
+  },
+};
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableJson(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function versionSnapshotSignature(payload) {
+  return stableJson({
+    meta: Boolean(payload?.meta),
+    version: payload?.version || "",
+  });
+}
+
+function configSnapshotSignature(payload) {
+  return stableJson(payload || {});
+}
+
+function daeConfigDocumentSignature(doc) {
+  return stableJson({
+    path: doc?.path || "",
+    content: doc?.content || "",
+  });
+}
+
+function connectionsSnapshotSignature(payload, available = true) {
+  return stableJson({
+    available: Boolean(available),
+    updatedAt: payload?.updatedAt || "",
+    total: Number(payload?.total || 0),
+    tcp: Number(payload?.tcp || 0),
+    udp: Number(payload?.udp || 0),
+    connections: Array.isArray(payload?.connections)
+      ? payload.connections.map((conn) => ({
+          id: conn?.id || "",
+          network: conn?.network || "",
+          state: conn?.state || "",
+          source: conn?.source || "",
+          sourceAddress: conn?.sourceAddress || "",
+          sourcePort: Number(conn?.sourcePort || 0),
+          destination: conn?.destination || "",
+          destinationAddress: conn?.destinationAddress || "",
+          destinationPort: Number(conn?.destinationPort || 0),
+          process: conn?.process || "",
+          pid: Number(conn?.pid || 0),
+          outbound: conn?.outbound || "",
+          direction: conn?.direction || "",
+          mark: Number(conn?.mark || 0),
+          dscp: Number(conn?.dscp || 0),
+          must: Boolean(conn?.must),
+          hasRouting: Boolean(conn?.hasRouting),
+          mac: conn?.mac || "",
+          lastSeen: conn?.lastSeen || "",
+        }))
+      : [],
+  });
+}
+
+function proxyDelay(proxy) {
+  const entry = Array.isArray(proxy?.history) ? proxy.history[0] : null;
+  if (!entry || typeof entry.delay !== "number") {
+    return null;
+  }
+  return entry.delay;
+}
+
+function proxySnapshotSignature(rawProxies) {
+  const proxies = rawProxies || {};
+  return stableJson(
+    Object.keys(proxies)
+      .sort()
+      .map((name) => {
+        const proxy = proxies[name] || {};
+        return {
+          name,
+          type: proxy.type || "",
+          alive: Boolean(proxy.alive),
+          delay: proxyDelay(proxy),
+          now: proxy.now || "",
+          all: Array.isArray(proxy.all) ? proxy.all : [],
+          addr: proxy.addr || proxy.address || "",
+          protocol: proxy.protocol || "",
+          subscriptionTag: proxy.subscriptionTag || "",
+          udp: Boolean(proxy.udp),
+          xudp: Boolean(proxy.xudp),
+        };
+      }),
+  );
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function humanBytes(value) {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = Number(value || 0);
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  const digits = size >= 100 ? 0 : size >= 10 ? 1 : 2;
+  return `${size.toFixed(digits)} ${units[unitIndex]}`;
+}
+
+function bytesToMegabytes(value) {
+  return Number(value || 0) / (1024 * 1024);
+}
+
+function shortRate(value) {
+  return bytesToMegabytes(value).toFixed(1);
+}
+
+function formatYesNo(value) {
+  if (typeof value !== "boolean") {
+    return "-";
+  }
+  return value ? "yes" : "no";
+}
+
+function formatClock(value) {
+  if (!value) {
+    return "-";
+  }
+  const time = new Date(value);
+  if (Number.isNaN(time.getTime())) {
+    return "-";
+  }
+  return time.toLocaleTimeString("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
+
+function formatTimeAgo(value) {
+  if (!value) {
+    return "-";
+  }
+  const time = new Date(value);
+  const diffSeconds = Math.max(0, Math.floor((Date.now() - time.getTime()) / 1000));
+  if (Number.isNaN(diffSeconds)) {
+    return "-";
+  }
+  if (diffSeconds < 60) {
+    return `${diffSeconds}s ago`;
+  }
+  if (diffSeconds < 3600) {
+    return `${Math.floor(diffSeconds / 60)}m ago`;
+  }
+  return formatClock(value);
+}
+
+function titleCase(value) {
+  return value
+    .split(/[_-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function classToken(value, fallback = "unknown") {
+  const token = String(value || fallback)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return token || fallback;
+}
+
+function formatEndpoint(address, port) {
+  const host = String(address || "").trim();
+  const portNumber = Number(port || 0);
+  if (!host || host === "-") {
+    return "-";
+  }
+  return portNumber > 0 ? `${host}:${portNumber}` : host;
+}
+
+function formatConnectionLabel(label, address, port) {
+  const primary = String(label || "").trim();
+  if (primary && primary !== "-") {
+    return primary;
+  }
+  return formatEndpoint(address, port);
+}
+
 function resetLiveState() {
   state.version = null;
   state.versionSignature = "";
   state.config = null;
   state.configSignature = "";
-  state.daeConfigPath = "";
-  state.daeConfigContent = DEFAULT_CONFIG_PLACEHOLDER;
-  state.daeConfigDirty = false;
-  state.daeConfigSignature = "";
   state.memory = null;
   state.traffic = {
     up: 0,
@@ -204,12 +484,26 @@ function resetLiveState() {
     downTotal: 0,
   };
   state.trafficSeries = createEmptySeries();
+  state.trafficTransport = "idle";
+  state.connections = createEmptyConnectionsSnapshot();
+  state.connectionsSignature = "";
+  state.connectionsAvailable = false;
   state.proxies = {};
-  state.proxySignature = "";
   state.groups = [];
   state.selectedGroup = "";
+  state.proxySignature = "";
+  state.daeConfigPath = "";
+  state.daeConfigOriginal = DEFAULT_CONFIG_PLACEHOLDER;
+  state.daeConfigContent = DEFAULT_CONFIG_PLACEHOLDER;
+  state.daeConfigSignature = "";
+  state.daeConfigSections = createFallbackSections(DEFAULT_CONFIG_PLACEHOLDER);
+  state.daeConfigSelected = state.daeConfigSections[0].id;
+  state.daeConfigDirty = false;
   state.logs = [];
   state.logsPaused = false;
+  state.controllerHintText = DEFAULT_CONTROLLER_HINT;
+  state.editorNoteText = DEFAULT_EDITOR_NOTE;
+  state.runtimeLogLevelNoteText = DEFAULT_LOG_LEVEL_NOTE;
 }
 
 function loadPersistedConnection() {
@@ -228,9 +522,17 @@ function loadPersistedConnection() {
   refs.controllerToken.value = state.token;
 }
 
+function loadUiPrefs() {
+  state.sidebarCollapsed = window.localStorage.getItem(STORAGE_KEYS.sidebarCollapsed) === "true";
+}
+
 function persistConnection() {
   window.localStorage.setItem(STORAGE_KEYS.controller, state.controllerUrl);
   window.localStorage.setItem(STORAGE_KEYS.token, state.token);
+}
+
+function persistUiPrefs() {
+  window.localStorage.setItem(STORAGE_KEYS.sidebarCollapsed, String(state.sidebarCollapsed));
 }
 
 function normalizeControllerUrl(value) {
@@ -238,7 +540,6 @@ function normalizeControllerUrl(value) {
   if (!trimmed) {
     throw new Error("Controller address is required");
   }
-
   const normalized = /^[a-z]+:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
   const url = new URL(normalized);
   url.pathname = "/";
@@ -283,7 +584,7 @@ async function apiFetch(path, options = {}) {
         message = payload.message;
       }
     } catch {
-      // Ignore response body parse failures and keep the default message.
+      // Keep the default HTTP message when the body is not JSON.
     }
     const error = new Error(message);
     error.status = response.status;
@@ -297,113 +598,395 @@ async function apiFetch(path, options = {}) {
   return JSON.parse(text);
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, ms);
-  });
-}
-
-function stableJson(value) {
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => stableJson(item)).join(",")}]`;
-  }
-  if (value && typeof value === "object") {
-    return `{${Object.keys(value)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
-function versionSnapshotSignature(payload) {
-  return stableJson({
-    meta: Boolean(payload?.meta),
-    version: payload?.version || "",
-  });
-}
-
-function configSnapshotSignature(payload) {
-  return stableJson(payload || {});
-}
-
-function daeConfigDocumentSignature(doc) {
-  return stableJson({
-    path: doc?.path || "",
-    content: doc?.content || "",
-  });
-}
-
-function proxySnapshotSignature(rawProxies) {
-  const proxies = rawProxies || {};
-  return stableJson(
-    Object.keys(proxies)
-      .sort()
-      .map((name) => {
-        const proxy = proxies[name] || {};
-        return {
-          name,
-          type: proxy.type || "",
-          alive: Boolean(proxy.alive),
-          delay: proxyDelay(proxy),
-          now: proxy.now || "",
-          all: Array.isArray(proxy.all) ? proxy.all : [],
-          addr: proxy.addr || proxy.address || "",
-          protocol: proxy.protocol || "",
-          subscriptionTag: proxy.subscriptionTag || "",
-          udp: Boolean(proxy.udp),
-          xudp: Boolean(proxy.xudp),
-        };
-      }),
-  );
-}
-
-function activeViewMeta() {
-  return VIEW_META[state.currentView] || VIEW_META.dashboard;
-}
-
-function renderViewState() {
-  const meta = activeViewMeta();
-  refs.pageEyebrow.textContent = meta.eyebrow;
-  refs.pageTitle.textContent = meta.title;
-  refs.pageBanner.textContent = meta.banner;
-  refs.navItems.forEach((item) => {
-    item.classList.toggle("active", item.dataset.view === state.currentView);
-  });
-  refs.pages.forEach((page) => {
-    page.classList.toggle("active", page.dataset.page === state.currentView);
-  });
-}
-
-function setActiveView(view) {
-  if (!VIEW_META[view]) {
+function clearRetryTimer(name) {
+  const record = state.sockets[name];
+  if (!record?.retryTimer) {
     return;
   }
-  state.currentView = view;
-  renderViewState();
-  if (view === "logs" && state.controllerUrl && state.apiStatus.kind === "connected" && !state.logsPaused) {
-    connectLogSocket();
-  } else if (view !== "logs") {
-    closeLogSocket();
-  }
-  renderControllerPanel();
-  renderLogs();
+  window.clearTimeout(record.retryTimer);
+  record.retryTimer = null;
 }
 
-function wsState(socket, retryTimer) {
+function scheduleSocketRetry(name, callback) {
+  clearRetryTimer(name);
+  state.sockets[name].retryTimer = window.setTimeout(() => {
+    state.sockets[name].retryTimer = null;
+    callback();
+  }, RETRY_DELAY_MS);
+}
+
+function closeSocket(name) {
+  const record = state.sockets[name];
+  if (!record) {
+    return;
+  }
+  clearRetryTimer(name);
+  if (record.socket) {
+    record.closeIntent = true;
+    record.socket.close();
+  }
+}
+
+function closeAllSockets() {
+  Object.keys(state.sockets).forEach((name) => {
+    closeSocket(name);
+  });
+  state.trafficTransport = "idle";
+}
+
+function wsState(name) {
   if (!state.controllerUrl) {
     return "idle";
   }
-  if (socket?.readyState === WebSocket.OPEN) {
+  const record = state.sockets[name];
+  if (record?.socket?.readyState === WebSocket.OPEN) {
     return "live";
   }
-  if (socket?.readyState === WebSocket.CONNECTING) {
+  if (record?.socket?.readyState === WebSocket.CONNECTING) {
     return "opening";
   }
-  if (retryTimer) {
+  if (record?.retryTimer) {
     return "retrying";
   }
   return state.apiStatus.kind === "connected" ? "standby" : "offline";
+}
+
+function openSocket(name, path, options) {
+  closeSocket(name);
+
+  let url;
+  try {
+    url = typeof options.buildUrl === "function" ? options.buildUrl() : buildWebSocketUrl(path);
+  } catch {
+    options.onOpenFailure?.();
+    if (options.shouldRetry?.()) {
+      scheduleSocketRetry(name, options.retry);
+    }
+    return;
+  }
+
+  let socket;
+  try {
+    socket = new WebSocket(url);
+  } catch {
+    options.onOpenFailure?.();
+    if (options.shouldRetry?.()) {
+      scheduleSocketRetry(name, options.retry);
+    }
+    return;
+  }
+
+  const record = state.sockets[name];
+  record.closeIntent = false;
+  record.socket = socket;
+  options.onStart?.();
+
+  socket.addEventListener("open", () => {
+    if (record.socket !== socket) {
+      return;
+    }
+    options.onOpen?.();
+  });
+
+  socket.addEventListener("message", (event) => {
+    if (record.socket !== socket) {
+      return;
+    }
+    options.onMessage?.(event.data);
+  });
+
+  socket.addEventListener("close", () => {
+    if (record.socket !== socket) {
+      return;
+    }
+    record.socket = null;
+    const intentional = record.closeIntent;
+    record.closeIntent = false;
+    if (intentional) {
+      options.onIntentionalClose?.();
+      return;
+    }
+    options.onClose?.();
+    if (options.shouldRetry?.()) {
+      scheduleSocketRetry(name, options.retry);
+    }
+  });
+}
+
+function connectTrafficSocket() {
+  openSocket("traffic", "/traffic", {
+    onStart() {
+      state.trafficTransport = "ws connecting";
+      renderTrafficMeta();
+      renderControllerPanel();
+    },
+    onOpen() {
+      state.trafficTransport = "websocket";
+      renderTrafficMeta();
+      renderControllerPanel();
+    },
+    onMessage(data) {
+      try {
+        applyTrafficSnapshot(JSON.parse(data), true);
+      } catch {
+        // Ignore malformed frames and keep the chart stable.
+      }
+    },
+    onClose() {
+      state.trafficTransport = "ws closed";
+      renderTrafficMeta();
+      renderControllerPanel();
+    },
+    onIntentionalClose() {
+      renderControllerPanel();
+    },
+    onOpenFailure() {
+      state.trafficTransport = "ws failed";
+      renderTrafficMeta();
+      renderControllerPanel();
+    },
+    shouldRetry() {
+      return Boolean(state.controllerUrl);
+    },
+    retry() {
+      if (state.controllerUrl) {
+        connectTrafficSocket();
+      }
+    },
+  });
+}
+
+function connectMemorySocket() {
+  openSocket("memory", "/memory", {
+    onStart: renderControllerPanel,
+    onOpen: renderControllerPanel,
+    onMessage(data) {
+      try {
+        updateMemory(JSON.parse(data));
+      } catch {
+        // Ignore malformed frames.
+      }
+    },
+    onClose: renderControllerPanel,
+    onIntentionalClose: renderControllerPanel,
+    onOpenFailure: renderControllerPanel,
+    shouldRetry() {
+      return Boolean(state.controllerUrl);
+    },
+    retry() {
+      if (state.controllerUrl) {
+        connectMemorySocket();
+      }
+    },
+  });
+}
+
+function connectVersionSocket() {
+  openSocket("version", "/version", {
+    onStart: renderControllerPanel,
+    onOpen: renderControllerPanel,
+    onMessage(data) {
+      try {
+        applyVersionSnapshot(JSON.parse(data));
+      } catch {
+        // Ignore malformed frames.
+      }
+    },
+    onClose: renderControllerPanel,
+    onIntentionalClose: renderControllerPanel,
+    onOpenFailure: renderControllerPanel,
+    shouldRetry() {
+      return Boolean(state.controllerUrl);
+    },
+    retry() {
+      if (state.controllerUrl) {
+        connectVersionSocket();
+      }
+    },
+  });
+}
+
+function connectConfigSocket() {
+  openSocket("config", "/configs", {
+    onStart: renderControllerPanel,
+    onOpen: renderControllerPanel,
+    onMessage(data) {
+      try {
+        applyConfigSnapshot(JSON.parse(data));
+      } catch {
+        // Ignore malformed frames.
+      }
+    },
+    onClose: renderControllerPanel,
+    onIntentionalClose: renderControllerPanel,
+    onOpenFailure: renderControllerPanel,
+    shouldRetry() {
+      return Boolean(state.controllerUrl);
+    },
+    retry() {
+      if (state.controllerUrl) {
+        connectConfigSocket();
+      }
+    },
+  });
+}
+
+function connectProxySocket() {
+  openSocket("proxies", "/proxies", {
+    onStart: renderControllerPanel,
+    onOpen: renderControllerPanel,
+    onMessage(data) {
+      try {
+        const payload = JSON.parse(data);
+        applyProxySnapshot(payload.proxies);
+      } catch {
+        // Ignore malformed frames.
+      }
+    },
+    onClose: renderControllerPanel,
+    onIntentionalClose: renderControllerPanel,
+    onOpenFailure: renderControllerPanel,
+    shouldRetry() {
+      return Boolean(state.controllerUrl);
+    },
+    retry() {
+      if (state.controllerUrl) {
+        connectProxySocket();
+      }
+    },
+  });
+}
+
+function connectConnectionsSocket() {
+  if (!state.connectionsAvailable) {
+    renderControllerPanel();
+    return;
+  }
+  openSocket("connections", "/connections", {
+    buildUrl() {
+      const url = buildHttpUrl(`/connections?limit=${CONNECTION_LIMIT}`);
+      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+      if (state.token) {
+        url.searchParams.set("token", state.token);
+      }
+      return url.toString();
+    },
+    onStart: renderControllerPanel,
+    onOpen: renderControllerPanel,
+    onMessage(data) {
+      try {
+        applyConnectionsSnapshot(JSON.parse(data));
+      } catch {
+        // Ignore malformed frames.
+      }
+    },
+    onClose: renderControllerPanel,
+    onIntentionalClose: renderControllerPanel,
+    onOpenFailure: renderControllerPanel,
+    shouldRetry() {
+      return Boolean(state.controllerUrl);
+    },
+    retry() {
+      if (state.controllerUrl) {
+        connectConnectionsSocket();
+      }
+    },
+  });
+}
+
+function connectDaeConfigSocket() {
+  openSocket("daeConfig", "/configs/dae", {
+    onStart: renderControllerPanel,
+    onOpen: renderControllerPanel,
+    onMessage(data) {
+      try {
+        applyDaeConfigDocument(JSON.parse(data));
+      } catch {
+        // Ignore malformed frames.
+      }
+    },
+    onClose: renderControllerPanel,
+    onIntentionalClose: renderControllerPanel,
+    onOpenFailure: renderControllerPanel,
+    shouldRetry() {
+      return Boolean(state.controllerUrl);
+    },
+    retry() {
+      if (state.controllerUrl) {
+        connectDaeConfigSocket();
+      }
+    },
+  });
+}
+
+function connectLogSocket() {
+  if (state.currentView !== "logs" || state.logsPaused || !state.controllerUrl) {
+    return;
+  }
+
+  openSocket("logs", "/logs", {
+    buildUrl() {
+      const url = buildHttpUrl("/logs");
+      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+      if (state.token) {
+        url.searchParams.set("token", state.token);
+      }
+      url.searchParams.set("format", "structured");
+      url.searchParams.set("level", state.logsLevel);
+      return url.toString();
+    },
+    onStart() {
+      renderControllerPanel();
+      renderLogs();
+    },
+    onOpen() {
+      renderControllerPanel();
+      renderLogs();
+    },
+    onMessage(data) {
+      try {
+        pushLogEntry(JSON.parse(data));
+        renderLogs();
+      } catch {
+        // Ignore malformed frames.
+      }
+    },
+    onClose() {
+      renderControllerPanel();
+      renderLogs();
+    },
+    onIntentionalClose() {
+      renderControllerPanel();
+      renderLogs();
+    },
+    onOpenFailure() {
+      renderControllerPanel();
+      renderLogs();
+    },
+    shouldRetry() {
+      return Boolean(state.controllerUrl && state.currentView === "logs" && !state.logsPaused);
+    },
+    retry() {
+      if (state.controllerUrl && state.currentView === "logs" && !state.logsPaused) {
+        connectLogSocket();
+      }
+    },
+  });
+}
+
+function openLiveChannels() {
+  connectVersionSocket();
+  connectConfigSocket();
+  connectProxySocket();
+  connectTrafficSocket();
+  connectMemorySocket();
+  if (state.connectionsAvailable) {
+    connectConnectionsSocket();
+  }
+  connectDaeConfigSocket();
+  if (state.currentView === "logs" && !state.logsPaused) {
+    connectLogSocket();
+  }
 }
 
 function pushLogEntry(entry) {
@@ -411,228 +994,6 @@ function pushLogEntry(entry) {
   if (state.logs.length > MAX_LOG_ENTRIES) {
     state.logs.length = MAX_LOG_ENTRIES;
   }
-}
-
-function setApiStatus(kind, message) {
-  state.apiStatus = { kind, message };
-  renderHeaderStatus();
-  refs.controllerStateValue.textContent = message.toLowerCase();
-}
-
-function renderHeaderStatus() {
-  refs.apiStatusText.textContent = state.apiStatus.message;
-  refs.apiStatusDot.classList.remove("offline", "warn");
-  if (state.apiStatus.kind === "offline") {
-    refs.apiStatusDot.classList.add("offline");
-  } else if (state.apiStatus.kind === "warn") {
-    refs.apiStatusDot.classList.add("warn");
-  }
-}
-
-function setBusyState(busy) {
-  state.connecting = busy;
-  refs.connectButton.disabled = busy;
-  refs.applyLogLevelButton.disabled = busy || state.logLevelChanging || !state.controllerUrl;
-}
-
-function closeTrafficSocket() {
-  if (state.wsRetryTimer) {
-    window.clearTimeout(state.wsRetryTimer);
-    state.wsRetryTimer = null;
-  }
-  if (state.ws) {
-    state.wsCloseIntent = true;
-    state.ws.close();
-    state.ws = null;
-  }
-  state.trafficTransport = "idle";
-}
-
-function closeMemorySocket() {
-  if (state.memoryWsRetryTimer) {
-    window.clearTimeout(state.memoryWsRetryTimer);
-    state.memoryWsRetryTimer = null;
-  }
-  if (state.memoryWs) {
-    state.memoryWsCloseIntent = true;
-    state.memoryWs.close();
-    state.memoryWs = null;
-  }
-}
-
-function closeVersionSocket() {
-  if (state.versionWsRetryTimer) {
-    window.clearTimeout(state.versionWsRetryTimer);
-    state.versionWsRetryTimer = null;
-  }
-  if (state.versionWs) {
-    state.versionWsCloseIntent = true;
-    state.versionWs.close();
-    state.versionWs = null;
-  }
-}
-
-function closeConfigSocket() {
-  if (state.configWsRetryTimer) {
-    window.clearTimeout(state.configWsRetryTimer);
-    state.configWsRetryTimer = null;
-  }
-  if (state.configWs) {
-    state.configWsCloseIntent = true;
-    state.configWs.close();
-    state.configWs = null;
-  }
-}
-
-function closeProxySocket() {
-  if (state.proxyWsRetryTimer) {
-    window.clearTimeout(state.proxyWsRetryTimer);
-    state.proxyWsRetryTimer = null;
-  }
-  if (state.proxyWs) {
-    state.proxyWsCloseIntent = true;
-    state.proxyWs.close();
-    state.proxyWs = null;
-  }
-}
-
-function closeDaeConfigSocket() {
-  if (state.daeConfigWsRetryTimer) {
-    window.clearTimeout(state.daeConfigWsRetryTimer);
-    state.daeConfigWsRetryTimer = null;
-  }
-  if (state.daeConfigWs) {
-    state.daeConfigWsCloseIntent = true;
-    state.daeConfigWs.close();
-    state.daeConfigWs = null;
-  }
-}
-
-function closeLogSocket() {
-  if (state.logWsRetryTimer) {
-    window.clearTimeout(state.logWsRetryTimer);
-    state.logWsRetryTimer = null;
-  }
-  if (state.logWs) {
-    state.logWsCloseIntent = true;
-    state.logWs.close();
-    state.logWs = null;
-  }
-}
-
-function connectTrafficSocket() {
-  closeTrafficSocket();
-
-  let socket;
-  try {
-    socket = new WebSocket(buildWebSocketUrl("/traffic"));
-  } catch {
-    state.trafficTransport = "ws failed";
-    renderTrafficMeta();
-    return;
-  }
-
-  state.wsCloseIntent = false;
-  state.ws = socket;
-  state.trafficTransport = "ws connecting";
-  renderTrafficMeta();
-  renderControllerPanel();
-
-  socket.addEventListener("open", () => {
-    if (state.ws !== socket) {
-      return;
-    }
-    state.trafficTransport = "websocket";
-    renderTrafficMeta();
-    renderControllerPanel();
-  });
-
-  socket.addEventListener("message", (event) => {
-    if (state.ws !== socket) {
-      return;
-    }
-    try {
-      const payload = JSON.parse(event.data);
-      updateTraffic(payload);
-    } catch {
-      // Ignore malformed frames and keep the current chart.
-    }
-  });
-
-  socket.addEventListener("close", () => {
-    if (state.ws !== socket) {
-      return;
-    }
-    state.ws = null;
-    if (state.wsCloseIntent) {
-      renderControllerPanel();
-      return;
-    }
-    state.trafficTransport = "ws closed";
-    renderTrafficMeta();
-    renderControllerPanel();
-    state.wsRetryTimer = window.setTimeout(() => {
-      if (state.controllerUrl) {
-        connectTrafficSocket();
-      }
-    }, 3000);
-  });
-}
-
-function connectMemorySocket() {
-  closeMemorySocket();
-
-  let socket;
-  try {
-    socket = new WebSocket(buildWebSocketUrl("/memory"));
-  } catch {
-    state.memoryWsRetryTimer = window.setTimeout(() => {
-      if (state.controllerUrl) {
-        connectMemorySocket();
-      }
-    }, 3000);
-    return;
-  }
-
-  state.memoryWsCloseIntent = false;
-  state.memoryWs = socket;
-  renderControllerPanel();
-
-  socket.addEventListener("open", () => {
-    if (state.memoryWs !== socket) {
-      return;
-    }
-    renderControllerPanel();
-  });
-
-  socket.addEventListener("message", (event) => {
-    if (state.memoryWs !== socket) {
-      return;
-    }
-    try {
-      const payload = JSON.parse(event.data);
-      updateMemory(payload);
-    } catch {
-      // Ignore malformed frames and keep the current memory state.
-    }
-  });
-
-  socket.addEventListener("close", () => {
-    if (state.memoryWs !== socket) {
-      return;
-    }
-    state.memoryWs = null;
-    if (state.memoryWsCloseIntent) {
-      renderControllerPanel();
-      return;
-    }
-    renderControllerPanel();
-    state.memoryWsRetryTimer = window.setTimeout(() => {
-      if (state.controllerUrl) {
-        connectMemorySocket();
-      }
-    }, 3000);
-  });
 }
 
 function applyVersionSnapshot(payload) {
@@ -656,6 +1017,54 @@ function applyConfigSnapshot(payload) {
   renderSystemStatus();
 }
 
+function normalizeConnectionsSnapshot(payload) {
+  return {
+    updatedAt: payload?.updatedAt || "",
+    total: Number(payload?.total || 0),
+    tcp: Number(payload?.tcp || 0),
+    udp: Number(payload?.udp || 0),
+    connections: Array.isArray(payload?.connections)
+      ? payload.connections.map((conn) => ({
+          id: conn?.id || "",
+          network: conn?.network || "-",
+          state: conn?.state || "-",
+          source: conn?.source || "-",
+          sourceAddress: conn?.sourceAddress || "",
+          sourcePort: Number(conn?.sourcePort || 0),
+          destination: conn?.destination || "-",
+          destinationAddress: conn?.destinationAddress || "",
+          destinationPort: Number(conn?.destinationPort || 0),
+          process: conn?.process || "-",
+          pid: Number(conn?.pid || 0),
+          outbound: conn?.outbound || "-",
+          direction: conn?.direction || "-",
+          mark: Number(conn?.mark || 0),
+          dscp: Number(conn?.dscp || 0),
+          must: Boolean(conn?.must),
+          hasRouting: Boolean(conn?.hasRouting),
+          mac: conn?.mac || "-",
+          lastSeen: conn?.lastSeen || "",
+        }))
+      : [],
+  };
+}
+
+function applyConnectionsSnapshot(payload, available = true) {
+  const signature = connectionsSnapshotSignature(payload, available);
+  if (signature === state.connectionsSignature) {
+    return;
+  }
+  state.connectionsSignature = signature;
+  state.connections = normalizeConnectionsSnapshot(payload);
+  state.connectionsAvailable = Boolean(available);
+  if (!state.connectionsAvailable) {
+    closeSocket("connections");
+  }
+  renderHeaderStatus();
+  renderConnections();
+  renderSystemStatus();
+}
+
 function applyProxySnapshot(rawProxies) {
   const signature = proxySnapshotSignature(rawProxies);
   if (signature === state.proxySignature) {
@@ -669,334 +1078,50 @@ function applyProxySnapshot(rawProxies) {
 }
 
 function applyDaeConfigDocument(doc) {
+  state.daeConfigPath = doc?.path || "";
   const signature = daeConfigDocumentSignature(doc);
-  state.daeConfigPath = doc.path || "";
   if (signature === state.daeConfigSignature) {
+    renderConfigMeta();
     return;
   }
   state.daeConfigSignature = signature;
   if (!state.daeConfigDirty) {
-    state.daeConfigContent = typeof doc.content === "string" ? doc.content : "";
-    renderDaeConfigEditor();
+    const content = typeof doc?.content === "string" ? doc.content : "";
+    state.daeConfigOriginal = content;
+    state.daeConfigContent = content;
+    state.daeConfigSections = parseConfigSections(content);
+    if (!state.daeConfigSections.some((section) => section.id === state.daeConfigSelected)) {
+      state.daeConfigSelected = state.daeConfigSections[0]?.id || "";
+    }
+    state.daeConfigDirty = false;
   }
+  renderDaeConfigEditor();
+  renderSystemStatus();
 }
 
-function connectVersionSocket() {
-  closeVersionSocket();
-
-  let socket;
-  try {
-    socket = new WebSocket(buildWebSocketUrl("/version"));
-  } catch {
-    state.versionWsRetryTimer = window.setTimeout(() => {
-      if (state.controllerUrl) {
-        connectVersionSocket();
-      }
-    }, 3000);
-    return;
-  }
-
-  state.versionWsCloseIntent = false;
-  state.versionWs = socket;
-  renderControllerPanel();
-
-  socket.addEventListener("open", () => {
-    if (state.versionWs !== socket) {
-      return;
-    }
-    renderControllerPanel();
-  });
-
-  socket.addEventListener("message", (event) => {
-    if (state.versionWs !== socket) {
-      return;
-    }
-    try {
-      applyVersionSnapshot(JSON.parse(event.data));
-    } catch {
-      // Ignore malformed frames and keep the current version state.
-    }
-  });
-
-  socket.addEventListener("close", () => {
-    if (state.versionWs !== socket) {
-      return;
-    }
-    state.versionWs = null;
-    if (state.versionWsCloseIntent) {
-      renderControllerPanel();
-      return;
-    }
-    renderControllerPanel();
-    state.versionWsRetryTimer = window.setTimeout(() => {
-      if (state.controllerUrl) {
-        connectVersionSocket();
-      }
-    }, 3000);
-  });
-}
-
-function connectConfigSocket() {
-  closeConfigSocket();
-
-  let socket;
-  try {
-    socket = new WebSocket(buildWebSocketUrl("/configs"));
-  } catch {
-    state.configWsRetryTimer = window.setTimeout(() => {
-      if (state.controllerUrl) {
-        connectConfigSocket();
-      }
-    }, 3000);
-    return;
-  }
-
-  state.configWsCloseIntent = false;
-  state.configWs = socket;
-  renderControllerPanel();
-
-  socket.addEventListener("open", () => {
-    if (state.configWs !== socket) {
-      return;
-    }
-    renderControllerPanel();
-  });
-
-  socket.addEventListener("message", (event) => {
-    if (state.configWs !== socket) {
-      return;
-    }
-    try {
-      applyConfigSnapshot(JSON.parse(event.data));
-    } catch {
-      // Ignore malformed frames and keep the current config state.
-    }
-  });
-
-  socket.addEventListener("close", () => {
-    if (state.configWs !== socket) {
-      return;
-    }
-    state.configWs = null;
-    if (state.configWsCloseIntent) {
-      renderControllerPanel();
-      return;
-    }
-    renderControllerPanel();
-    state.configWsRetryTimer = window.setTimeout(() => {
-      if (state.controllerUrl) {
-        connectConfigSocket();
-      }
-    }, 3000);
-  });
-}
-
-function connectProxySocket() {
-  closeProxySocket();
-
-  let socket;
-  try {
-    socket = new WebSocket(buildWebSocketUrl("/proxies"));
-  } catch {
-    state.proxyWsRetryTimer = window.setTimeout(() => {
-      if (state.controllerUrl) {
-        connectProxySocket();
-      }
-    }, 3000);
-    return;
-  }
-
-  state.proxyWsCloseIntent = false;
-  state.proxyWs = socket;
-  renderControllerPanel();
-
-  socket.addEventListener("open", () => {
-    if (state.proxyWs !== socket) {
-      return;
-    }
-    renderControllerPanel();
-  });
-
-  socket.addEventListener("message", (event) => {
-    if (state.proxyWs !== socket) {
-      return;
-    }
-    try {
-      const payload = JSON.parse(event.data);
-      applyProxySnapshot(payload.proxies);
-    } catch {
-      // Ignore malformed frames and keep the current proxy state.
-    }
-  });
-
-  socket.addEventListener("close", () => {
-    if (state.proxyWs !== socket) {
-      return;
-    }
-    state.proxyWs = null;
-    if (state.proxyWsCloseIntent) {
-      renderControllerPanel();
-      return;
-    }
-    renderControllerPanel();
-    state.proxyWsRetryTimer = window.setTimeout(() => {
-      if (state.controllerUrl) {
-        connectProxySocket();
-      }
-    }, 3000);
-  });
-}
-
-function connectDaeConfigSocket() {
-  closeDaeConfigSocket();
-
-  let socket;
-  try {
-    socket = new WebSocket(buildWebSocketUrl("/configs/dae"));
-  } catch {
-    state.daeConfigWsRetryTimer = window.setTimeout(() => {
-      if (state.controllerUrl) {
-        connectDaeConfigSocket();
-      }
-    }, 3000);
-    return;
-  }
-
-  state.daeConfigWsCloseIntent = false;
-  state.daeConfigWs = socket;
-  renderControllerPanel();
-
-  socket.addEventListener("open", () => {
-    if (state.daeConfigWs !== socket) {
-      return;
-    }
-    renderControllerPanel();
-  });
-
-  socket.addEventListener("message", (event) => {
-    if (state.daeConfigWs !== socket) {
-      return;
-    }
-    try {
-      applyDaeConfigDocument(JSON.parse(event.data));
-    } catch {
-      // Ignore malformed frames and keep the current editor state.
-    }
-  });
-
-  socket.addEventListener("close", () => {
-    if (state.daeConfigWs !== socket) {
-      return;
-    }
-    state.daeConfigWs = null;
-    if (state.daeConfigWsCloseIntent) {
-      renderControllerPanel();
-      return;
-    }
-    renderControllerPanel();
-    state.daeConfigWsRetryTimer = window.setTimeout(() => {
-      if (state.controllerUrl) {
-        connectDaeConfigSocket();
-      }
-    }, 3000);
-  });
-}
-
-function connectLogSocket() {
-  if (state.currentView !== "logs" || state.logsPaused) {
-    return;
-  }
-  closeLogSocket();
-
-  let socket;
-  try {
-    const url = buildHttpUrl("/logs");
-    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    if (state.token) {
-      url.searchParams.set("token", state.token);
-    }
-    url.searchParams.set("format", "structured");
-    url.searchParams.set("level", state.logsLevel);
-    socket = new WebSocket(url.toString());
-  } catch {
-    state.logWsRetryTimer = window.setTimeout(() => {
-      if (state.controllerUrl && state.currentView === "logs" && !state.logsPaused) {
-        connectLogSocket();
-      }
-    }, 3000);
-    renderLogs();
-    return;
-  }
-
-  state.logWsCloseIntent = false;
-  state.logWs = socket;
-  renderControllerPanel();
-  renderLogs();
-
-  socket.addEventListener("open", () => {
-    if (state.logWs !== socket) {
-      return;
-    }
-    renderControllerPanel();
-    renderLogs();
-  });
-
-  socket.addEventListener("message", (event) => {
-    if (state.logWs !== socket) {
-      return;
-    }
-    try {
-      pushLogEntry(JSON.parse(event.data));
-      renderLogs();
-    } catch {
-      // Ignore malformed frames and keep the current log buffer.
-    }
-  });
-
-  socket.addEventListener("close", () => {
-    if (state.logWs !== socket) {
-      return;
-    }
-    state.logWs = null;
-    if (state.logWsCloseIntent) {
-      renderControllerPanel();
-      renderLogs();
-      return;
-    }
-    renderControllerPanel();
-    state.logWsRetryTimer = window.setTimeout(() => {
-      if (state.controllerUrl && state.currentView === "logs" && !state.logsPaused) {
-        connectLogSocket();
-      }
-    }, 3000);
-    renderLogs();
-  });
-}
-
-function updateTraffic(payload) {
+function applyTrafficSnapshot(payload, appendSample) {
   state.traffic = {
-    up: Number(payload.up || 0),
-    down: Number(payload.down || 0),
-    upTotal: Number(payload.upTotal || 0),
-    downTotal: Number(payload.downTotal || 0),
+    up: Number(payload?.up || 0),
+    down: Number(payload?.down || 0),
+    upTotal: Number(payload?.upTotal || 0),
+    downTotal: Number(payload?.downTotal || 0),
   };
 
-  const upRate = bytesToMegabytes(state.traffic.up);
-  const downRate = bytesToMegabytes(state.traffic.down);
+  if (appendSample) {
+    state.trafficSeries.up.push(bytesToMegabytes(state.traffic.up));
+    state.trafficSeries.down.push(-bytesToMegabytes(state.traffic.down));
+    state.trafficSeries.times.push(Date.now());
+    trimTrafficSeries();
+  }
 
-  state.trafficSeries.up.push(upRate);
-  state.trafficSeries.down.push(-downRate);
-  state.trafficSeries.times.push(Date.now());
-
-  trimTrafficSeries();
   renderTrafficMeta();
   renderChart();
 }
 
 function updateMemory(payload) {
   state.memory = {
-    inuse: Number(payload.inuse || 0),
-    oslimit: Number(payload.oslimit || 0),
+    inuse: Number(payload?.inuse || 0),
+    oslimit: Number(payload?.oslimit || 0),
   };
   renderSystemStatus();
 }
@@ -1009,26 +1134,6 @@ function trimTrafficSeries() {
   }
 }
 
-function bytesToMegabytes(value) {
-  return value / (1024 * 1024);
-}
-
-function humanBytes(value) {
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let size = Number(value || 0);
-  let unitIndex = 0;
-  while (size >= 1024 && unitIndex < units.length - 1) {
-    size /= 1024;
-    unitIndex += 1;
-  }
-  const digits = size >= 100 ? 0 : size >= 10 ? 1 : 2;
-  return `${size.toFixed(digits)} ${units[unitIndex]}`;
-}
-
-function shortRate(value) {
-  return bytesToMegabytes(value).toFixed(1);
-}
-
 function refreshProxyCollections(rawProxies) {
   state.proxies = rawProxies || {};
   state.groups = Object.values(state.proxies).filter((proxy) => Array.isArray(proxy.all) && proxy.all.length > 0);
@@ -1037,99 +1142,8 @@ function refreshProxyCollections(rawProxies) {
   }
 }
 
-async function refreshSnapshot(updateStatus = true) {
-  if (!state.controllerUrl || state.refreshing) {
-    return;
-  }
-  state.refreshing = true;
-  try {
-    const [version, config, proxiesPayload, daeConfig] = await Promise.all([
-      apiFetch("/version"),
-      apiFetch("/configs"),
-      apiFetch("/proxies"),
-      apiFetch("/configs/dae"),
-    ]);
-
-    applyVersionSnapshot(version);
-    applyConfigSnapshot(config);
-    applyProxySnapshot(proxiesPayload.proxies);
-    applyDaeConfigDocument(daeConfig);
-
-    if (updateStatus) {
-      setApiStatus("connected", "Connected");
-      refs.controllerHint.textContent =
-        "Connected to dae external controller. Runtime state snapshots stream every 5 seconds over WebSocket, and config edits write back to startup `config.dae`.";
-      connectVersionSocket();
-      connectConfigSocket();
-      connectProxySocket();
-      connectTrafficSocket();
-      connectMemorySocket();
-      connectDaeConfigSocket();
-      if (state.currentView === "logs" && !state.logsPaused) {
-        connectLogSocket();
-      }
-      renderAll();
-    }
-  } catch (error) {
-    handleConnectionError(error);
-  } finally {
-    state.refreshing = false;
-  }
-}
-
-function handleConnectionError(error) {
-  closeVersionSocket();
-  closeConfigSocket();
-  closeProxySocket();
-  closeTrafficSocket();
-  closeMemorySocket();
-  closeDaeConfigSocket();
-  closeLogSocket();
-  resetLiveState();
-
-  if (error.status === 401) {
-    setApiStatus("warn", "Unauthorized");
-    refs.controllerHint.textContent =
-      "Controller rejected the request. If `external_controller_secret` is set, provide the Bearer token here.";
-  } else {
-    setApiStatus("offline", "Unavailable");
-    refs.controllerHint.textContent =
-      "Failed to reach the controller. Confirm dae is running and `global.external_controller` is listening on the address above.";
-  }
-
-  renderAll();
-}
-
-async function connectController() {
-  try {
-    state.controllerUrl = normalizeControllerUrl(refs.controllerUrl.value);
-    state.token = refs.controllerToken.value.trim();
-  } catch (error) {
-    setApiStatus("warn", error.message);
-    refs.controllerHint.textContent = error.message;
-    renderAll();
-    return;
-  }
-
-  persistConnection();
-  closeVersionSocket();
-  closeConfigSocket();
-  closeProxySocket();
-  closeTrafficSocket();
-  closeMemorySocket();
-  closeDaeConfigSocket();
-  closeLogSocket();
-  resetLiveState();
-  setBusyState(true);
-  setApiStatus("warn", "Connecting");
-  refs.controllerHint.textContent =
-    "Opening live channels for `/version`, `/configs`, `/proxies`, `/traffic`, `/memory`, and startup `config.dae`.";
-  renderAll();
-  await refreshSnapshot(true);
-  if (state.apiStatus.kind === "connected") {
-    refs.editorNote.textContent = state.daeConfigPath ? `Loaded ${state.daeConfigPath}.` : "Loaded startup config.dae.";
-  }
-  setBusyState(false);
+function currentGroup() {
+  return state.groups.find((group) => group.name === state.selectedGroup) || null;
 }
 
 function computeLeafStats() {
@@ -1138,75 +1152,420 @@ function computeLeafStats() {
   return { leaves, alive };
 }
 
-function currentGroup() {
-  return state.groups.find((group) => group.name === state.selectedGroup) || null;
+function inferFlagTone(name) {
+  const palette = ["us", "jp", "sg"];
+  let hash = 0;
+  for (const char of name) {
+    hash += char.charCodeAt(0);
+  }
+  return palette[hash % palette.length];
+}
+
+function inferProxyLabel(name) {
+  const match = name.match(/[A-Za-z]{2}/);
+  return match ? match[0].toUpperCase() : "PX";
+}
+
+function selectedConfigSection() {
+  return state.daeConfigSections.find((section) => section.id === state.daeConfigSelected) || state.daeConfigSections[0] || null;
+}
+
+function inferConfigSectionName(chunk, index) {
+  const lines = String(chunk || "").split("\n");
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) {
+      continue;
+    }
+    const match = trimmed.match(/^([A-Za-z_][\w-]*)\s*\{/);
+    if (match) {
+      return match[1];
+    }
+    break;
+  }
+  return index === 0 ? "document" : `section-${index + 1}`;
+}
+
+function buildConfigSection(chunk, index) {
+  const name = inferConfigSectionName(chunk, index);
+  return {
+    id: `${name}-${index}`,
+    name,
+    title: name === "document" ? "Whole Document" : titleCase(name),
+    summary: CONFIG_SECTION_DESCRIPTIONS[name] || "编辑该顶层 dae 配置块的原始文本。",
+    content: chunk,
+  };
+}
+
+function parseConfigSections(content) {
+  const text = typeof content === "string" ? content : "";
+  if (!text.trim()) {
+    return createFallbackSections("");
+  }
+
+  const chunks = [];
+  let depth = 0;
+  let comment = false;
+  let quote = "";
+  let escaped = false;
+  let chunkStart = 0;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+
+    if (comment) {
+      if (char === "\n") {
+        comment = false;
+      }
+      continue;
+    }
+
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === quote) {
+        quote = "";
+      }
+      continue;
+    }
+
+    if (char === "#") {
+      comment = true;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (char === "{") {
+      depth += 1;
+      continue;
+    }
+    if (char === "}") {
+      if (depth > 0) {
+        depth -= 1;
+      }
+      if (depth === 0) {
+        const chunk = text.slice(chunkStart, index + 1);
+        if (chunk.trim()) {
+          chunks.push(chunk);
+        }
+        chunkStart = index + 1;
+      }
+    }
+  }
+
+  const tail = text.slice(chunkStart);
+  if (tail.trim()) {
+    chunks.push(tail);
+  }
+
+  if (!chunks.length) {
+    return createFallbackSections(text);
+  }
+
+  return chunks.map((chunk, index) => buildConfigSection(chunk, index));
+}
+
+function joinConfigSections() {
+  return state.daeConfigSections.map((section) => section.content).join("");
+}
+
+function updateConfigDirtyState() {
+  state.daeConfigContent = joinConfigSections();
+  state.daeConfigDirty = state.daeConfigContent !== state.daeConfigOriginal;
+  renderConfigMeta();
+}
+
+function setApiStatus(kind, message) {
+  state.apiStatus = { kind, message };
+  renderHeaderStatus();
+  renderSystemStatus();
+  renderControllerPanel();
+}
+
+function setBusyState(busy) {
+  state.connecting = busy;
+  renderControllerPanel();
+}
+
+function renderLayoutState() {
+  const connected = state.apiStatus.kind === "connected";
+  document.body.classList.toggle("auth-required", !connected);
+  document.body.classList.toggle("sidebar-collapsed", state.sidebarCollapsed);
+  document.body.classList.toggle("controller-collapsed", connected && !state.controllerExpanded);
+  refs.controllerTopToggle.setAttribute("aria-expanded", String(!connected || state.controllerExpanded));
+  refs.controllerSummaryToggle.setAttribute("aria-expanded", String(!connected || state.controllerExpanded));
+}
+
+function activeViewMeta() {
+  return VIEW_META[state.currentView] || VIEW_META.dashboard;
+}
+
+function renderViewState() {
+  const meta = activeViewMeta();
+  refs.pageEyebrow.textContent = meta.eyebrow;
+  refs.pageTitle.textContent = meta.title;
+  refs.pageBanner.textContent = meta.banner;
+  refs.navItems.forEach((item) => {
+    item.classList.toggle("active", item.dataset.view === state.currentView);
+  });
+  refs.pages.forEach((page) => {
+    page.classList.toggle("active", page.dataset.page === state.currentView);
+  });
+}
+
+function renderVersionTitle() {
+  refs.versionLabel.textContent = state.version?.version || "unlinked";
+}
+
+function renderHeaderStatus() {
+  refs.apiStatusText.textContent = state.apiStatus.message;
+  refs.sidebarControllerText.textContent = state.apiStatus.message.toLowerCase();
+  refs.sidebarConnectionsValue.textContent = String(state.connections.total);
+  refs.topConnectionsValue.textContent = String(state.connections.total);
+  refs.apiStatusDot.classList.remove("offline", "warn");
+  if (state.apiStatus.kind === "offline") {
+    refs.apiStatusDot.classList.add("offline");
+  } else if (state.apiStatus.kind === "warn") {
+    refs.apiStatusDot.classList.add("warn");
+  }
 }
 
 function renderSystemStatus() {
-  const group = currentGroup();
+  const connected = state.apiStatus.kind === "connected";
   const { leaves, alive } = computeLeafStats();
-  const selectedGroups = state.groups.filter((item) => item.now).length;
-  const aliveRatio = leaves.length ? Math.round((alive / leaves.length) * 100) : 0;
-  const groupRatio = state.groups.length ? Math.round((selectedGroups / state.groups.length) * 100) : 0;
-
+  const selectedGroups = state.groups.filter((group) => group.now).length;
   const inUse = Number(state.memory?.inuse || 0);
-  const osLimit = Number(state.memory?.oslimit || 0);
-  const memoryRatio = osLimit > 0 ? Math.round((inUse / osLimit) * 100) : Math.min(100, Math.round((inUse / (512 * 1024 * 1024)) * 100));
-  const memoryPressureText = osLimit > 0 ? `${memoryRatio}%` : `${memoryRatio}%*`;
+  const currentSection = selectedConfigSection();
 
-  refs.controllerStateValue.textContent = state.apiStatus.message.toLowerCase();
-  refs.modeValue.textContent = state.config?.mode || "-";
-  refs.logLevelValue.textContent = state.config?.["log-level"] || "-";
-  refs.memoryValue.textContent = inUse ? humanBytes(inUse) : "-";
-
-  refs.aliveNodesValue.textContent = `${alive} / ${leaves.length}`;
-  refs.groupCoverageValue.textContent = `${selectedGroups} / ${state.groups.length}`;
-  refs.memoryPressureValue.textContent = inUse ? memoryPressureText : "N/A";
-
-  refs.aliveNodesBar.style.width = `${aliveRatio}%`;
-  refs.groupCoverageBar.style.width = `${groupRatio}%`;
-  refs.memoryPressureBar.style.width = `${inUse ? memoryRatio : 0}%`;
-
+  refs.dashboardHeroText.textContent = !state.controllerUrl
+    ? "输入 controller 地址与 token 后，开始加载运行态和启动配置。"
+    : connected
+      ? `当前连接到 ${state.controllerUrl}。状态类接口使用 5 秒流式快照，Traffic 与 Logs 保持实时通道。`
+      : "控制器尚未连通。请确认 dae 正在运行，external_controller 已开启，token 正确。";
+  refs.dashboardStatusValue.textContent = state.apiStatus.message.toLowerCase();
+  refs.dashboardModeValue.textContent = state.config?.mode || "-";
+  refs.dashboardLogLevelValue.textContent = state.config?.["log-level"] || "-";
+  refs.dashboardMemoryValue.textContent = inUse ? humanBytes(inUse) : "-";
+  refs.dashboardAliveValue.textContent = `${alive} / ${leaves.length}`;
+  refs.dashboardConnectionValue.textContent = String(state.connections.total);
+  refs.dashboardConfigPathValue.textContent = state.daeConfigPath || "-";
   refs.runtimeVersionValue.textContent = state.version?.version || "-";
+
   refs.tproxyPortValue.textContent = state.config?.["tproxy-port"] ? String(state.config["tproxy-port"]) : "-";
-  refs.allowLanValue.textContent = typeof state.config?.["allow-lan"] === "boolean" ? (state.config["allow-lan"] ? "yes" : "no") : "-";
+  refs.allowLanValue.textContent = formatYesNo(state.config?.["allow-lan"]);
   refs.bindAddressValue.textContent = state.config?.["bind-address"] || "-";
   refs.controllerUrlValue.textContent = state.controllerUrl || "-";
   refs.controllerAuthValue.textContent = state.token ? "Bearer + ws token" : "Bearer disabled";
   refs.startupConfigPathValue.textContent = state.daeConfigPath || "-";
+
   refs.configModeValue.textContent = state.config?.mode || "-";
   refs.configLogLevelValue.textContent = state.config?.["log-level"] || "-";
   refs.configTproxyValue.textContent = state.config?.["tproxy-port"] ? String(state.config["tproxy-port"]) : "-";
-  refs.configAllowLanValue.textContent = typeof state.config?.["allow-lan"] === "boolean" ? (state.config["allow-lan"] ? "yes" : "no") : "-";
+  refs.configAllowLanValue.textContent = formatYesNo(state.config?.["allow-lan"]);
   refs.configBindValue.textContent = state.config?.["bind-address"] || "-";
+  refs.configSectionsCountValue.textContent = String(state.daeConfigSections.length);
+  refs.configCurrentSectionValue.textContent = currentSection?.title || "-";
+
   if (!state.logLevelChanging) {
     refs.runtimeLogLevelSelect.value = state.config?.["log-level"] || "info";
   }
 
+  const group = currentGroup();
   refs.currentGroupName.textContent = group?.name || "No group";
   refs.currentGroupMeta.textContent = group
-    ? `${group.type} · current: ${group.now || "none"} · ${group.all.length} node(s)`
-    : "Connect controller to load proxies.";
+    ? `${group.type} · current: ${group.now || "none"} · ${group.all.length} node(s) · 右上角按钮测延迟`
+    : "连接控制器后加载代理组与节点。";
   refs.resetGroupButton.disabled = !group || state.busyGroups.has(group.name);
 }
 
+function renderTrafficMeta() {
+  refs.uploadRate.textContent = shortRate(state.traffic.up);
+  refs.downloadRate.textContent = shortRate(state.traffic.down);
+  refs.uploadTotalValue.textContent = humanBytes(state.traffic.upTotal);
+  refs.downloadTotalValue.textContent = humanBytes(state.traffic.downTotal);
+  refs.trafficUploadTotalValue.textContent = humanBytes(state.traffic.upTotal);
+  refs.trafficDownloadTotalValue.textContent = humanBytes(state.traffic.downTotal);
+  refs.dashboardTrafficTransportValue.textContent = state.trafficTransport;
+  refs.trafficTransportValue.textContent = state.trafficTransport;
+  refs.dashboardTrafficUpValue.textContent = `${shortRate(state.traffic.up)} MB/s`;
+  refs.dashboardTrafficDownValue.textContent = `${shortRate(state.traffic.down)} MB/s`;
+  refs.dashboardUpValue.textContent = `${shortRate(state.traffic.up)} MB/s`;
+  refs.dashboardDownValue.textContent = `${shortRate(state.traffic.down)} MB/s`;
+}
+
+function renderConnectionPreviewList(target, connections, emptyMessage = "暂无活动连接。") {
+  if (!connections.length) {
+    target.innerHTML = `<div class="proxy-empty">${escapeHtml(emptyMessage)}</div>`;
+    return;
+  }
+
+  target.innerHTML = connections
+    .map(
+      (conn) => `
+        <article class="connection-pill">
+          <div class="connection-pill-top">
+            <strong>${escapeHtml(conn.process || "-")}</strong>
+            <div class="connection-state-badges">
+              <span class="network-chip">${escapeHtml(conn.network || "-")}</span>
+              <span class="state-chip ${classToken(conn.state, "active")}">${escapeHtml(conn.state || "-")}</span>
+            </div>
+          </div>
+          <code>${escapeHtml(conn.source || "-")} → ${escapeHtml(conn.destination || "-")}</code>
+          <div class="connection-pill-bottom">
+            <span class="table-secondary">${escapeHtml(conn.outbound || "-")} · ${escapeHtml(conn.direction || "-")}</span>
+            <span class="table-secondary">${escapeHtml(formatTimeAgo(conn.lastSeen))}</span>
+          </div>
+        </article>
+      `,
+    )
+    .join("");
+}
+
+function renderTrafficConnectionsTable(connections) {
+  refs.trafficConnectionsList.innerHTML = connections
+    .map((conn) => {
+      const stateClass = classToken(conn.state, "active");
+      const processLabel = conn.process || "-";
+      const pidLabel = Number(conn.pid) > 0 ? `PID ${conn.pid}` : "PID -";
+      const sourceLabel = formatConnectionLabel(conn.source, conn.sourceAddress, conn.sourcePort);
+      const destinationLabel = formatConnectionLabel(conn.destination, conn.destinationAddress, conn.destinationPort);
+      const sourceEndpoint = formatEndpoint(conn.sourceAddress, conn.sourcePort);
+      const destinationEndpoint = formatEndpoint(conn.destinationAddress, conn.destinationPort);
+      const outboundLabel = conn.outbound || "-";
+      const directionLabel = conn.direction || "-";
+      const routingLabel = conn.hasRouting ? "Routing attached" : "Routing missing";
+      const policyLabel = conn.must ? "Must route" : "Normal route";
+      const macLabel = conn.mac || "-";
+      const lastSeenAgo = formatTimeAgo(conn.lastSeen);
+      const lastSeenClock = formatClock(conn.lastSeen);
+
+      return `
+        <article class="connection-state-card">
+          <div class="connection-state-head">
+            <div class="table-stack">
+              <strong>${escapeHtml(processLabel)}</strong>
+              <span class="table-secondary">${escapeHtml(pidLabel)} · ${escapeHtml(lastSeenAgo)}</span>
+            </div>
+
+            <div class="connection-state-badges">
+              <span class="network-chip">${escapeHtml(conn.network || "-")}</span>
+              <span class="state-chip ${stateClass}">${escapeHtml(conn.state || "-")}</span>
+              <span class="direction-chip">${escapeHtml(conn.direction || "-")}</span>
+            </div>
+          </div>
+
+          <div class="connection-state-grid">
+            <div class="connection-state-block">
+              <span class="connection-state-label">Source</span>
+              <strong>${escapeHtml(sourceLabel)}</strong>
+              <code class="table-route">${escapeHtml(sourceEndpoint)}</code>
+            </div>
+
+            <div class="connection-state-block">
+              <span class="connection-state-label">Destination</span>
+              <strong>${escapeHtml(destinationLabel)}</strong>
+              <code class="table-route">${escapeHtml(destinationEndpoint)}</code>
+            </div>
+
+            <div class="connection-state-block">
+              <span class="connection-state-label">Routing</span>
+              <strong>${escapeHtml(outboundLabel)}</strong>
+              <span class="table-secondary">${escapeHtml(directionLabel)} · ${escapeHtml(routingLabel)}</span>
+            </div>
+
+            <div class="connection-state-block">
+              <span class="connection-state-label">Policy</span>
+              <strong>${escapeHtml(policyLabel)}</strong>
+              <span class="table-secondary">Mark ${escapeHtml(conn.mark || 0)} · DSCP ${escapeHtml(conn.dscp || 0)}</span>
+            </div>
+          </div>
+
+          <div class="connection-state-meta">
+            <span class="meta-chip strong">Outbound ${escapeHtml(outboundLabel)}</span>
+            <span class="meta-chip">${escapeHtml(pidLabel)}</span>
+            <span class="meta-chip">Seen ${escapeHtml(lastSeenClock)}</span>
+            <span class="meta-chip">${escapeHtml(routingLabel)}</span>
+            <span class="meta-chip">${escapeHtml(policyLabel)}</span>
+            <span class="meta-chip">MAC ${escapeHtml(macLabel)}</span>
+            <span class="meta-chip">ID ${escapeHtml(conn.id || "-")}</span>
+          </div>
+        </article>
+      `;
+    })
+    .join("");
+  refs.trafficConnectionsEmpty.textContent = "暂无活动连接。";
+  refs.trafficConnectionsEmpty.hidden = connections.length > 0;
+}
+
+function renderConnections() {
+  refs.dashboardConnectionsTotal.textContent = String(state.connections.total);
+  refs.dashboardConnectionsTcp.textContent = String(state.connections.tcp);
+  refs.dashboardConnectionsUdp.textContent = String(state.connections.udp);
+  refs.dashboardConnectionsUpdated.textContent = !state.connectionsAvailable
+    ? "当前 controller 未提供 /connections。"
+    : state.connections.updatedAt
+      ? `最近更新 ${formatClock(state.connections.updatedAt)}`
+      : "等待 /connections 数据。";
+
+  refs.trafficConnectionsTotal.textContent = String(state.connections.total);
+  refs.trafficConnectionsTcp.textContent = String(state.connections.tcp);
+  refs.trafficConnectionsUdp.textContent = String(state.connections.udp);
+  refs.trafficConnectionsUpdated.textContent = !state.connectionsAvailable
+    ? "当前 controller 未提供 /connections。"
+    : state.connections.updatedAt
+      ? `最近更新 ${formatClock(state.connections.updatedAt)}`
+      : "等待 /connections 数据。";
+
+  if (!state.connectionsAvailable) {
+    renderConnectionPreviewList(refs.dashboardConnectionList, [], "当前 controller 未提供 /connections。");
+    refs.trafficConnectionsList.innerHTML = "";
+    refs.trafficConnectionsEmpty.textContent = "当前 controller 未提供 /connections。";
+    refs.trafficConnectionsEmpty.hidden = false;
+    return;
+  }
+
+  renderConnectionPreviewList(refs.dashboardConnectionList, state.connections.connections.slice(0, 4));
+  renderTrafficConnectionsTable(state.connections.connections.slice(0, 50));
+}
+
 function renderControllerPanel() {
+  const connected = state.apiStatus.kind === "connected";
+  refs.controllerSummaryUrl.textContent = state.controllerUrl || "未连接";
+  refs.controllerSummaryMeta.textContent = connected
+    ? `已连接，${state.token ? "使用 Bearer token" : "未配置 token"}。`
+    : "输入地址与 token，连接 dae 控制器。";
+  refs.controllerPanelTitle.textContent = connected ? "Controller 已连接" : "连接 dae External Controller";
+  refs.controllerHint.textContent = state.controllerHintText;
   refs.controllerDetailUrl.textContent = state.controllerUrl || "-";
   refs.embeddedUiValue.textContent = state.controllerUrl ? `${state.controllerUrl}/ui/` : "-";
   refs.controllerTokenValue.textContent = state.token ? `set (${state.token.length} chars)` : "not set";
   refs.controllerConfigPathValue.textContent = state.daeConfigPath || "-";
   refs.controllerPageNote.textContent = state.controllerUrl
-    ? "HTTP requests use Bearer auth. WebSocket requests append token=... when a controller secret is set."
-    : "Connect a dae controller to populate runtime details, startup config metadata, and live channels.";
+    ? "HTTP 使用 Bearer 鉴权，WebSocket 在设置 secret 时附带 token 查询参数。"
+    : "连接控制器后在此查看外部控制器地址、内嵌 UI 入口和所有流式通道状态。";
+  refs.runtimeLogLevelNote.textContent = state.runtimeLogLevelNoteText;
+  refs.connectButton.disabled = state.connecting;
+  refs.applyLogLevelButton.disabled = !state.controllerUrl || state.logLevelChanging || state.connecting;
+  refs.controllerTopToggle.textContent = connected ? "Controller" : "登录";
+  refs.controllerSummaryToggle.textContent = connected ? (state.controllerExpanded ? "收起" : "展开") : "登录";
 
   const streams = [
-    ["version", wsState(state.versionWs, state.versionWsRetryTimer)],
-    ["configs", wsState(state.configWs, state.configWsRetryTimer)],
-    ["proxies", wsState(state.proxyWs, state.proxyWsRetryTimer)],
-    ["traffic", wsState(state.ws, state.wsRetryTimer)],
-    ["memory", wsState(state.memoryWs, state.memoryWsRetryTimer)],
-    ["config.dae", wsState(state.daeConfigWs, state.daeConfigWsRetryTimer)],
-    ["logs", wsState(state.logWs, state.logWsRetryTimer)],
+    ["version", wsState("version")],
+    ["configs", wsState("config")],
+    ["proxies", wsState("proxies")],
+    ["traffic", wsState("traffic")],
+    ["connections", wsState("connections")],
+    ["memory", wsState("memory")],
+    ["config.dae", wsState("daeConfig")],
+    ["logs", wsState("logs")],
   ];
 
   refs.streamList.innerHTML = streams
@@ -1220,15 +1579,7 @@ function renderControllerPanel() {
     )
     .join("");
 
-  refs.applyLogLevelButton.disabled = !state.controllerUrl || state.logLevelChanging || state.connecting;
-}
-
-function renderTrafficMeta() {
-  refs.uploadRate.textContent = shortRate(state.traffic.up);
-  refs.downloadRate.textContent = shortRate(state.traffic.down);
-  refs.uploadTotalValue.textContent = humanBytes(state.traffic.upTotal);
-  refs.downloadTotalValue.textContent = humanBytes(state.traffic.downTotal);
-  refs.trafficTransportValue.textContent = state.trafficTransport;
+  renderLayoutState();
 }
 
 function chartBounds() {
@@ -1345,47 +1696,16 @@ function renderChart() {
   ctx.clearRect(0, 0, width, height);
   drawGrid(width, height);
   drawSeries(state.trafficSeries.up, width, height, scale, {
-    stroke: "#4cc0b5",
-    fill: "rgba(76, 192, 181, 0.24)",
+    stroke: "#1d9b8c",
+    fill: "rgba(29, 155, 140, 0.24)",
   });
   drawSeries(state.trafficSeries.down, width, height, scale, {
-    stroke: "#9b84d7",
-    fill: "rgba(155, 132, 215, 0.18)",
+    stroke: "#cc7d37",
+    fill: "rgba(204, 125, 55, 0.2)",
   });
 
   renderScaleLabels(scale);
   renderTimeLabels();
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
-function inferFlagTone(name) {
-  const palette = ["us", "jp", "sg"];
-  let hash = 0;
-  for (const char of name) {
-    hash += char.charCodeAt(0);
-  }
-  return palette[hash % palette.length];
-}
-
-function inferProxyLabel(name) {
-  const match = name.match(/[A-Za-z]{2}/);
-  return match ? match[0].toUpperCase() : "PX";
-}
-
-function proxyDelay(proxy) {
-  const entry = Array.isArray(proxy?.history) ? proxy.history[0] : null;
-  if (!entry || typeof entry.delay !== "number") {
-    return null;
-  }
-  return entry.delay;
 }
 
 function renderProxyTabs() {
@@ -1398,18 +1718,19 @@ function renderProxyTabs() {
               data-group="${escapeHtml(group.name)}"
               type="button"
             >
-              ${escapeHtml(group.name)}
+              <strong>${escapeHtml(group.name)}</strong>
+              <span>${escapeHtml(group.type || "selector")}</span>
             </button>
           `,
         )
         .join("")
-    : `<div class="proxy-empty">No proxy groups returned by <code>/proxies</code>.</div>`;
+    : `<div class="proxy-empty">No proxy groups returned by /proxies.</div>`;
 }
 
 function renderProxyGrid() {
   const group = currentGroup();
   if (!group) {
-    refs.proxyGrid.innerHTML = `<div class="proxy-empty">Connect a reachable controller to load group and node data.</div>`;
+    refs.proxyGrid.innerHTML = `<div class="proxy-empty">连接可用 controller 后加载组和节点数据。</div>`;
     return;
   }
 
@@ -1441,7 +1762,7 @@ function renderProxyGrid() {
 
           <h3>${escapeHtml(proxyName)}</h3>
           <div class="proxy-meta">${escapeHtml(address)}</div>
-          <p><strong>${escapeHtml(delayText)}</strong></p>
+          <p class="proxy-delay">${escapeHtml(delayText)}</p>
 
           <div class="proxy-badges">
             <span class="proxy-badge">${escapeHtml(protocol)}</span>
@@ -1450,15 +1771,6 @@ function renderProxyGrid() {
           </div>
 
           <div class="proxy-actions">
-            <button
-              class="proxy-action"
-              type="button"
-              data-action="probe-delay"
-              data-name="${escapeHtml(proxyName)}"
-              ${busyDelay ? "disabled" : ""}
-            >
-              Probe
-            </button>
             <button
               class="proxy-action primary"
               type="button"
@@ -1475,43 +1787,50 @@ function renderProxyGrid() {
     .join("");
 }
 
-function syncEditorLines() {
-  const lines = Math.max(1, refs.configView.value.split("\n").length);
-  refs.editorLines.innerHTML = Array.from({ length: lines }, (_, index) => `<span>${index + 1}</span>`).join("");
-  refs.editorLines.scrollTop = refs.configView.scrollTop;
+function renderConfigSectionTabs() {
+  refs.configSectionTabs.innerHTML = state.daeConfigSections
+    .map(
+      (section) => `
+        <button
+          class="section-tab ${section.id === state.daeConfigSelected ? "active" : ""}"
+          data-section="${escapeHtml(section.id)}"
+          type="button"
+        >
+          <strong>${escapeHtml(section.title)}</strong>
+          <span>${escapeHtml(section.summary)}</span>
+        </button>
+      `,
+    )
+    .join("");
+}
+
+function renderConfigMeta() {
+  const section = selectedConfigSection();
+  refs.configPathValue.textContent = state.daeConfigPath || "-";
+  refs.saveConfigButton.disabled = !state.controllerUrl || !state.daeConfigDirty;
+  refs.refreshConfigButton.disabled = !state.controllerUrl;
+  refs.configSectionsCountValue.textContent = String(state.daeConfigSections.length);
+  refs.configCurrentSectionValue.textContent = section?.title || "-";
+  refs.editorNote.textContent = state.editorNoteText;
+}
+
+function renderSelectedConfigSection() {
+  const section = selectedConfigSection();
+  refs.configSectionTitle.textContent = section?.title || "No section";
+  refs.configSectionSubtitle.textContent = section?.summary || "连接控制器后读取 config.dae 顶层块。";
+  refs.configSectionView.disabled = !state.controllerUrl || !section;
+  if (section && refs.configSectionView.value !== section.content) {
+    refs.configSectionView.value = section.content;
+  }
+  if (!section && refs.configSectionView.value !== DEFAULT_CONFIG_PLACEHOLDER) {
+    refs.configSectionView.value = DEFAULT_CONFIG_PLACEHOLDER;
+  }
 }
 
 function renderDaeConfigEditor() {
-  refs.configPathValue.textContent = state.daeConfigPath || "-";
-  if (refs.configView.value !== state.daeConfigContent) {
-    refs.configView.value = state.daeConfigContent;
-  }
-  syncEditorLines();
-  refs.saveConfigButton.disabled = !state.controllerUrl || !state.daeConfigDirty;
-  refs.refreshConfigButton.disabled = !state.controllerUrl;
-}
-
-async function loadDaeConfigDocument() {
-  if (!state.controllerUrl) {
-    return;
-  }
-  const doc = await apiFetch("/configs/dae");
-  state.daeConfigDirty = false;
-  applyDaeConfigDocument(doc);
-  renderDaeConfigEditor();
-}
-
-function renderVersionTitle() {
-  refs.versionLabel.textContent = state.version?.version || "unlinked";
-}
-
-function renderRuntimePanels() {
-  renderVersionTitle();
-  renderSystemStatus();
-  renderControllerPanel();
-  renderProxyTabs();
-  renderProxyGrid();
-  refs.reloadProxiesButton.disabled = !state.controllerUrl;
+  renderConfigSectionTabs();
+  renderSelectedConfigSection();
+  renderConfigMeta();
 }
 
 function renderLogs() {
@@ -1522,11 +1841,11 @@ function renderLogs() {
   refs.logsLevelSelect.disabled = !state.controllerUrl;
 
   let statusText = `Waiting for live events from /logs?format=structured&level=${state.logsLevel}.`;
-  const currentState = wsState(state.logWs, state.logWsRetryTimer);
+  const currentState = wsState("logs");
   if (!state.controllerUrl) {
-    statusText = "Connect a controller to open the log stream.";
+    statusText = "连接 controller 后开启日志流。";
   } else if (state.logsPaused) {
-    statusText = "Log stream paused locally. Resume to receive new events.";
+    statusText = "本地已暂停日志流，恢复后继续接收新事件。";
   } else if (currentState === "live") {
     statusText = `Streaming live logs at level ${state.logsLevel}.`;
   } else if (currentState === "retrying" || currentState === "opening") {
@@ -1554,13 +1873,222 @@ function renderLogs() {
 }
 
 function renderAll() {
+  renderLayoutState();
   renderViewState();
+  renderVersionTitle();
   renderHeaderStatus();
+  renderSystemStatus();
   renderTrafficMeta();
-  renderRuntimePanels();
+  renderConnections();
+  renderControllerPanel();
+  renderProxyTabs();
+  renderProxyGrid();
   renderDaeConfigEditor();
   renderLogs();
   renderChart();
+}
+
+async function fetchFullSnapshot() {
+  const [version, config, proxiesPayload, daeConfig, traffic, memory, connections] = await Promise.all([
+    apiFetch("/version"),
+    apiFetch("/configs"),
+    apiFetch("/proxies"),
+    apiFetch("/configs/dae"),
+    apiFetch("/traffic"),
+    apiFetch("/memory"),
+    fetchConnectionsSnapshot(),
+  ]);
+
+  return {
+    version,
+    config,
+    proxiesPayload,
+    daeConfig,
+    traffic,
+    memory,
+    connections: connections.snapshot,
+    connectionsAvailable: connections.available,
+  };
+}
+
+async function fetchConnectionsSnapshot() {
+  try {
+    return {
+      available: true,
+      snapshot: await apiFetch(`/connections?limit=${CONNECTION_LIMIT}`),
+    };
+  } catch (error) {
+    if (error.status === 404 || error.status === 405) {
+      return {
+        available: false,
+        snapshot: createEmptyConnectionsSnapshot(),
+      };
+    }
+    throw error;
+  }
+}
+
+function applyFullSnapshot(snapshot) {
+  applyVersionSnapshot(snapshot.version);
+  applyConfigSnapshot(snapshot.config);
+  applyProxySnapshot(snapshot.proxiesPayload?.proxies);
+  applyDaeConfigDocument(snapshot.daeConfig);
+  applyTrafficSnapshot(snapshot.traffic, true);
+  updateMemory(snapshot.memory);
+  applyConnectionsSnapshot(snapshot.connections, snapshot.connectionsAvailable);
+}
+
+async function refreshSnapshot(updateStatus = true) {
+  if (!state.controllerUrl || state.refreshing) {
+    return;
+  }
+  state.refreshing = true;
+  try {
+    const snapshot = await fetchFullSnapshot();
+    applyFullSnapshot(snapshot);
+    if (updateStatus) {
+      setApiStatus("connected", "Connected");
+      state.controllerHintText =
+        "Connected to dae external controller. 状态类接口使用 5 秒流式快照，Traffic 与 Logs 保持实时流。";
+      state.controllerExpanded = false;
+      openLiveChannels();
+      renderAll();
+    }
+  } catch (error) {
+    handleConnectionError(error);
+  } finally {
+    state.refreshing = false;
+  }
+}
+
+function handleConnectionError(error) {
+  closeAllSockets();
+  resetLiveState();
+  state.controllerExpanded = true;
+
+  if (error.status === 401) {
+    setApiStatus("warn", "Unauthorized");
+    state.controllerHintText = "Controller rejected the request. 请确认 external_controller_secret 对应的 Bearer token 正确。";
+  } else {
+    setApiStatus("offline", "Unavailable");
+    state.controllerHintText =
+      "Failed to reach the controller. 请确认 dae 正在运行，且 global.external_controller 正在目标地址监听。";
+  }
+
+  renderAll();
+}
+
+async function connectController() {
+  try {
+    state.controllerUrl = normalizeControllerUrl(refs.controllerUrl.value);
+    state.token = refs.controllerToken.value.trim();
+  } catch (error) {
+    setApiStatus("warn", error.message);
+    state.controllerHintText = error.message;
+    renderControllerPanel();
+    return;
+  }
+
+  persistConnection();
+  closeAllSockets();
+  resetLiveState();
+  setBusyState(true);
+  setApiStatus("warn", "Connecting");
+  state.controllerHintText =
+    "Opening live channels for /version, /configs, /proxies, /traffic, /connections, /memory, /logs and startup config.dae.";
+  renderAll();
+  await refreshSnapshot(true);
+  setBusyState(false);
+}
+
+async function loadDaeConfigDocument() {
+  if (!state.controllerUrl) {
+    return;
+  }
+  const doc = await apiFetch("/configs/dae");
+  state.daeConfigDirty = false;
+  applyDaeConfigDocument(doc);
+}
+
+async function resyncControllerAfterConfigSave() {
+  let lastError = null;
+  for (let attempt = 0; attempt < RELOAD_SYNC_ATTEMPTS; attempt += 1) {
+    await sleep(RELOAD_SYNC_DELAY_MS);
+    try {
+      const snapshot = await fetchFullSnapshot();
+      state.daeConfigDirty = false;
+      applyFullSnapshot(snapshot);
+      setApiStatus("connected", "Connected");
+      state.controllerHintText =
+        "Connected to dae external controller. 状态类接口使用 5 秒流式快照，Traffic 与 Logs 保持实时流。";
+      openLiveChannels();
+      state.editorNoteText = `Saved ${state.daeConfigPath || "config.dae"} and reloaded dae.`;
+      renderAll();
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  if (lastError) {
+    handleConnectionError(lastError);
+    state.editorNoteText = `Config was written, but dae did not come back cleanly: ${lastError.message}`;
+    renderDaeConfigEditor();
+  }
+}
+
+async function saveDaeConfig() {
+  if (!state.controllerUrl) {
+    return;
+  }
+
+  refs.saveConfigButton.disabled = true;
+  refs.refreshConfigButton.disabled = true;
+  try {
+    await apiFetch("/configs/dae", {
+      method: "PUT",
+      body: JSON.stringify({ content: state.daeConfigContent }),
+    });
+    state.editorNoteText = `Saved ${state.daeConfigPath || "config.dae"}. Waiting for dae to reload...`;
+    renderDaeConfigEditor();
+    await resyncControllerAfterConfigSave();
+  } catch (error) {
+    state.editorNoteText = `Failed to save config.dae: ${error.message}`;
+    renderDaeConfigEditor();
+  }
+}
+
+async function updateRuntimeLogLevel() {
+  if (!state.controllerUrl) {
+    return;
+  }
+
+  const level = refs.runtimeLogLevelSelect.value;
+  if (!LOG_LEVELS.includes(level)) {
+    state.runtimeLogLevelNoteText = `Unsupported log level: ${level}`;
+    renderControllerPanel();
+    return;
+  }
+
+  state.logLevelChanging = true;
+  renderControllerPanel();
+
+  try {
+    await apiFetch("/configs", {
+      method: "PATCH",
+      body: JSON.stringify({ "log-level": level }),
+    });
+    applyConfigSnapshot({
+      ...(state.config || {}),
+      "log-level": level,
+    });
+    state.runtimeLogLevelNoteText = `Runtime log level updated to ${level}.`;
+  } catch (error) {
+    state.runtimeLogLevelNoteText = `Failed to update runtime log level: ${error.message}`;
+  } finally {
+    state.logLevelChanging = false;
+    renderControllerPanel();
+  }
 }
 
 async function probeDelay(name) {
@@ -1575,12 +2103,13 @@ async function probeDelay(name) {
       state.proxies[name].history = [{ delay: payload.delay, time: new Date().toISOString() }];
       state.proxySignature = proxySnapshotSignature(state.proxies);
     }
-    refs.editorNote.textContent = `Latency probe for ${name} returned ${payload.delay} ms from /proxies/${name}/delay.`;
+    state.editorNoteText = `Latency probe for ${name} returned ${payload.delay} ms from /proxies/${name}/delay.`;
   } catch (error) {
-    refs.editorNote.textContent = `Latency probe failed for ${name}: ${error.message}`;
+    state.editorNoteText = `Latency probe failed for ${name}: ${error.message}`;
   } finally {
     state.busyDelayNodes.delete(name);
     renderProxyGrid();
+    renderDaeConfigEditor();
   }
 }
 
@@ -1591,8 +2120,8 @@ async function selectProxy(name) {
   }
 
   state.busyGroups.add(group.name);
-  renderProxyGrid();
   renderSystemStatus();
+  renderProxyGrid();
 
   try {
     await apiFetch(`/proxies/${encodeURIComponent(group.name)}`, {
@@ -1606,13 +2135,14 @@ async function selectProxy(name) {
       };
       state.proxySignature = proxySnapshotSignature(state.proxies);
     }
-    refs.editorNote.textContent = `Switched group ${group.name} to ${name} through /proxies/${group.name}.`;
+    state.editorNoteText = `Switched group ${group.name} to ${name} through /proxies/${group.name}.`;
   } catch (error) {
-    refs.editorNote.textContent = `Failed to switch ${group.name} to ${name}: ${error.message}`;
+    state.editorNoteText = `Failed to switch ${group.name} to ${name}: ${error.message}`;
   } finally {
     state.busyGroups.delete(group.name);
     renderSystemStatus();
     renderProxyGrid();
+    renderDaeConfigEditor();
   }
 }
 
@@ -1629,115 +2159,51 @@ async function resetGroup() {
     await apiFetch(`/proxies/${encodeURIComponent(group.name)}`, {
       method: "DELETE",
     });
-    refs.editorNote.textContent = `Reset group ${group.name} to its default policy via DELETE /proxies/${group.name}.`;
+    state.editorNoteText = `Reset group ${group.name} to its default policy via DELETE /proxies/${group.name}.`;
   } catch (error) {
-    refs.editorNote.textContent = `Failed to reset ${group.name}: ${error.message}`;
+    state.editorNoteText = `Failed to reset ${group.name}: ${error.message}`;
   } finally {
     state.busyGroups.delete(group.name);
     renderSystemStatus();
     renderProxyGrid();
-  }
-}
-
-async function resyncControllerAfterConfigSave() {
-  let lastError = null;
-  for (let attempt = 0; attempt < RELOAD_SYNC_ATTEMPTS; attempt += 1) {
-    await sleep(RELOAD_SYNC_DELAY_MS);
-    try {
-      const [version, config, proxiesPayload, daeConfig] = await Promise.all([
-        apiFetch("/version"),
-        apiFetch("/configs"),
-        apiFetch("/proxies"),
-        apiFetch("/configs/dae"),
-      ]);
-
-      applyVersionSnapshot(version);
-      applyConfigSnapshot(config);
-      applyProxySnapshot(proxiesPayload.proxies);
-      state.daeConfigDirty = false;
-      applyDaeConfigDocument(daeConfig);
-
-      setApiStatus("connected", "Connected");
-      refs.controllerHint.textContent =
-        "Connected to dae external controller. Runtime state snapshots stream every 5 seconds over WebSocket, and config edits write back to startup `config.dae`.";
-      connectVersionSocket();
-      connectConfigSocket();
-      connectProxySocket();
-      connectTrafficSocket();
-      connectMemorySocket();
-      connectDaeConfigSocket();
-      if (state.currentView === "logs" && !state.logsPaused) {
-        connectLogSocket();
-      }
-      renderRuntimePanels();
-      renderDaeConfigEditor();
-      renderLogs();
-      refs.editorNote.textContent = `Saved ${state.daeConfigPath || "config.dae"} and reloaded dae.`;
-      return;
-    } catch (error) {
-      lastError = error;
-    }
-  }
-
-  if (lastError) {
-    handleConnectionError(lastError);
-    refs.editorNote.textContent = `Config was written, but dae did not come back cleanly: ${lastError.message}`;
-  }
-}
-
-async function saveDaeConfig() {
-  if (!state.controllerUrl) {
-    return;
-  }
-
-  refs.saveConfigButton.disabled = true;
-  refs.refreshConfigButton.disabled = true;
-  try {
-    const content = refs.configView.value;
-    await apiFetch("/configs/dae", {
-      method: "PUT",
-      body: JSON.stringify({ content }),
-    });
-    state.daeConfigContent = content;
-    refs.editorNote.textContent = `Saved ${state.daeConfigPath || "config.dae"}. Waiting for dae to reload...`;
-    await resyncControllerAfterConfigSave();
-  } catch (error) {
-    refs.editorNote.textContent = `Failed to save config.dae: ${error.message}`;
-  } finally {
     renderDaeConfigEditor();
   }
 }
 
-async function updateRuntimeLogLevel() {
-  if (!state.controllerUrl) {
-    return;
-  }
+function toggleSidebar() {
+  state.sidebarCollapsed = !state.sidebarCollapsed;
+  persistUiPrefs();
+  renderLayoutState();
+}
 
-  const level = refs.runtimeLogLevelSelect.value;
-  if (!LOG_LEVELS.includes(level)) {
-    refs.runtimeLogLevelNote.textContent = `Unsupported log level: ${level}`;
-    return;
-  }
-
-  state.logLevelChanging = true;
-  renderControllerPanel();
-
-  try {
-    await apiFetch("/configs", {
-      method: "PATCH",
-      body: JSON.stringify({ "log-level": level }),
-    });
-    applyConfigSnapshot({
-      ...(state.config || {}),
-      "log-level": level,
-    });
-    refs.runtimeLogLevelNote.textContent = `Runtime log level updated to ${level}.`;
-  } catch (error) {
-    refs.runtimeLogLevelNote.textContent = `Failed to update runtime log level: ${error.message}`;
-  } finally {
-    state.logLevelChanging = false;
+function toggleControllerPanel() {
+  if (state.apiStatus.kind !== "connected") {
+    state.controllerExpanded = true;
     renderControllerPanel();
+    refs.controllerUrl.focus();
+    return;
   }
+  state.controllerExpanded = !state.controllerExpanded;
+  renderControllerPanel();
+}
+
+function setActiveView(view) {
+  if (!VIEW_META[view]) {
+    return;
+  }
+  state.currentView = view;
+  renderViewState();
+  if (view === "logs" && state.controllerUrl && state.apiStatus.kind === "connected" && !state.logsPaused) {
+    connectLogSocket();
+  } else if (view !== "logs") {
+    closeSocket("logs");
+  }
+  if (window.innerWidth <= 860) {
+    state.sidebarCollapsed = true;
+    persistUiPrefs();
+    renderLayoutState();
+  }
+  renderLogs();
 }
 
 function handleProxyGridClick(event) {
@@ -1775,22 +2241,23 @@ function bindEvents() {
     });
   });
 
+  refs.sidebarToggles.forEach((button) => {
+    button.addEventListener("click", toggleSidebar);
+  });
+
+  refs.controllerTopToggle.addEventListener("click", toggleControllerPanel);
+  refs.controllerSummaryToggle.addEventListener("click", toggleControllerPanel);
+
   refs.refreshConfigButton.addEventListener("click", () => {
     loadDaeConfigDocument()
       .then(() => {
-        refs.editorNote.textContent = state.daeConfigPath
-          ? `Reloaded ${state.daeConfigPath} from disk.`
-          : "Reloaded config.dae from disk.";
+        state.editorNoteText = state.daeConfigPath ? `Reloaded ${state.daeConfigPath} from disk.` : "Reloaded config.dae from disk.";
+        renderDaeConfigEditor();
       })
       .catch((error) => {
-        refs.editorNote.textContent = `Failed to reload config.dae: ${error.message}`;
+        state.editorNoteText = `Failed to reload config.dae: ${error.message}`;
+        renderDaeConfigEditor();
       });
-  });
-
-  refs.reloadProxiesButton.addEventListener("click", () => {
-    closeProxySocket();
-    connectProxySocket();
-    refs.editorNote.textContent = "Reconnected proxy stream.";
   });
 
   refs.saveConfigButton.addEventListener("click", () => {
@@ -1805,6 +2272,11 @@ function bindEvents() {
     resetGroup();
   });
 
+  refs.reloadProxiesButton.addEventListener("click", () => {
+    closeSocket("proxies");
+    connectProxySocket();
+  });
+
   refs.proxyTabs.addEventListener("click", (event) => {
     const button = event.target.closest("[data-group]");
     if (!button) {
@@ -1817,14 +2289,34 @@ function bindEvents() {
   });
 
   refs.proxyGrid.addEventListener("click", handleProxyGridClick);
-  refs.configView.addEventListener("input", () => {
-    state.daeConfigDirty = refs.configView.value !== state.daeConfigContent;
-    syncEditorLines();
-    refs.saveConfigButton.disabled = !state.controllerUrl || !state.daeConfigDirty;
+
+  refs.configSectionTabs.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-section]");
+    if (!button) {
+      return;
+    }
+    state.daeConfigSelected = button.dataset.section;
+    renderConfigSectionTabs();
+    renderSelectedConfigSection();
+    renderConfigMeta();
   });
-  refs.configView.addEventListener("scroll", () => {
-    refs.editorLines.scrollTop = refs.configView.scrollTop;
+
+  refs.configSectionView.addEventListener("input", () => {
+    const section = selectedConfigSection();
+    if (!section) {
+      return;
+    }
+    const index = state.daeConfigSections.findIndex((item) => item.id === section.id);
+    if (index < 0) {
+      return;
+    }
+    state.daeConfigSections[index] = {
+      ...state.daeConfigSections[index],
+      content: refs.configSectionView.value,
+    };
+    updateConfigDirtyState();
   });
+
   refs.logsLevelSelect.addEventListener("change", () => {
     state.logsLevel = refs.logsLevelSelect.value;
     if (state.currentView === "logs" && state.controllerUrl && !state.logsPaused) {
@@ -1832,29 +2324,32 @@ function bindEvents() {
     }
     renderLogs();
   });
+
   refs.toggleLogsButton.addEventListener("click", () => {
     state.logsPaused = !state.logsPaused;
     if (state.logsPaused) {
-      closeLogSocket();
+      closeSocket("logs");
     } else if (state.currentView === "logs" && state.controllerUrl) {
       connectLogSocket();
     }
     renderControllerPanel();
     renderLogs();
   });
+
   refs.clearLogsButton.addEventListener("click", () => {
     state.logs = [];
     renderLogs();
   });
+
   window.addEventListener("resize", renderChart);
 }
 
 function boot() {
   loadPersistedConnection();
+  loadUiPrefs();
   bindEvents();
   refs.logsLevelSelect.value = state.logsLevel;
   refs.runtimeLogLevelSelect.value = "info";
-  setActiveView(state.currentView);
   renderAll();
   if (state.controllerUrl) {
     connectController();

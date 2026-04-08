@@ -8,238 +8,303 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <div class="app-shell">
-      <aside class="sidebar">
-        <div class="brand">
-          <div class="brand-mark" aria-hidden="true">
-            <span></span>
-            <span></span>
-            <span></span>
-          </div>
-          <div>
-            <p class="brand-name">daed<span>bpf</span></p>
-            <p class="brand-subtitle">Control API wired demo</p>
+    <div class="auth-mask" aria-hidden="true"></div>
+
+    <div class="app-shell" id="appShell">
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-head">
+          <button class="icon-button sidebar-toggle" data-sidebar-toggle type="button" aria-label="切换侧栏">
+            <span class="icon-bars"></span>
+          </button>
+
+          <div class="brand">
+            <div class="brand-mark" aria-hidden="true">
+              <span></span>
+              <span></span>
+              <span></span>
+            </div>
+            <div class="brand-copy">
+              <p class="brand-name">daed<span>next</span></p>
+              <p class="brand-subtitle">Realtime control workspace</p>
+            </div>
           </div>
         </div>
 
         <nav class="nav">
           <div class="nav-group">
-            <p class="nav-title">Overview</p>
+            <p class="nav-title">Workspace</p>
+
             <button class="nav-item active" data-view="dashboard" type="button">
               <span class="nav-icon"></span>
-              <span>Dashboard</span>
+              <span class="nav-text">Dashboard</span>
             </button>
             <button class="nav-item" data-view="controller" type="button">
               <span class="nav-icon"></span>
-              <span>External Controller</span>
+              <span class="nav-text">Controller</span>
             </button>
-          </div>
-
-          <div class="nav-group">
-            <div class="nav-title-row">
-              <p class="nav-title">Runtime</p>
-              <span class="nav-badge">LIVE</span>
-            </div>
             <button class="nav-item" data-view="proxies" type="button">
               <span class="nav-icon"></span>
-              <span>Proxies</span>
+              <span class="nav-text">Proxies</span>
             </button>
             <button class="nav-item" data-view="traffic" type="button">
               <span class="nav-icon"></span>
-              <span>Traffic</span>
+              <span class="nav-text">Traffic</span>
             </button>
             <button class="nav-item" data-view="configs" type="button">
               <span class="nav-icon"></span>
-              <span>Configs</span>
+              <span class="nav-text">Config</span>
             </button>
             <button class="nav-item" data-view="logs" type="button">
               <span class="nav-icon"></span>
-              <span>Logs</span>
-            </button>
-          </div>
-
-          <div class="nav-group">
-            <p class="nav-title">Hints</p>
-            <button class="nav-item" data-open-view="traffic" type="button">
-              <span class="nav-icon"></span>
-              <span>`/traffic` prefers WebSocket</span>
-            </button>
-            <button class="nav-item" data-open-view="configs" type="button">
-              <span class="nav-icon"></span>
-              <span>`/configs/dae` edits startup config</span>
+              <span class="nav-text">Logs</span>
             </button>
           </div>
         </nav>
+
+        <div class="sidebar-status">
+          <div class="sidebar-pill">
+            <span>Controller</span>
+            <strong id="sidebarControllerText">offline</strong>
+          </div>
+          <div class="sidebar-pill">
+            <span>Connections</span>
+            <strong id="sidebarConnectionsValue">0</strong>
+          </div>
+        </div>
       </aside>
 
       <main class="workspace">
         <header class="topbar">
-          <div class="title-block">
-            <p class="eyebrow" id="pageEyebrow">Dashboard</p>
-            <h1><span id="pageTitle">daed Dashboard</span> <span id="versionLabel">unlinked</span></h1>
+          <div class="topbar-left">
+            <button class="icon-button sidebar-mobile-toggle" data-sidebar-toggle type="button" aria-label="切换侧栏">
+              <span class="icon-bars"></span>
+            </button>
+
+            <div class="title-block">
+              <p class="eyebrow" id="pageEyebrow">Dashboard</p>
+              <h1><span id="pageTitle">daed Dashboard</span> <span id="versionLabel">unlinked</span></h1>
+            </div>
           </div>
 
           <div class="topbar-actions">
             <div class="status-chip">
-              <span>Status:</span>
+              <span>Status</span>
               <strong id="apiStatusText">Disconnected</strong>
-              <span class="dot" id="apiStatusDot"></span>
+              <span class="dot offline" id="apiStatusDot"></span>
             </div>
 
             <div class="speed-chip">
-              <span>Up:</span>
+              <span>Up</span>
               <strong id="uploadRate">0.0</strong>
               <span>MB/s</span>
             </div>
 
             <div class="speed-chip">
-              <span>Down:</span>
+              <span>Down</span>
               <strong id="downloadRate">0.0</strong>
               <span>MB/s</span>
             </div>
 
-            <button class="icon-button" type="button" aria-label="Theme">
-              <span class="icon-sun"></span>
-            </button>
-            <button class="icon-button" type="button" aria-label="API">
-              API
-            </button>
-            <button class="icon-button" type="button" aria-label="Settings">
-              <span class="icon-gear"></span>
+            <div class="speed-chip">
+              <span>Conn</span>
+              <strong id="topConnectionsValue">0</strong>
+            </div>
+
+            <button class="icon-button controller-toggle" id="controllerTopToggle" type="button" aria-expanded="true">
+              登录
             </button>
           </div>
         </header>
 
-        <section class="controller-bar">
-          <form class="controller-form" id="controllerForm">
-            <label class="controller-field">
-              <span>Controller</span>
-              <input
-                id="controllerUrl"
-                name="controller"
-                type="text"
-                spellcheck="false"
-                placeholder="http://127.0.0.1:9090"
-              />
-            </label>
-
-            <label class="controller-field token-field">
-              <span>Bearer Token</span>
-              <input
-                id="controllerToken"
-                name="token"
-                type="password"
-                spellcheck="false"
-                placeholder="optional"
-              />
-            </label>
-
-            <div class="controller-actions">
-              <button class="action-button subtle" id="connectButton" type="submit">Connect</button>
+        <section class="controller-bar" id="controllerBar">
+          <div class="controller-summary">
+            <div>
+              <p class="controller-summary-label">External Controller</p>
+              <strong id="controllerSummaryUrl">未连接</strong>
+              <p class="controller-summary-meta" id="controllerSummaryMeta">输入地址与 token，连接 dae 控制器。</p>
             </div>
-          </form>
 
-          <p class="controller-hint" id="controllerHint">
-            Connects to dae's existing Clash-style external controller. If auth is enabled, HTTP uses Bearer auth and
-            `/traffic` WebSocket passes `token=...`.
-          </p>
+            <button
+              class="action-button ghost controller-summary-button"
+              id="controllerSummaryToggle"
+              type="button"
+              aria-expanded="true"
+            >
+              登录
+            </button>
+          </div>
+
+          <div class="controller-body" id="controllerBody">
+            <div class="controller-intro">
+              <p class="panel-kicker">Login Required</p>
+              <h2 id="controllerPanelTitle">连接 dae External Controller</h2>
+              <p class="controller-hint" id="controllerHint">
+                连接到 dae 的外部控制器后，Dashboard、Traffic、Proxies、Logs 和 config.dae 才会开始实时更新。
+              </p>
+            </div>
+
+            <form class="controller-form" id="controllerForm">
+              <label class="controller-field">
+                <span>Controller</span>
+                <input
+                  id="controllerUrl"
+                  name="controller"
+                  type="text"
+                  spellcheck="false"
+                  placeholder="http://127.0.0.1:9090"
+                />
+              </label>
+
+              <label class="controller-field token-field">
+                <span>Bearer Token</span>
+                <input id="controllerToken" name="token" type="password" spellcheck="false" placeholder="optional" />
+              </label>
+
+              <div class="controller-actions">
+                <button class="action-button subtle" id="connectButton" type="submit">Connect</button>
+              </div>
+            </form>
+          </div>
         </section>
 
         <section class="panel-banner">
-          <p id="pageBanner">External Controller</p>
+          <p id="pageBanner">Overview</p>
         </section>
 
         <div class="page-stack">
           <section class="page active" data-page="dashboard">
             <section class="dashboard-grid">
-              <article class="card status-card">
-                <div class="card-header">
-                  <h2>System Status</h2>
-                </div>
+              <article class="card hero-card">
+                <div class="hero-body">
+                  <div class="hero-copy">
+                    <p class="panel-kicker">Preview Screen</p>
+                    <h2>Runtime at a glance</h2>
+                    <p class="hero-text" id="dashboardHeroText">连接控制器后开始推送运行态、连接数和启动配置预览。</p>
+                  </div>
 
-                <div class="summary-list">
-                  <div class="summary-row">
-                    <span>Controller</span>
-                    <strong id="controllerStateValue">offline</strong>
-                  </div>
-                  <div class="summary-row">
-                    <span>Mode</span>
-                    <strong id="modeValue">-</strong>
-                  </div>
-                  <div class="summary-row">
-                    <span>Log Level</span>
-                    <strong id="logLevelValue">-</strong>
-                  </div>
-                  <div class="summary-row">
-                    <span>Memory In Use</span>
-                    <strong id="memoryValue">-</strong>
+                  <div class="hero-badges">
+                    <span class="hero-badge">Mode <strong id="dashboardModeValue">-</strong></span>
+                    <span class="hero-badge">Log <strong id="dashboardLogLevelValue">-</strong></span>
+                    <span class="hero-badge">Memory <strong id="dashboardMemoryValue">-</strong></span>
                   </div>
                 </div>
 
-                <div class="meter-list">
-                  <div class="meter">
-                    <div class="meter-label-row">
-                      <span>Alive Nodes</span>
-                      <strong id="aliveNodesValue">0 / 0</strong>
-                    </div>
-                    <div class="meter-track">
-                      <span class="meter-fill cpu" id="aliveNodesBar" style="width: 0%"></span>
-                    </div>
+                <div class="hero-stats">
+                  <div class="hero-stat">
+                    <span>Alive Nodes</span>
+                    <strong id="dashboardAliveValue">0 / 0</strong>
                   </div>
-
-                  <div class="meter">
-                    <div class="meter-label-row">
-                      <span>Selected Groups</span>
-                      <strong id="groupCoverageValue">0 / 0</strong>
-                    </div>
-                    <div class="meter-track">
-                      <span class="meter-fill memory" id="groupCoverageBar" style="width: 0%"></span>
-                    </div>
+                  <div class="hero-stat">
+                    <span>Active Conn</span>
+                    <strong id="dashboardConnectionValue">0</strong>
                   </div>
-
-                  <div class="meter">
-                    <div class="meter-label-row">
-                      <span>Memory Pressure</span>
-                      <strong id="memoryPressureValue">N/A</strong>
-                    </div>
-                    <div class="meter-track">
-                      <span class="meter-fill core" id="memoryPressureBar" style="width: 0%"></span>
-                    </div>
+                  <div class="hero-stat">
+                    <span>Upload</span>
+                    <strong id="dashboardUpValue">0.0 MB/s</strong>
+                  </div>
+                  <div class="hero-stat">
+                    <span>Download</span>
+                    <strong id="dashboardDownValue">0.0 MB/s</strong>
                   </div>
                 </div>
-              </article>
 
-              <article class="card connections-card">
-                <div class="card-header">
-                  <h2>Runtime</h2>
-                </div>
-
-                <div class="stats-stack">
-                  <div class="stat-row">
+                <div class="hero-footer">
+                  <div class="detail-pill">
+                    <span>Status</span>
+                    <strong id="dashboardStatusValue">offline</strong>
+                  </div>
+                  <div class="detail-pill">
                     <span>Version</span>
                     <strong id="runtimeVersionValue">-</strong>
                   </div>
-                  <div class="stat-row">
-                    <span>TProxy</span>
-                    <strong id="tproxyPortValue">-</strong>
-                  </div>
-                  <div class="stat-row">
-                    <span>Allow LAN</span>
-                    <strong id="allowLanValue">-</strong>
-                  </div>
-                  <div class="stat-row">
-                    <span>Bind</span>
-                    <strong id="bindAddressValue">-</strong>
+                  <div class="detail-pill">
+                    <span>Startup Config</span>
+                    <strong id="dashboardConfigPathValue">-</strong>
                   </div>
                 </div>
               </article>
 
-              <article class="card overview-card">
+              <article class="card preview-card traffic-preview-card">
                 <div class="card-header">
-                  <h2>Controller Overview</h2>
+                  <h2>Traffic Preview</h2>
+                  <span class="nav-badge">LIVE</span>
+                </div>
+
+                <div class="preview-stat-grid">
+                  <div class="mini-stat">
+                    <span>Upload Total</span>
+                    <strong id="uploadTotalValue">0 B</strong>
+                  </div>
+                  <div class="mini-stat">
+                    <span>Download Total</span>
+                    <strong id="downloadTotalValue">0 B</strong>
+                  </div>
+                  <div class="mini-stat">
+                    <span>Transport</span>
+                    <strong id="dashboardTrafficTransportValue">idle</strong>
+                  </div>
+                </div>
+
+                <div class="detail-grid compact-grid">
+                  <div class="detail-row">
+                    <span>Current Up</span>
+                    <strong id="dashboardTrafficUpValue">0.0 MB/s</strong>
+                  </div>
+                  <div class="detail-row">
+                    <span>Current Down</span>
+                    <strong id="dashboardTrafficDownValue">0.0 MB/s</strong>
+                  </div>
+                </div>
+
+                <button class="shortcut-button compact" data-open-view="traffic" type="button">
+                  <span>Traffic</span>
+                  <strong>查看完整实时流量大盘</strong>
+                </button>
+              </article>
+
+              <article class="card preview-card connections-preview-card">
+                <div class="card-header">
+                  <h2>Connections</h2>
+                  <span class="nav-badge">5S</span>
+                </div>
+
+                <div class="preview-stat-grid three-up">
+                  <div class="mini-stat">
+                    <span>Total</span>
+                    <strong id="dashboardConnectionsTotal">0</strong>
+                  </div>
+                  <div class="mini-stat">
+                    <span>TCP</span>
+                    <strong id="dashboardConnectionsTcp">0</strong>
+                  </div>
+                  <div class="mini-stat">
+                    <span>UDP</span>
+                    <strong id="dashboardConnectionsUdp">0</strong>
+                  </div>
+                </div>
+
+                <p class="section-note" id="dashboardConnectionsUpdated">等待 /connections 数据。</p>
+                <div class="connection-preview-list" id="dashboardConnectionList"></div>
+              </article>
+
+              <article class="card runtime-card">
+                <div class="card-header">
+                  <h2>Runtime Preview</h2>
                 </div>
 
                 <div class="detail-grid">
+                  <div class="detail-row">
+                    <span>TProxy</span>
+                    <strong id="tproxyPortValue">-</strong>
+                  </div>
+                  <div class="detail-row">
+                    <span>Allow LAN</span>
+                    <strong id="allowLanValue">-</strong>
+                  </div>
+                  <div class="detail-row">
+                    <span>Bind</span>
+                    <strong id="bindAddressValue">-</strong>
+                  </div>
                   <div class="detail-row">
                     <span>Controller URL</span>
                     <strong id="controllerUrlValue">-</strong>
@@ -247,10 +312,6 @@
                   <div class="detail-row">
                     <span>Auth</span>
                     <strong id="controllerAuthValue">Bearer disabled</strong>
-                  </div>
-                  <div class="detail-row">
-                    <span>Snapshot Cadence</span>
-                    <strong>5s state / 1s traffic</strong>
                   </div>
                   <div class="detail-row">
                     <span>Startup Config</span>
@@ -266,24 +327,20 @@
 
                 <div class="shortcut-grid">
                   <button class="shortcut-button" data-open-view="controller" type="button">
-                    <span>External Controller</span>
-                    <strong>Connection details and log level</strong>
+                    <span>Controller</span>
+                    <strong>连接详情、流状态和日志级别</strong>
                   </button>
                   <button class="shortcut-button" data-open-view="proxies" type="button">
                     <span>Proxies</span>
-                    <strong>Probe, switch, reset groups</strong>
-                  </button>
-                  <button class="shortcut-button" data-open-view="traffic" type="button">
-                    <span>Traffic</span>
-                    <strong>Live chart and totals</strong>
+                    <strong>切换节点、查看延迟和组策略</strong>
                   </button>
                   <button class="shortcut-button" data-open-view="configs" type="button">
-                    <span>Configs</span>
-                    <strong>Edit startup <code>config.dae</code></strong>
+                    <span>Config</span>
+                    <strong>分段编辑启动 config.dae</strong>
                   </button>
                   <button class="shortcut-button" data-open-view="logs" type="button">
                     <span>Logs</span>
-                    <strong>Structured live stream from <code>/logs</code></strong>
+                    <strong>结构化日志流与运行态排障</strong>
                   </button>
                 </div>
               </article>
@@ -317,7 +374,7 @@
                 </div>
 
                 <p class="controller-page-note" id="controllerPageNote">
-                  HTTP requests use Bearer auth. WebSocket requests pass <code>token=...</code> when a secret is configured.
+                  HTTP 使用 Bearer 鉴权，WebSocket 在设置 secret 时附带 token 查询参数。
                 </p>
               </article>
 
@@ -345,11 +402,12 @@
                       <option value="error">error</option>
                     </select>
                   </label>
+
                   <button class="action-button subtle" id="applyLogLevelButton" type="button">Apply</button>
                 </div>
 
                 <p class="controller-page-note" id="runtimeLogLevelNote">
-                  Updates <code>/configs</code> with a PATCH request and keeps the runtime snapshot in sync.
+                  通过 PATCH /configs 更新运行时日志级别，并保持页面状态同步。
                 </p>
               </article>
             </section>
@@ -360,6 +418,11 @@
               <article class="card proxies-card">
                 <div class="card-header">
                   <h2>Proxies</h2>
+
+                  <div class="proxy-toolbar-actions">
+                    <button class="action-button faint" id="resetGroupButton" type="button">Reset Group</button>
+                    <button class="action-button ghost" id="reloadProxiesButton" type="button">Reload Stream</button>
+                  </div>
                 </div>
 
                 <div class="proxy-layout">
@@ -370,12 +433,7 @@
                       <div>
                         <p class="proxy-current-label">Current Group</p>
                         <h3 class="proxy-current-name" id="currentGroupName">No group</h3>
-                        <p class="proxy-current-meta" id="currentGroupMeta">Connect controller to load proxies.</p>
-                      </div>
-
-                      <div class="proxy-toolbar-actions">
-                        <button class="action-button faint" id="resetGroupButton" type="button">Reset Group</button>
-                        <button class="action-button ghost" id="reloadProxiesButton" type="button">Reload Stream</button>
+                        <p class="proxy-current-meta" id="currentGroupMeta">连接控制器后加载代理组与节点。</p>
                       </div>
                     </div>
 
@@ -387,7 +445,7 @@
           </section>
 
           <section class="page" data-page="traffic">
-            <section class="page-grid">
+            <section class="page-grid traffic-grid">
               <article class="card traffic-card">
                 <div class="card-header">
                   <h2>Traffic Flow</h2>
@@ -408,16 +466,45 @@
                 <div class="traffic-totals">
                   <div class="mini-stat">
                     <span>Upload Total</span>
-                    <strong id="uploadTotalValue">0 B</strong>
+                    <strong id="trafficUploadTotalValue">0 B</strong>
                   </div>
                   <div class="mini-stat">
                     <span>Download Total</span>
-                    <strong id="downloadTotalValue">0 B</strong>
+                    <strong id="trafficDownloadTotalValue">0 B</strong>
                   </div>
                   <div class="mini-stat">
                     <span>Transport</span>
                     <strong id="trafficTransportValue">idle</strong>
                   </div>
+                </div>
+              </article>
+
+              <article class="card connections-live-card">
+                <div class="card-header">
+                  <h2>Active Connections</h2>
+                  <span class="nav-badge">5S</span>
+                </div>
+
+                <div class="preview-stat-grid three-up">
+                  <div class="mini-stat">
+                    <span>Total</span>
+                    <strong id="trafficConnectionsTotal">0</strong>
+                  </div>
+                  <div class="mini-stat">
+                    <span>TCP</span>
+                    <strong id="trafficConnectionsTcp">0</strong>
+                  </div>
+                  <div class="mini-stat">
+                    <span>UDP</span>
+                    <strong id="trafficConnectionsUdp">0</strong>
+                  </div>
+                </div>
+
+                <p class="section-note" id="trafficConnectionsUpdated">等待 /connections 数据。</p>
+
+                <div class="connections-table-wrap">
+                  <div class="connections-stream" id="trafficConnectionsList"></div>
+                  <div class="table-empty" id="trafficConnectionsEmpty">暂无活动连接。</div>
                 </div>
               </article>
             </section>
@@ -427,7 +514,7 @@
             <section class="page-grid two-column">
               <article class="card runtime-config-card">
                 <div class="card-header">
-                  <h2>Config Snapshot</h2>
+                  <h2>Startup Config Summary</h2>
                 </div>
 
                 <div class="detail-grid">
@@ -451,12 +538,20 @@
                     <span>Bind Address</span>
                     <strong id="configBindValue">-</strong>
                   </div>
+                  <div class="detail-row">
+                    <span>Sections</span>
+                    <strong id="configSectionsCountValue">0</strong>
+                  </div>
+                  <div class="detail-row">
+                    <span>Current Section</span>
+                    <strong id="configCurrentSectionValue">-</strong>
+                  </div>
                 </div>
               </article>
 
               <article class="card editor-card">
                 <div class="card-header">
-                  <h2>config.dae</h2>
+                  <h2>config.dae Sections</h2>
                 </div>
 
                 <div class="editor-shell">
@@ -472,18 +567,29 @@
                     </div>
                   </div>
 
-                  <div class="editor-window">
-                    <div class="editor-lines" id="editorLines" aria-hidden="true"></div>
-                    <textarea
-                      class="editor-code"
-                      id="configView"
-                      spellcheck="false"
-                      wrap="off"
-                    ># Connect controller to load /etc/dae/config.dae</textarea>
+                  <div class="section-workspace">
+                    <div class="section-list" id="configSectionTabs"></div>
+
+                    <div class="section-editor">
+                      <div class="section-editor-head">
+                        <div>
+                          <p class="panel-kicker">Selected Section</p>
+                          <h3 id="configSectionTitle">-</h3>
+                          <p class="section-note" id="configSectionSubtitle">连接控制器后读取 config.dae 顶层块。</p>
+                        </div>
+                      </div>
+
+                      <textarea
+                        class="editor-code section-code"
+                        id="configSectionView"
+                        spellcheck="false"
+                        wrap="off"
+                      ># Connect controller to load /etc/dae/config.dae</textarea>
+                    </div>
                   </div>
 
                   <p class="editor-note" id="editorNote">
-                    Editing dae's startup config file. Save validates the dae syntax, writes the file, and triggers a live reload.
+                    按顶层块拆分编辑 startup config.dae。保存时会重组全文、校验并触发 dae 热重载。
                   </p>
                 </div>
               </article>
@@ -516,7 +622,7 @@
                 </div>
 
                 <p class="controller-page-note" id="logsStatusText">
-                  Waiting for live events from <code>/logs?format=structured</code>.
+                  Waiting for live events from /logs?format=structured.
                 </p>
 
                 <div class="logs-shell" id="logsShell">
