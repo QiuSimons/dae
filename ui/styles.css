@@ -371,6 +371,70 @@ button {
   text-transform: uppercase;
 }
 
+.controller-bar {
+  position: relative;
+  z-index: 1;
+  margin: 0 8px 18px;
+  padding: 16px 18px 18px;
+  border: 1px solid rgba(111, 122, 136, 0.12);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 16px 38px rgba(118, 104, 84, 0.08);
+}
+
+.controller-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.controller-field,
+.inline-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.controller-field span,
+.inline-field span,
+.controller-hint,
+.proxy-current-label,
+.proxy-current-meta,
+.mini-stat span,
+.editor-note {
+  color: #6e767e;
+  font-size: 0.84rem;
+}
+
+.controller-field input,
+.inline-field select {
+  width: 100%;
+  height: 46px;
+  padding: 0 14px;
+  border: 1px solid rgba(111, 122, 136, 0.16);
+  border-radius: 14px;
+  background: rgba(247, 248, 249, 0.9);
+  color: var(--text);
+  outline: none;
+}
+
+.controller-field input:focus,
+.inline-field select:focus {
+  border-color: rgba(76, 192, 181, 0.56);
+  box-shadow: 0 0 0 4px rgba(76, 192, 181, 0.12);
+}
+
+.controller-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.controller-hint {
+  margin: 12px 2px 0;
+  line-height: 1.5;
+}
+
 .dashboard-grid {
   display: grid;
   grid-template-columns: 1.05fr 1.95fr 0.95fr;
@@ -475,6 +539,25 @@ button {
   background: linear-gradient(90deg, #f0b45a, #f3c57c);
 }
 
+.summary-list {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 10px;
+  padding: 0 18px 14px;
+}
+
+.summary-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.summary-row strong {
+  font-size: 1rem;
+}
+
 .traffic-card {
   display: flex;
   flex-direction: column;
@@ -544,6 +627,28 @@ button {
   font-size: 0.76rem;
 }
 
+.traffic-totals {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  padding: 0 18px 18px;
+}
+
+.mini-stat {
+  padding: 12px 14px;
+  border: 1px solid rgba(111, 122, 136, 0.12);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.mini-stat strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 1.06rem;
+}
+
 .stats-stack {
   position: relative;
   z-index: 1;
@@ -608,6 +713,40 @@ button {
   align-content: start;
 }
 
+.proxy-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.proxy-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.proxy-current-label {
+  margin: 0 0 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.proxy-current-name {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.proxy-current-meta {
+  margin: 8px 0 0;
+  line-height: 1.45;
+}
+
+.proxy-toolbar-actions {
+  display: flex;
+  gap: 10px;
+}
+
 .proxy-card {
   display: flex;
   flex-direction: column;
@@ -620,9 +759,17 @@ button {
   transition: transform 180ms ease, opacity 180ms ease;
 }
 
-.proxy-card.hidden {
-  opacity: 0.28;
-  transform: scale(0.98);
+.proxy-card:hover {
+  transform: translateY(-2px);
+}
+
+.proxy-card.current {
+  border-color: rgba(76, 192, 181, 0.4);
+  box-shadow: 0 18px 34px rgba(76, 192, 181, 0.16);
+}
+
+.proxy-card.busy {
+  opacity: 0.7;
 }
 
 .proxy-top {
@@ -693,6 +840,12 @@ button {
   font-size: 1.1rem;
 }
 
+.proxy-meta {
+  color: #6d757d;
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
 .proxy-card p {
   margin: 0;
   color: #6d757d;
@@ -703,6 +856,59 @@ button {
   color: #2f9d93;
   font-size: 1.5rem;
   letter-spacing: -0.04em;
+}
+
+.proxy-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.proxy-badge {
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: rgba(76, 192, 181, 0.12);
+  color: #2f9d93;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.proxy-badge.dim {
+  background: rgba(111, 122, 136, 0.12);
+  color: #657078;
+}
+
+.proxy-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: auto;
+}
+
+.proxy-action {
+  padding: 9px 12px;
+  border: 0;
+  border-radius: 12px;
+  background: rgba(240, 243, 244, 0.92);
+  color: #334047;
+  cursor: pointer;
+}
+
+.proxy-action.primary {
+  background: rgba(76, 192, 181, 0.16);
+  color: #257f77;
+}
+
+.proxy-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 220px;
+  padding: 24px;
+  border: 1px dashed rgba(111, 122, 136, 0.2);
+  border-radius: 20px;
+  color: #707982;
+  text-align: center;
 }
 
 .editor-card {
@@ -721,6 +927,13 @@ button {
 .editor-tabs {
   display: flex;
   gap: 8px;
+}
+
+.editor-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
 }
 
 .editor-tab {
@@ -791,6 +1004,37 @@ button {
   color: #20311f;
 }
 
+.action-button.ghost {
+  background: rgba(244, 246, 247, 0.96);
+  color: #435058;
+}
+
+.action-button.faint {
+  background: rgba(239, 240, 242, 0.88);
+  color: #526069;
+}
+
+.action-button:disabled,
+.proxy-action:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+
+.editor-note {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.dot.offline {
+  background: #adb7be;
+  box-shadow: 0 0 0 4px rgba(173, 183, 190, 0.18);
+}
+
+.dot.warn {
+  background: #e5b95e;
+  box-shadow: 0 0 0 4px rgba(229, 185, 94, 0.18);
+}
+
 @media (max-width: 1280px) {
   .dashboard-grid {
     grid-template-columns: 1fr 1.2fr;
@@ -805,6 +1049,14 @@ button {
   }
 
   .editor-card {
+    grid-column: 1 / span 2;
+  }
+
+  .controller-form {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .controller-actions {
     grid-column: 1 / span 2;
   }
 }
@@ -841,6 +1093,24 @@ button {
   .editor-card {
     grid-column: auto;
   }
+
+  .controller-form {
+    grid-template-columns: 1fr;
+  }
+
+  .controller-actions {
+    grid-column: auto;
+  }
+
+  .traffic-totals {
+    grid-template-columns: 1fr;
+  }
+
+  .editor-toolbar,
+  .proxy-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
 }
 
 @media (max-width: 720px) {
@@ -855,6 +1125,10 @@ button {
 
   .proxy-grid {
     grid-template-columns: 1fr;
+  }
+
+  .proxy-toolbar-actions {
+    flex-direction: column;
   }
 
   .chart-shell {

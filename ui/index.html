@@ -18,7 +18,7 @@
           </div>
           <div>
             <p class="brand-name">daed<span>bpf</span></p>
-            <p class="brand-subtitle">Standalone UI demo</p>
+            <p class="brand-subtitle">Control API wired demo</p>
           </div>
         </div>
 
@@ -31,50 +31,42 @@
             </button>
             <button class="nav-item" type="button">
               <span class="nav-icon"></span>
-              <span>Global Settings</span>
+              <span>External Controller</span>
             </button>
           </div>
 
           <div class="nav-group">
             <div class="nav-title-row">
-              <p class="nav-title">Network</p>
-              <span class="nav-badge">NEW</span>
+              <p class="nav-title">Runtime</p>
+              <span class="nav-badge">LIVE</span>
             </div>
-            <button class="nav-item" type="button">
-              <span class="nav-icon"></span>
-              <span>Subscriptions</span>
-            </button>
             <button class="nav-item" type="button">
               <span class="nav-icon"></span>
               <span>Proxies</span>
             </button>
             <button class="nav-item" type="button">
               <span class="nav-icon"></span>
-              <span>Routing</span>
+              <span>Traffic</span>
             </button>
             <button class="nav-item" type="button">
               <span class="nav-icon"></span>
-              <span>DNS</span>
+              <span>Configs</span>
             </button>
-          </div>
-
-          <div class="nav-group">
-            <p class="nav-title">Diagnostics</p>
             <button class="nav-item" type="button">
               <span class="nav-icon"></span>
               <span>Logs</span>
             </button>
-            <button class="nav-item" type="button">
-              <span class="nav-icon"></span>
-              <span>Core Status</span>
-            </button>
           </div>
 
           <div class="nav-group">
-            <p class="nav-title">Admin</p>
+            <p class="nav-title">Hints</p>
             <button class="nav-item" type="button">
               <span class="nav-icon"></span>
-              <span>Settings</span>
+              <span>`/traffic` prefers WebSocket</span>
+            </button>
+            <button class="nav-item" type="button">
+              <span class="nav-icon"></span>
+              <span>`/configs` patches log-level</span>
             </button>
           </div>
         </nav>
@@ -84,25 +76,25 @@
         <header class="topbar">
           <div class="title-block">
             <p class="eyebrow">Dashboard</p>
-            <h1>daed <span>v1.1.0</span></h1>
+            <h1>daed <span id="versionLabel">unlinked</span></h1>
           </div>
 
           <div class="topbar-actions">
             <div class="status-chip">
               <span>Status:</span>
-              <strong>Active</strong>
-              <span class="dot"></span>
+              <strong id="apiStatusText">Disconnected</strong>
+              <span class="dot" id="apiStatusDot"></span>
             </div>
 
             <div class="speed-chip">
               <span>Up:</span>
-              <strong id="uploadRate">2.1</strong>
+              <strong id="uploadRate">0.0</strong>
               <span>MB/s</span>
             </div>
 
             <div class="speed-chip">
               <span>Down:</span>
-              <strong id="downloadRate">14.7</strong>
+              <strong id="downloadRate">0.0</strong>
               <span>MB/s</span>
             </div>
 
@@ -118,8 +110,44 @@
           </div>
         </header>
 
+        <section class="controller-bar">
+          <form class="controller-form" id="controllerForm">
+            <label class="controller-field">
+              <span>Controller</span>
+              <input
+                id="controllerUrl"
+                name="controller"
+                type="text"
+                spellcheck="false"
+                placeholder="http://127.0.0.1:9090"
+              />
+            </label>
+
+            <label class="controller-field token-field">
+              <span>Bearer Token</span>
+              <input
+                id="controllerToken"
+                name="token"
+                type="password"
+                spellcheck="false"
+                placeholder="optional"
+              />
+            </label>
+
+            <div class="controller-actions">
+              <button class="action-button subtle" id="connectButton" type="submit">Connect</button>
+              <button class="action-button ghost" id="refreshButton" type="button">Refresh</button>
+            </div>
+          </form>
+
+          <p class="controller-hint" id="controllerHint">
+            Connects to dae's existing Clash-style external controller. If auth is enabled, HTTP uses Bearer auth and
+            `/traffic` WebSocket passes `token=...`.
+          </p>
+        </section>
+
         <section class="panel-banner">
-          <p>Dashboard</p>
+          <p>External Controller</p>
         </section>
 
         <section class="dashboard-grid">
@@ -128,34 +156,53 @@
               <h2>System Status</h2>
             </div>
 
+            <div class="summary-list">
+              <div class="summary-row">
+                <span>Controller</span>
+                <strong id="controllerStateValue">offline</strong>
+              </div>
+              <div class="summary-row">
+                <span>Mode</span>
+                <strong id="modeValue">-</strong>
+              </div>
+              <div class="summary-row">
+                <span>Log Level</span>
+                <strong id="logLevelValue">-</strong>
+              </div>
+              <div class="summary-row">
+                <span>Memory In Use</span>
+                <strong id="memoryValue">-</strong>
+              </div>
+            </div>
+
             <div class="meter-list">
               <div class="meter">
                 <div class="meter-label-row">
-                  <span>CPU</span>
-                  <strong id="cpuValue">72%</strong>
+                  <span>Alive Nodes</span>
+                  <strong id="aliveNodesValue">0 / 0</strong>
                 </div>
                 <div class="meter-track">
-                  <span class="meter-fill cpu" style="width: 72%"></span>
+                  <span class="meter-fill cpu" id="aliveNodesBar" style="width: 0%"></span>
                 </div>
               </div>
 
               <div class="meter">
                 <div class="meter-label-row">
-                  <span>Memory</span>
-                  <strong id="memoryValue">60%</strong>
+                  <span>Selected Groups</span>
+                  <strong id="groupCoverageValue">0 / 0</strong>
                 </div>
                 <div class="meter-track">
-                  <span class="meter-fill memory" style="width: 60%"></span>
+                  <span class="meter-fill memory" id="groupCoverageBar" style="width: 0%"></span>
                 </div>
               </div>
 
               <div class="meter">
                 <div class="meter-label-row">
-                  <span>Core Status</span>
-                  <strong id="coreValue">10%</strong>
+                  <span>Memory Pressure</span>
+                  <strong id="memoryPressureValue">N/A</strong>
                 </div>
                 <div class="meter-track">
-                  <span class="meter-fill core" style="width: 10%"></span>
+                  <span class="meter-fill core" id="memoryPressureBar" style="width: 0%"></span>
                 </div>
               </div>
             </div>
@@ -170,44 +217,51 @@
               </div>
             </div>
 
-            <div class="chart-scale">
-              <span>14.7 MB/s</span>
-              <span>3.7 MB/s</span>
-              <span>0.0 MB/s</span>
-              <span>-1.3 MB/s</span>
-              <span>-2.2 MB/s</span>
-            </div>
+            <div class="chart-scale" id="chartScale"></div>
 
             <div class="chart-shell">
               <canvas id="trafficChart" width="760" height="280"></canvas>
             </div>
 
-            <div class="chart-time">
-              <span>00:00</span>
-              <span>10:00</span>
-              <span>15:00</span>
-              <span>18:00</span>
-              <span>20:00</span>
+            <div class="chart-time" id="chartTime"></div>
+
+            <div class="traffic-totals">
+              <div class="mini-stat">
+                <span>Upload Total</span>
+                <strong id="uploadTotalValue">0 B</strong>
+              </div>
+              <div class="mini-stat">
+                <span>Download Total</span>
+                <strong id="downloadTotalValue">0 B</strong>
+              </div>
+              <div class="mini-stat">
+                <span>Transport</span>
+                <strong id="trafficTransportValue">idle</strong>
+              </div>
             </div>
           </article>
 
           <article class="card connections-card">
             <div class="card-header">
-              <h2>Connections</h2>
+              <h2>Runtime</h2>
             </div>
 
             <div class="stats-stack">
               <div class="stat-row">
-                <span>Active</span>
-                <strong id="activeConnections">156</strong>
+                <span>Version</span>
+                <strong id="runtimeVersionValue">-</strong>
               </div>
               <div class="stat-row">
-                <span>TCP</span>
-                <strong id="tcpConnections">110</strong>
+                <span>TProxy</span>
+                <strong id="tproxyPortValue">-</strong>
               </div>
               <div class="stat-row">
-                <span>UDP</span>
-                <strong id="udpConnections">46</strong>
+                <span>Allow LAN</span>
+                <strong id="allowLanValue">-</strong>
+              </div>
+              <div class="stat-row">
+                <span>Bind</span>
+                <strong id="bindAddressValue">-</strong>
               </div>
             </div>
           </article>
@@ -218,99 +272,61 @@
             </div>
 
             <div class="proxy-layout">
-              <div class="proxy-tabs" role="tablist" aria-label="Proxy groups">
-                <button class="proxy-tab active" data-group="all" type="button">Global</button>
-                <button class="proxy-tab" data-group="game" type="button">Game</button>
-                <button class="proxy-tab" data-group="streaming" type="button">Streaming</button>
-                <button class="proxy-tab" data-group="others" type="button">Others</button>
-              </div>
+              <div class="proxy-tabs" id="proxyTabs" role="tablist" aria-label="Proxy groups"></div>
 
-              <div class="proxy-grid">
-                <article class="proxy-card" data-groups="all game">
-                  <div class="proxy-top">
-                    <span class="flag us">US</span>
-                    <button class="refresh" type="button" aria-label="refresh"></button>
+              <div class="proxy-panel">
+                <div class="proxy-toolbar">
+                  <div>
+                    <p class="proxy-current-label">Current Group</p>
+                    <h3 class="proxy-current-name" id="currentGroupName">No group</h3>
+                    <p class="proxy-current-meta" id="currentGroupMeta">Connect controller to load proxies.</p>
                   </div>
-                  <h3>US-GIA-Premium</h3>
-                  <p><strong>112</strong> ms</p>
-                </article>
 
-                <article class="proxy-card" data-groups="all game">
-                  <div class="proxy-top">
-                    <span class="flag jp">JP</span>
-                    <button class="refresh" type="button" aria-label="refresh"></button>
+                  <div class="proxy-toolbar-actions">
+                    <button class="action-button faint" id="resetGroupButton" type="button">Reset Group</button>
+                    <button class="action-button ghost" id="reloadProxiesButton" type="button">Reload</button>
                   </div>
-                  <h3>JP-Osaka-1</h3>
-                  <p><strong>45</strong> ms</p>
-                </article>
+                </div>
 
-                <article class="proxy-card" data-groups="all streaming">
-                  <div class="proxy-top">
-                    <span class="flag jp">JP</span>
-                    <button class="refresh" type="button" aria-label="refresh"></button>
-                  </div>
-                  <h3>JP-Osaka-2</h3>
-                  <p><strong>45</strong> ms</p>
-                </article>
-
-                <article class="proxy-card" data-groups="all streaming">
-                  <div class="proxy-top">
-                    <span class="flag sg">SG</span>
-                    <button class="refresh" type="button" aria-label="refresh"></button>
-                  </div>
-                  <h3>SG-Cloud</h3>
-                  <p><strong>18</strong> ms</p>
-                </article>
-
-                <article class="proxy-card" data-groups="all others">
-                  <div class="proxy-top">
-                    <span class="flag sg">SG</span>
-                    <button class="refresh" type="button" aria-label="refresh"></button>
-                  </div>
-                  <h3>SG-Cloud Pro</h3>
-                  <p><strong>16</strong> ms</p>
-                </article>
-
-                <article class="proxy-card" data-groups="all others">
-                  <div class="proxy-top">
-                    <span class="flag us">US</span>
-                    <button class="refresh" type="button" aria-label="refresh"></button>
-                  </div>
-                  <h3>US-India</h3>
-                  <p><strong>16</strong> ms</p>
-                </article>
+                <div class="proxy-grid" id="proxyGrid"></div>
               </div>
             </div>
           </article>
 
           <article class="card editor-card">
             <div class="card-header">
-              <h2>Configuration</h2>
+              <h2>Config Snapshot</h2>
             </div>
 
             <div class="editor-shell">
-              <div class="editor-tabs">
-                <button class="editor-tab active" type="button">dae.routing</button>
-                <button class="editor-tab" type="button">nodes.dae</button>
+              <div class="editor-toolbar">
+                <label class="inline-field" for="logLevelSelect">
+                  <span>Log Level</span>
+                  <select id="logLevelSelect">
+                    <option value="error">error</option>
+                    <option value="warn">warn</option>
+                    <option value="info">info</option>
+                    <option value="debug">debug</option>
+                    <option value="trace">trace</option>
+                  </select>
+                </label>
+
+                <div class="editor-actions">
+                  <button class="action-button subtle" id="saveConfigButton" type="button">Update Log Level</button>
+                  <button class="action-button accent" id="refreshConfigButton" type="button">Refresh Snapshot</button>
+                </div>
               </div>
 
               <div class="editor-window">
-                <div class="editor-lines" aria-hidden="true">
-                  <span>1</span>
-                  <span>2</span>
-                  <span>3</span>
-                  <span>4</span>
-                </div>
-                <pre class="editor-code"><code>routing {
-  pname(browser) -&gt; direct;
-  dip(8.8.8.8) -&gt; node(google);
+                <div class="editor-lines" id="editorLines" aria-hidden="true"></div>
+                <pre class="editor-code"><code id="configView">{
+  "status": "disconnected"
 }</code></pre>
               </div>
 
-              <div class="editor-actions">
-                <button class="action-button subtle" type="button">Save</button>
-                <button class="action-button accent" type="button">Hot Reload</button>
-              </div>
+              <p class="editor-note" id="editorNote">
+                `/configs` currently supports `PATCH {"log-level": ...}`. Routing text is not exposed by the current backend.
+              </p>
             </div>
           </article>
         </section>
