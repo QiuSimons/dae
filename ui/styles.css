@@ -934,6 +934,12 @@ body.controller-collapsed .controller-bar {
   min-height: 210px;
 }
 
+.connections-live-card {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100svh - 148px);
+}
+
 .dashboard-proxies-card {
   grid-column: 1 / -1;
 }
@@ -1467,8 +1473,10 @@ body.controller-collapsed .controller-bar {
 
 .connections-table-wrap {
   position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
   padding: 0 18px 18px;
-  max-height: 520px;
+  max-height: none;
   overflow-y: auto;
   overflow-x: hidden;
 }
