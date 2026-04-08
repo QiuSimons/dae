@@ -185,3 +185,46 @@ func TestAuthAndPatchConfigs(t *testing.T) {
 		t.Fatalf("expected unauthorized, got %d body=%s", resp.StatusCode, string(body))
 	}
 }
+
+func TestWebUIIsServedWithoutBreakingAPIAuth(t *testing.T) {
+	provider := &fakeProvider{
+		proxies: map[string]Proxy{},
+	}
+	server := httptest.NewServer(NewServer(ServerConfig{Secret: "secret"}, provider, nil).handler())
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/ui/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("ui status = %d body=%s", resp.StatusCode, string(body))
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(body, []byte("controllerForm")) {
+		t.Fatalf("ui body missing controller form: %s", string(body))
+	}
+
+	resp, err = http.Get(server.URL + "/ui/script.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("ui script status = %d", resp.StatusCode)
+	}
+
+	resp, err = http.Get(server.URL + "/version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected version to remain unauthorized, got %d", resp.StatusCode)
+	}
+}

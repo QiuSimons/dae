@@ -191,6 +191,11 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 			return err
 		}
 		currentLog.Infof("External controller listening at: %s", currentConf.Global.ExternalController)
+		if controllerServer.WebUIEnabled() {
+			currentLog.Infof("Web UI available at: http://%s/ui/", currentConf.Global.ExternalController)
+		} else if currentConf.Global.ExternalControllerSecret != "" {
+			currentLog.Warn("External controller secret is set but Web UI assets were not found; checked DAE_WEBUI_DIR, ./ui, executable/ui, and shared data directories")
+		}
 		return nil
 	}
 

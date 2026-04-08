@@ -126,6 +126,8 @@ jobs:
           make
           cp ./install/dae.service ./build/
           cp ./example.dae ./build/
+          mkdir -p ./build/ui
+          cp -R ./ui/. ./build/ui/
           curl -L -o ./build/geoip.dat https://github.com/v2fly/geoip/releases/latest/download/geoip.dat
           curl -L -o ./build/geosite.dat https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat
 

@@ -41,6 +41,7 @@ type Server struct {
 	cfg      ServerConfig
 	provider Provider
 	logs     *LogBroker
+	ui       *webUI
 
 	mu       sync.Mutex
 	listener net.Listener
@@ -124,6 +125,9 @@ func NewServer(cfg ServerConfig, provider Provider, logs *LogBroker) *Server {
 		provider: provider,
 		logs:     logs,
 	}
+	if cfg.Secret != "" {
+		s.ui = discoverWebUI()
+	}
 	s.server = &http.Server{
 		Addr:    cfg.Addr,
 		Handler: s.handler(),
@@ -163,6 +167,10 @@ func (s *Server) Close() error {
 
 func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
+	if s.ui != nil {
+		mux.HandleFunc("/ui", s.handleWebUI)
+		mux.HandleFunc("/ui/", s.handleWebUI)
+	}
 	mux.HandleFunc("/", s.handleRoot)
 	mux.HandleFunc("/version", s.handleVersion)
 	mux.HandleFunc("/configs", s.handleConfigs)
@@ -181,6 +189,10 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type,Authorization")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if s.ui != nil && isWebUIPath(r.URL.Path) {
+			next.ServeHTTP(w, r)
 			return
 		}
 		if s.cfg.Secret != "" && !s.authorized(r) {
@@ -207,12 +219,24 @@ func safeEqual(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
+func (s *Server) WebUIEnabled() bool {
+	return s.ui != nil
+}
+
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		writeError(w, http.StatusNotFound, errNotFound)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"hello": s.provider.Hello()})
+}
+
+func (s *Server) handleWebUI(w http.ResponseWriter, r *http.Request) {
+	if s.ui == nil {
+		writeError(w, http.StatusNotFound, errNotFound)
+		return
+	}
+	s.ui.serveHTTP(w, r)
 }
 
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {

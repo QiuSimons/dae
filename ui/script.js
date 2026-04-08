@@ -109,12 +109,16 @@ function resetLiveState() {
 }
 
 function loadPersistedConnection() {
-  const params = new URLSearchParams(window.location.search);
-  const urlFromQuery = params.get("controller");
-  const tokenFromQuery = params.get("token");
+  const query = new URLSearchParams(window.location.search);
+  const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const urlFromQuery = query.get("controller");
+  const tokenFromQuery = query.get("token");
+  const tokenFromHash = hash.get("token");
+  const servedByEmbeddedUI = window.location.pathname === "/ui/" || window.location.pathname.startsWith("/ui/");
+  const sameOriginController = servedByEmbeddedUI ? window.location.origin : "";
 
-  state.controllerUrl = urlFromQuery || window.localStorage.getItem(STORAGE_KEYS.controller) || "";
-  state.token = tokenFromQuery || window.localStorage.getItem(STORAGE_KEYS.token) || "";
+  state.controllerUrl = urlFromQuery || sameOriginController || window.localStorage.getItem(STORAGE_KEYS.controller) || "";
+  state.token = tokenFromQuery || tokenFromHash || window.localStorage.getItem(STORAGE_KEYS.token) || "";
 
   refs.controllerUrl.value = state.controllerUrl;
   refs.controllerToken.value = state.token;

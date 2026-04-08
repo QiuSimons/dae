@@ -38,6 +38,10 @@ global {
 }
 ```
 
+When `external_controller_secret` is set and the UI assets are available on disk, dae now also serves this dashboard at `http://<external_controller>/ui/`.
+If you open the built-in page directly from dae, it will automatically use the same origin as the controller.
+You can still pass the token client-side without sending it to the server logs by using a URL fragment such as `http://127.0.0.1:9090/ui/#token=secret`.
+
 ## Current Backend Limits
 
 - The current `DaeProvider.Traffic()` implementation returns zeroed traffic values, so the UI is wired to `/traffic` but may still show flat lines until the backend starts reporting real counters.
