@@ -2252,6 +2252,19 @@ body.auth-required #controllerTopToggle {
     grid-template-columns: 1fr;
   }
 
+  .connections-preview-card {
+    height: auto;
+  }
+
+  .connections-preview-card .connection-preview-list {
+    overflow: visible;
+  }
+
+  .connections-table-wrap {
+    max-height: none;
+    overflow: visible;
+  }
+
   .config-section-toggle,
   .config-section-toolbar,
   .config-section-side {
@@ -2273,6 +2286,10 @@ body.auth-required #controllerTopToggle {
     grid-template-columns: 1fr;
   }
 
+  body.sidebar-collapsed .app-shell {
+    grid-template-columns: 1fr;
+  }
+
   .sidebar {
     position: fixed;
     top: 16px;
@@ -2287,7 +2304,9 @@ body.auth-required #controllerTopToggle {
   }
 
   body.sidebar-collapsed .sidebar {
-    transform: translateX(calc(-100% - 24px));
+    transform: translateX(calc(-100% - 32px));
+    opacity: 0;
+    pointer-events: none;
   }
 
   body.sidebar-collapsed .brand-copy,
