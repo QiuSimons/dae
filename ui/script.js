@@ -107,7 +107,6 @@ const refs = {
   dashboardProxyGrid: document.getElementById("dashboardProxyGrid"),
   dashboardCurrentGroupName: document.getElementById("dashboardCurrentGroupName"),
   dashboardCurrentGroupMeta: document.getElementById("dashboardCurrentGroupMeta"),
-  streamList: document.getElementById("streamList"),
   runtimeLogLevelSelect: document.getElementById("runtimeLogLevelSelect"),
   applyLogLevelButton: document.getElementById("applyLogLevelButton"),
   runtimeLogLevelNote: document.getElementById("runtimeLogLevelNote"),
@@ -1642,28 +1641,6 @@ function renderControllerPanel() {
   refs.applyLogLevelButton.disabled = !state.controllerUrl || state.logLevelChanging || state.connecting;
   refs.controllerTopToggle.textContent = connected ? "Controller" : "登录";
   refs.controllerTopToggle.hidden = !connected;
-
-  const streams = [
-    ["version", wsState("version")],
-    ["configs", wsState("config")],
-    ["proxies", wsState("proxies")],
-    ["traffic", wsState("traffic")],
-    ["connections", wsState("connections")],
-    ["memory", wsState("memory")],
-    ["config.dae", wsState("daeConfig")],
-    ["logs", wsState("logs")],
-  ];
-
-  refs.streamList.innerHTML = streams
-    .map(
-      ([name, status]) => `
-        <div class="stream-pill ${escapeHtml(status)}">
-          <span>${escapeHtml(name)}</span>
-          <strong>${escapeHtml(status)}</strong>
-        </div>
-      `,
-    )
-    .join("");
 
   renderLayoutState();
 }
