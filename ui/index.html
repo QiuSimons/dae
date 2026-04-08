@@ -34,10 +34,6 @@
               <span class="nav-icon"></span>
               <span class="nav-text">Dashboard</span>
             </button>
-            <button class="nav-item" data-view="controller" type="button">
-              <span class="nav-icon"></span>
-              <span class="nav-text">Controller</span>
-            </button>
             <button class="nav-item" data-view="proxies" type="button">
               <span class="nav-icon"></span>
               <span class="nav-text">Proxies</span>
@@ -152,6 +148,27 @@
                 <button class="action-button subtle" id="connectButton" type="submit">登录</button>
               </div>
             </form>
+
+            <div class="inline-form controller-inline-form">
+              <label class="controller-field compact-field">
+                <span>Runtime Log Level</span>
+                <select id="runtimeLogLevelSelect">
+                  <option value="trace">trace</option>
+                  <option value="debug">debug</option>
+                  <option value="info">info</option>
+                  <option value="warn">warn</option>
+                  <option value="error">error</option>
+                </select>
+              </label>
+
+              <button class="action-button subtle" id="applyLogLevelButton" type="button">Apply</button>
+            </div>
+
+            <p class="controller-page-note" id="runtimeLogLevelNote">
+              通过 PATCH /configs 更新运行时日志级别，并保持页面状态同步。
+            </p>
+
+            <div class="stream-list compact-stream-list" id="streamList"></div>
           </div>
         </section>
 
@@ -163,91 +180,92 @@
           <section class="page active" data-page="dashboard">
             <section class="dashboard-grid">
               <article class="card hero-card">
-                <div class="hero-body">
+                <div class="hero-header">
                   <div class="hero-copy">
-                    <p class="panel-kicker">Preview Screen</p>
+                    <p class="panel-kicker">Live Runtime</p>
                     <h2>Runtime at a glance</h2>
-                    <p class="hero-text" id="dashboardHeroText">连接控制器后开始推送运行态、连接数和启动配置预览。</p>
                   </div>
 
                   <div class="hero-badges">
-                    <span class="hero-badge">Mode <strong id="dashboardModeValue">-</strong></span>
-                    <span class="hero-badge">Log <strong id="dashboardLogLevelValue">-</strong></span>
-                    <span class="hero-badge">Memory <strong id="dashboardMemoryValue">-</strong></span>
+                    <span class="hero-badge">Status <strong id="dashboardStatusValue">offline</strong></span>
+                    <span class="hero-badge">Version <strong id="runtimeVersionValue">-</strong></span>
+                    <span class="hero-badge">Conn <strong id="dashboardConnectionValue">0</strong></span>
+                    <span class="hero-badge">Transport <strong id="dashboardTrafficTransportValue">idle</strong></span>
                   </div>
                 </div>
 
-                <div class="hero-stats">
-                  <div class="hero-stat">
-                    <span>Alive Nodes</span>
-                    <strong id="dashboardAliveValue">0 / 0</strong>
+                <div class="hero-runtime-grid">
+                  <div class="hero-system-panel">
+                    <div class="subpanel-header">
+                      <h3>System Status</h3>
+                      <span class="nav-badge">LIVE</span>
+                    </div>
+
+                    <div class="detail-grid hero-status-grid">
+                      <div class="detail-row">
+                        <span>Mode</span>
+                        <strong id="dashboardModeValue">-</strong>
+                      </div>
+                      <div class="detail-row">
+                        <span>Log Level</span>
+                        <strong id="dashboardLogLevelValue">-</strong>
+                      </div>
+                      <div class="detail-row">
+                        <span>Memory</span>
+                        <strong id="dashboardMemoryValue">-</strong>
+                      </div>
+                      <div class="detail-row">
+                        <span>Alive Nodes</span>
+                        <strong id="dashboardAliveValue">0 / 0</strong>
+                      </div>
+                      <div class="detail-row">
+                        <span>Upload Total</span>
+                        <strong id="uploadTotalValue">0 B</strong>
+                      </div>
+                      <div class="detail-row">
+                        <span>Download Total</span>
+                        <strong id="downloadTotalValue">0 B</strong>
+                      </div>
+                    </div>
                   </div>
-                  <div class="hero-stat">
-                    <span>Active Conn</span>
-                    <strong id="dashboardConnectionValue">0</strong>
-                  </div>
-                  <div class="hero-stat">
-                    <span>Upload</span>
-                    <strong id="dashboardUpValue">0.0 MB/s</strong>
-                  </div>
-                  <div class="hero-stat">
-                    <span>Download</span>
-                    <strong id="dashboardDownValue">0.0 MB/s</strong>
+
+                  <div class="hero-traffic-panel">
+                    <div class="subpanel-header">
+                      <h3>Traffic Flow</h3>
+                      <div class="chart-legend">
+                        <span class="legend-item upload">Upload</span>
+                        <span class="legend-item download">Download</span>
+                      </div>
+                    </div>
+
+                    <div class="chart-scale dashboard-chart-scale" id="dashboardChartScale"></div>
+
+                    <div class="chart-shell hero-chart-shell">
+                      <canvas id="dashboardTrafficChart" width="760" height="280"></canvas>
+                    </div>
+
+                    <div class="chart-time hero-chart-time" id="dashboardChartTime"></div>
+
+                    <div class="hero-traffic-stats">
+                      <div class="mini-stat">
+                        <span>Current Up</span>
+                        <strong id="dashboardTrafficUpValue">0.0 MB/s</strong>
+                      </div>
+                      <div class="mini-stat">
+                        <span>Current Down</span>
+                        <strong id="dashboardTrafficDownValue">0.0 MB/s</strong>
+                      </div>
+                      <div class="mini-stat">
+                        <span>Realtime Up</span>
+                        <strong id="dashboardUpValue">0.0 MB/s</strong>
+                      </div>
+                      <div class="mini-stat">
+                        <span>Realtime Down</span>
+                        <strong id="dashboardDownValue">0.0 MB/s</strong>
+                      </div>
+                    </div>
                   </div>
                 </div>
-
-                <div class="hero-footer">
-                  <div class="detail-pill">
-                    <span>Status</span>
-                    <strong id="dashboardStatusValue">offline</strong>
-                  </div>
-                  <div class="detail-pill">
-                    <span>Version</span>
-                    <strong id="runtimeVersionValue">-</strong>
-                  </div>
-                  <div class="detail-pill">
-                    <span>Startup Config</span>
-                    <strong id="dashboardConfigPathValue">-</strong>
-                  </div>
-                </div>
-              </article>
-
-              <article class="card preview-card traffic-preview-card">
-                <div class="card-header">
-                  <h2>Traffic Preview</h2>
-                  <span class="nav-badge">LIVE</span>
-                </div>
-
-                <div class="preview-stat-grid">
-                  <div class="mini-stat">
-                    <span>Upload Total</span>
-                    <strong id="uploadTotalValue">0 B</strong>
-                  </div>
-                  <div class="mini-stat">
-                    <span>Download Total</span>
-                    <strong id="downloadTotalValue">0 B</strong>
-                  </div>
-                  <div class="mini-stat">
-                    <span>Transport</span>
-                    <strong id="dashboardTrafficTransportValue">idle</strong>
-                  </div>
-                </div>
-
-                <div class="detail-grid compact-grid">
-                  <div class="detail-row">
-                    <span>Current Up</span>
-                    <strong id="dashboardTrafficUpValue">0.0 MB/s</strong>
-                  </div>
-                  <div class="detail-row">
-                    <span>Current Down</span>
-                    <strong id="dashboardTrafficDownValue">0.0 MB/s</strong>
-                  </div>
-                </div>
-
-                <button class="shortcut-button compact" data-open-view="traffic" type="button">
-                  <span>Traffic</span>
-                  <strong>查看完整实时流量大盘</strong>
-                </button>
               </article>
 
               <article class="card preview-card connections-preview-card">
@@ -275,128 +293,28 @@
                 <div class="connection-preview-list" id="dashboardConnectionList"></div>
               </article>
 
-              <article class="card runtime-card">
+              <article class="card proxies-card dashboard-proxies-card">
                 <div class="card-header">
-                  <h2>Runtime Preview</h2>
+                  <h2>Proxies</h2>
+
+                  <button class="action-button ghost" data-open-view="proxies" type="button">Open Proxies</button>
                 </div>
 
-                <div class="detail-grid">
-                  <div class="detail-row">
-                    <span>TProxy</span>
-                    <strong id="tproxyPortValue">-</strong>
-                  </div>
-                  <div class="detail-row">
-                    <span>Allow LAN</span>
-                    <strong id="allowLanValue">-</strong>
-                  </div>
-                  <div class="detail-row">
-                    <span>Bind</span>
-                    <strong id="bindAddressValue">-</strong>
-                  </div>
-                  <div class="detail-row">
-                    <span>Controller URL</span>
-                    <strong id="controllerUrlValue">-</strong>
-                  </div>
-                  <div class="detail-row">
-                    <span>Auth</span>
-                    <strong id="controllerAuthValue">Bearer disabled</strong>
-                  </div>
-                  <div class="detail-row">
-                    <span>Startup Config</span>
-                    <strong id="startupConfigPathValue">-</strong>
+                <div class="proxy-layout dashboard-proxy-layout">
+                  <div class="proxy-tabs" id="dashboardProxyTabs" role="tablist" aria-label="Dashboard proxy groups"></div>
+
+                  <div class="proxy-panel">
+                    <div class="proxy-toolbar">
+                      <div>
+                        <p class="proxy-current-label">Current Group</p>
+                        <h3 class="proxy-current-name" id="dashboardCurrentGroupName">No group</h3>
+                        <p class="proxy-current-meta" id="dashboardCurrentGroupMeta">连接控制器后加载代理组与节点。</p>
+                      </div>
+                    </div>
+
+                    <div class="proxy-grid compact-proxy-grid" id="dashboardProxyGrid"></div>
                   </div>
                 </div>
-              </article>
-
-              <article class="card shortcut-card">
-                <div class="card-header">
-                  <h2>Workspace</h2>
-                </div>
-
-                <div class="shortcut-grid">
-                  <button class="shortcut-button" data-open-view="controller" type="button">
-                    <span>Controller</span>
-                    <strong>连接详情、流状态和日志级别</strong>
-                  </button>
-                  <button class="shortcut-button" data-open-view="proxies" type="button">
-                    <span>Proxies</span>
-                    <strong>切换节点、查看延迟和组策略</strong>
-                  </button>
-                  <button class="shortcut-button" data-open-view="configs" type="button">
-                    <span>Config</span>
-                    <strong>分段编辑启动 config.dae</strong>
-                  </button>
-                  <button class="shortcut-button" data-open-view="logs" type="button">
-                    <span>Logs</span>
-                    <strong>结构化日志流与运行态排障</strong>
-                  </button>
-                </div>
-              </article>
-            </section>
-          </section>
-
-          <section class="page" data-page="controller">
-            <section class="page-grid two-column">
-              <article class="card controller-card">
-                <div class="card-header">
-                  <h2>External Controller</h2>
-                </div>
-
-                <div class="detail-grid">
-                  <div class="detail-row">
-                    <span>Controller URL</span>
-                    <strong id="controllerDetailUrl">-</strong>
-                  </div>
-                  <div class="detail-row">
-                    <span>Embedded UI</span>
-                    <strong id="embeddedUiValue">-</strong>
-                  </div>
-                  <div class="detail-row">
-                    <span>Token</span>
-                    <strong id="controllerTokenValue">not set</strong>
-                  </div>
-                  <div class="detail-row">
-                    <span>Startup Config</span>
-                    <strong id="controllerConfigPathValue">-</strong>
-                  </div>
-                </div>
-
-                <p class="controller-page-note" id="controllerPageNote">
-                  HTTP 使用 Bearer 鉴权，WebSocket 在设置 secret 时附带 token 查询参数。
-                </p>
-              </article>
-
-              <article class="card stream-card">
-                <div class="card-header">
-                  <h2>Live Channels</h2>
-                </div>
-
-                <div class="stream-list" id="streamList"></div>
-              </article>
-
-              <article class="card log-level-card">
-                <div class="card-header">
-                  <h2>Runtime Log Level</h2>
-                </div>
-
-                <div class="inline-form">
-                  <label class="controller-field compact-field">
-                    <span>Level</span>
-                    <select id="runtimeLogLevelSelect">
-                      <option value="trace">trace</option>
-                      <option value="debug">debug</option>
-                      <option value="info">info</option>
-                      <option value="warn">warn</option>
-                      <option value="error">error</option>
-                    </select>
-                  </label>
-
-                  <button class="action-button subtle" id="applyLogLevelButton" type="button">Apply</button>
-                </div>
-
-                <p class="controller-page-note" id="runtimeLogLevelNote">
-                  通过 PATCH /configs 更新运行时日志级别，并保持页面状态同步。
-                </p>
               </article>
             </section>
           </section>

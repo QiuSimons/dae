@@ -648,6 +648,14 @@ body.controller-collapsed .controller-bar {
   gap: 10px;
 }
 
+.controller-inline-form {
+  padding: 0;
+}
+
+.controller-body .controller-page-note {
+  padding: 0;
+}
+
 .panel-banner {
   position: relative;
   margin: 0 8px 18px;
@@ -684,7 +692,7 @@ body.controller-collapsed .controller-bar {
 }
 
 .dashboard-grid {
-  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.15fr) minmax(300px, 0.72fr);
 }
 
 .page-grid.two-column {
@@ -743,13 +751,12 @@ body.controller-collapsed .controller-bar {
 
 .hero-card {
   grid-column: 1 / span 2;
-  min-height: 338px;
+  min-height: 370px;
   padding-bottom: 22px;
 }
 
-.hero-body,
-.hero-stats,
-.hero-footer,
+.hero-header,
+.hero-runtime-grid,
 .preview-stat-grid,
 .detail-grid,
 .stats-stack,
@@ -764,12 +771,12 @@ body.controller-collapsed .controller-bar {
   z-index: 1;
 }
 
-.hero-body {
+.hero-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 18px;
-  padding: 4px 24px 0;
+  padding: 20px 24px 8px;
 }
 
 .hero-copy h2 {
@@ -777,13 +784,6 @@ body.controller-collapsed .controller-bar {
   font-size: 2.3rem;
   line-height: 1.02;
   letter-spacing: -0.07em;
-}
-
-.hero-text {
-  max-width: 38rem;
-  margin: 12px 0 0;
-  color: #5d696f;
-  line-height: 1.65;
 }
 
 .hero-badges {
@@ -811,46 +811,65 @@ body.controller-collapsed .controller-bar {
   font-weight: 700;
 }
 
-.hero-stats {
+.hero-runtime-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
-  padding: 20px 24px 0;
+  grid-template-columns: minmax(250px, 0.78fr) minmax(0, 1.4fr);
+  gap: 16px;
+  padding: 4px 24px 0;
 }
 
-.hero-stat {
-  padding: 18px 18px 20px;
+.hero-system-panel,
+.hero-traffic-panel {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(111, 122, 136, 0.12);
   border-radius: 24px;
   background:
     linear-gradient(140deg, rgba(255, 255, 255, 0.84), rgba(255, 249, 240, 0.62)),
     rgba(255, 255, 255, 0.72);
-  border: 1px solid rgba(111, 122, 136, 0.1);
   box-shadow: var(--shadow-sm);
 }
 
-.hero-stat span {
-  color: var(--muted);
-  font-size: 0.82rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.hero-stat strong {
-  display: block;
-  margin-top: 10px;
-  font-size: 1.9rem;
-  letter-spacing: -0.06em;
-}
-
-.hero-footer {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  padding: 16px 24px 0;
-}
-
-.detail-pill {
+.subpanel-header {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
   justify-content: space-between;
+  gap: 12px;
+  padding: 18px 18px 8px;
+}
+
+.subpanel-header h3 {
+  margin: 0;
+  font-size: 1.18rem;
+  letter-spacing: -0.04em;
+}
+
+.hero-status-grid {
+  padding-top: 0;
+  padding-bottom: 18px;
+}
+
+.hero-chart-shell {
+  padding: 2px 18px 0 58px;
+}
+
+.dashboard-chart-scale {
+  left: 18px;
+  top: 56px;
+  bottom: 108px;
+}
+
+.hero-chart-time {
+  padding: 0 20px 16px 58px;
+}
+
+.hero-traffic-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  padding: 0 18px 18px;
 }
 
 .preview-card,
@@ -864,6 +883,10 @@ body.controller-collapsed .controller-bar {
 .connections-live-card,
 .proxies-card {
   min-height: 210px;
+}
+
+.dashboard-proxies-card {
+  grid-column: 1 / -1;
 }
 
 .preview-stat-grid {
@@ -965,54 +988,6 @@ body.controller-collapsed .controller-bar {
   text-overflow: ellipsis;
 }
 
-.shortcut-card {
-  grid-column: 2 / span 2;
-}
-
-.shortcut-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-  padding: 6px 18px 22px;
-}
-
-.shortcut-button {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
-  padding: 16px 18px;
-  border: 1px solid rgba(111, 122, 136, 0.12);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.72);
-  cursor: pointer;
-  transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
-}
-
-.shortcut-button:hover {
-  transform: translateY(-2px);
-  border-color: rgba(29, 155, 140, 0.22);
-  box-shadow: var(--shadow-sm);
-}
-
-.shortcut-button span {
-  color: var(--muted);
-  font-size: 0.82rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.shortcut-button strong {
-  color: var(--text);
-  font-size: 1rem;
-  font-weight: 600;
-  text-align: left;
-}
-
-.shortcut-button.compact {
-  margin: 0 18px 18px;
-}
-
 .controller-page-note {
   position: relative;
   z-index: 1;
@@ -1026,6 +1001,11 @@ body.controller-collapsed .controller-bar {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
   padding: 6px 18px 22px;
+}
+
+.compact-stream-list {
+  grid-template-columns: 1fr;
+  padding: 0;
 }
 
 .stream-pill {
@@ -1158,6 +1138,10 @@ body.controller-collapsed .controller-bar {
   gap: 14px;
 }
 
+.compact-proxy-grid {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
 .proxy-card {
   display: flex;
   flex-direction: column;
@@ -1181,6 +1165,23 @@ body.controller-collapsed .controller-bar {
 
 .proxy-card.busy {
   opacity: 0.68;
+}
+
+.proxy-card.compact {
+  gap: 8px;
+  padding: 14px;
+}
+
+.proxy-card.compact h3 {
+  font-size: 1rem;
+}
+
+.proxy-card.compact .proxy-meta {
+  font-size: 0.84rem;
+}
+
+.proxy-card.compact .proxy-delay {
+  font-size: 1.2rem;
 }
 
 .proxy-top {
@@ -1719,14 +1720,24 @@ body.auth-required #controllerTopToggle {
   }
 
   .hero-card,
-  .shortcut-card {
-    grid-column: auto;
+  .dashboard-proxies-card {
+    grid-column: 1 / -1;
   }
 }
 
 @media (max-width: 1120px) {
+  .dashboard-grid,
   .page-grid.two-column,
   .traffic-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .hero-card,
+  .dashboard-proxies-card {
+    grid-column: auto;
+  }
+
+  .hero-runtime-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1762,14 +1773,9 @@ body.auth-required #controllerTopToggle {
     justify-content: flex-start;
   }
 
-  .hero-stats,
-  .hero-footer,
+  .hero-traffic-stats,
   .traffic-totals {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .shortcut-grid {
-    grid-template-columns: 1fr;
   }
 
   .detail-row strong {
@@ -1823,13 +1829,12 @@ body.auth-required #controllerTopToggle {
 @media (max-width: 720px) {
   .dashboard-grid,
   .preview-stat-grid,
-  .hero-stats,
-  .hero-footer,
+  .hero-traffic-stats,
   .traffic-totals {
     grid-template-columns: 1fr;
   }
 
-  .hero-body,
+  .hero-header,
   .controller-panel-head,
   .logs-toolbar,
   .editor-toolbar,
@@ -1843,6 +1848,14 @@ body.auth-required #controllerTopToggle {
   }
 
   .traffic-card .chart-time {
+    padding-left: 52px;
+  }
+
+  .hero-chart-shell {
+    padding-left: 52px;
+  }
+
+  .hero-chart-time {
     padding-left: 52px;
   }
 

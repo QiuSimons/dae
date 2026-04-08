@@ -1,6 +1,3 @@
-const canvas = document.getElementById("trafficChart");
-const ctx = canvas.getContext("2d");
-
 const DEFAULT_CONFIG_PLACEHOLDER = "# Connect controller to load /etc/dae/config.dae";
 const DEFAULT_CONTROLLER_HINT =
   "登录后开始同步 Dashboard、Traffic、Proxies、Logs 和 Config。";
@@ -20,11 +17,6 @@ const VIEW_META = {
     eyebrow: "Dashboard",
     title: "daed Dashboard",
     banner: "Overview",
-  },
-  controller: {
-    eyebrow: "Controller",
-    title: "Controller Workspace",
-    banner: "External Controller",
   },
   proxies: {
     eyebrow: "Proxies",
@@ -91,7 +83,6 @@ const refs = {
   topConnectionsValue: document.getElementById("topConnectionsValue"),
   uploadRate: document.getElementById("uploadRate"),
   downloadRate: document.getElementById("downloadRate"),
-  dashboardHeroText: document.getElementById("dashboardHeroText"),
   dashboardStatusValue: document.getElementById("dashboardStatusValue"),
   dashboardModeValue: document.getElementById("dashboardModeValue"),
   dashboardLogLevelValue: document.getElementById("dashboardLogLevelValue"),
@@ -100,29 +91,24 @@ const refs = {
   dashboardConnectionValue: document.getElementById("dashboardConnectionValue"),
   dashboardUpValue: document.getElementById("dashboardUpValue"),
   dashboardDownValue: document.getElementById("dashboardDownValue"),
-  dashboardConfigPathValue: document.getElementById("dashboardConfigPathValue"),
   runtimeVersionValue: document.getElementById("runtimeVersionValue"),
   uploadTotalValue: document.getElementById("uploadTotalValue"),
   downloadTotalValue: document.getElementById("downloadTotalValue"),
   dashboardTrafficTransportValue: document.getElementById("dashboardTrafficTransportValue"),
   dashboardTrafficUpValue: document.getElementById("dashboardTrafficUpValue"),
   dashboardTrafficDownValue: document.getElementById("dashboardTrafficDownValue"),
+  dashboardTrafficChart: document.getElementById("dashboardTrafficChart"),
+  dashboardChartScale: document.getElementById("dashboardChartScale"),
+  dashboardChartTime: document.getElementById("dashboardChartTime"),
   dashboardConnectionsTotal: document.getElementById("dashboardConnectionsTotal"),
   dashboardConnectionsTcp: document.getElementById("dashboardConnectionsTcp"),
   dashboardConnectionsUdp: document.getElementById("dashboardConnectionsUdp"),
   dashboardConnectionsUpdated: document.getElementById("dashboardConnectionsUpdated"),
   dashboardConnectionList: document.getElementById("dashboardConnectionList"),
-  tproxyPortValue: document.getElementById("tproxyPortValue"),
-  allowLanValue: document.getElementById("allowLanValue"),
-  bindAddressValue: document.getElementById("bindAddressValue"),
-  controllerUrlValue: document.getElementById("controllerUrlValue"),
-  controllerAuthValue: document.getElementById("controllerAuthValue"),
-  startupConfigPathValue: document.getElementById("startupConfigPathValue"),
-  controllerDetailUrl: document.getElementById("controllerDetailUrl"),
-  embeddedUiValue: document.getElementById("embeddedUiValue"),
-  controllerTokenValue: document.getElementById("controllerTokenValue"),
-  controllerConfigPathValue: document.getElementById("controllerConfigPathValue"),
-  controllerPageNote: document.getElementById("controllerPageNote"),
+  dashboardProxyTabs: document.getElementById("dashboardProxyTabs"),
+  dashboardProxyGrid: document.getElementById("dashboardProxyGrid"),
+  dashboardCurrentGroupName: document.getElementById("dashboardCurrentGroupName"),
+  dashboardCurrentGroupMeta: document.getElementById("dashboardCurrentGroupMeta"),
   streamList: document.getElementById("streamList"),
   runtimeLogLevelSelect: document.getElementById("runtimeLogLevelSelect"),
   applyLogLevelButton: document.getElementById("applyLogLevelButton"),
@@ -133,6 +119,7 @@ const refs = {
   currentGroupMeta: document.getElementById("currentGroupMeta"),
   resetGroupButton: document.getElementById("resetGroupButton"),
   reloadProxiesButton: document.getElementById("reloadProxiesButton"),
+  trafficChart: document.getElementById("trafficChart"),
   chartScale: document.getElementById("chartScale"),
   chartTime: document.getElementById("chartTime"),
   trafficUploadTotalValue: document.getElementById("trafficUploadTotalValue"),
@@ -1142,7 +1129,7 @@ function applyTrafficSnapshot(payload, appendSample) {
   }
 
   renderTrafficMeta();
-  renderChart();
+  renderCharts();
 }
 
 function updateMemory(payload) {
@@ -1365,32 +1352,17 @@ function renderHeaderStatus() {
 }
 
 function renderSystemStatus() {
-  const connected = state.apiStatus.kind === "connected";
   const { leaves, alive } = computeLeafStats();
-  const selectedGroups = state.groups.filter((group) => group.now).length;
   const inUse = Number(state.memory?.inuse || 0);
   const currentSection = selectedConfigSection();
 
-  refs.dashboardHeroText.textContent = !state.controllerUrl
-    ? "输入 controller 地址与 token 后，开始加载运行态和启动配置。"
-    : connected
-      ? `当前连接到 ${state.controllerUrl}。状态类接口使用 5 秒流式快照，Traffic 与 Logs 保持实时通道。`
-      : "控制器尚未连通。请确认 dae 正在运行，external_controller 已开启，token 正确。";
   refs.dashboardStatusValue.textContent = state.apiStatus.message.toLowerCase();
   refs.dashboardModeValue.textContent = state.config?.mode || "-";
   refs.dashboardLogLevelValue.textContent = state.config?.["log-level"] || "-";
   refs.dashboardMemoryValue.textContent = inUse ? humanBytes(inUse) : "-";
   refs.dashboardAliveValue.textContent = `${alive} / ${leaves.length}`;
   refs.dashboardConnectionValue.textContent = String(state.connections.total);
-  refs.dashboardConfigPathValue.textContent = state.daeConfigPath || "-";
   refs.runtimeVersionValue.textContent = state.version?.version || "-";
-
-  refs.tproxyPortValue.textContent = state.config?.["tproxy-port"] ? String(state.config["tproxy-port"]) : "-";
-  refs.allowLanValue.textContent = formatYesNo(state.config?.["allow-lan"]);
-  refs.bindAddressValue.textContent = state.config?.["bind-address"] || "-";
-  refs.controllerUrlValue.textContent = state.controllerUrl || "-";
-  refs.controllerAuthValue.textContent = state.token ? "Bearer + ws token" : "Bearer disabled";
-  refs.startupConfigPathValue.textContent = state.daeConfigPath || "-";
 
   refs.configModeValue.textContent = state.config?.mode || "-";
   refs.configLogLevelValue.textContent = state.config?.["log-level"] || "-";
@@ -1408,6 +1380,10 @@ function renderSystemStatus() {
   refs.currentGroupName.textContent = group?.name || "No group";
   refs.currentGroupMeta.textContent = group
     ? `${group.type} · current: ${group.now || "none"} · ${group.all.length} node(s) · 右上角按钮测延迟`
+    : "连接控制器后加载代理组与节点。";
+  refs.dashboardCurrentGroupName.textContent = group?.name || "No group";
+  refs.dashboardCurrentGroupMeta.textContent = group
+    ? `${group.type} · current: ${group.now || "none"} · ${group.all.length} node(s)`
     : "连接控制器后加载代理组与节点。";
   refs.resetGroupButton.disabled = !group || state.busyGroups.has(group.name);
 }
@@ -1578,13 +1554,6 @@ function renderControllerPanel() {
     authOnlyMode && state.controllerHintText === DEFAULT_CONTROLLER_HINT
       ? "正在访问当前控制器。输入 token 后直接建立连接。"
       : state.controllerHintText;
-  refs.controllerDetailUrl.textContent = state.controllerUrl || "-";
-  refs.embeddedUiValue.textContent = state.controllerUrl ? `${state.controllerUrl}/ui/` : "-";
-  refs.controllerTokenValue.textContent = state.token ? `set (${state.token.length} chars)` : "not set";
-  refs.controllerConfigPathValue.textContent = state.daeConfigPath || "-";
-  refs.controllerPageNote.textContent = state.controllerUrl
-    ? "HTTP 使用 Bearer 鉴权，WebSocket 在设置 secret 时附带 token 查询参数。"
-    : "连接控制器后在此查看外部控制器地址、内嵌 UI 入口和所有流式通道状态。";
   refs.runtimeLogLevelNote.textContent = state.runtimeLogLevelNoteText;
   refs.connectButton.disabled = state.connecting;
   refs.connectButton.textContent = state.connecting ? "登录中..." : connected ? "重新连接" : "登录";
@@ -1642,7 +1611,7 @@ function createSmoothPath(points, width, height, bounds) {
   }));
 }
 
-function drawGrid(width, height) {
+function drawGrid(ctx, width, height) {
   ctx.strokeStyle = "rgba(122, 132, 142, 0.12)";
   ctx.lineWidth = 1;
 
@@ -1663,7 +1632,7 @@ function drawGrid(width, height) {
   }
 }
 
-function drawSeries(points, width, height, bounds, options) {
+function drawSeries(ctx, points, width, height, bounds, options) {
   const mapped = createSmoothPath(points, width, height, bounds);
   ctx.beginPath();
   ctx.moveTo(mapped[0].x, mapped[0].y);
@@ -1690,7 +1659,7 @@ function drawSeries(points, width, height, bounds, options) {
   ctx.fill();
 }
 
-function renderScaleLabels(bounds) {
+function renderScaleLabels(target, bounds) {
   const labels = [
     `${bounds.max.toFixed(1)} MB/s`,
     `${(bounds.max * 0.75).toFixed(1)} MB/s`,
@@ -1698,12 +1667,12 @@ function renderScaleLabels(bounds) {
     `${(bounds.max * 0.25).toFixed(1)} MB/s`,
     "0.0 MB/s",
   ];
-  refs.chartScale.innerHTML = labels.map((label) => `<span>${label}</span>`).join("");
+  target.innerHTML = labels.map((label) => `<span>${label}</span>`).join("");
 }
 
-function renderTimeLabels() {
+function renderTimeLabels(target) {
   const indexes = [0, 5, 10, 15, state.trafficSeries.times.length - 1];
-  refs.chartTime.innerHTML = indexes
+  target.innerHTML = indexes
     .map((index) => {
       const timestamp = state.trafficSeries.times[index] || Date.now();
       const label = new Date(timestamp).toLocaleTimeString("zh-CN", {
@@ -1716,7 +1685,12 @@ function renderTimeLabels() {
     .join("");
 }
 
-function renderChart() {
+function renderChartWidget(canvas, scaleTarget, timeTarget) {
+  if (!canvas || !scaleTarget || !timeTarget) {
+    return;
+  }
+
+  const ctx = canvas.getContext("2d");
   const ratio = window.devicePixelRatio || 1;
   const bounds = canvas.getBoundingClientRect();
   if (!bounds.width || !bounds.height) {
@@ -1733,22 +1707,27 @@ function renderChart() {
   const scale = chartBounds();
 
   ctx.clearRect(0, 0, width, height);
-  drawGrid(width, height);
-  drawSeries(state.trafficSeries.up, width, height, scale, {
+  drawGrid(ctx, width, height);
+  drawSeries(ctx, state.trafficSeries.up, width, height, scale, {
     stroke: "#1d9b8c",
     fill: "rgba(29, 155, 140, 0.24)",
   });
-  drawSeries(state.trafficSeries.down, width, height, scale, {
+  drawSeries(ctx, state.trafficSeries.down, width, height, scale, {
     stroke: "#cc7d37",
     fill: "rgba(204, 125, 55, 0.2)",
   });
 
-  renderScaleLabels(scale);
-  renderTimeLabels();
+  renderScaleLabels(scaleTarget, scale);
+  renderTimeLabels(timeTarget);
 }
 
-function renderProxyTabs() {
-  refs.proxyTabs.innerHTML = state.groups.length
+function renderCharts() {
+  renderChartWidget(refs.dashboardTrafficChart, refs.dashboardChartScale, refs.dashboardChartTime);
+  renderChartWidget(refs.trafficChart, refs.chartScale, refs.chartTime);
+}
+
+function proxyTabsMarkup() {
+  return state.groups.length
     ? state.groups
         .map(
           (group) => `
@@ -1766,14 +1745,13 @@ function renderProxyTabs() {
     : `<div class="proxy-empty">No proxy groups returned by /proxies.</div>`;
 }
 
-function renderProxyGrid() {
-  const group = currentGroup();
+function proxyGridMarkup(group, { limit = 0, compact = false } = {}) {
   if (!group) {
-    refs.proxyGrid.innerHTML = `<div class="proxy-empty">连接可用 controller 后加载组和节点数据。</div>`;
-    return;
+    return `<div class="proxy-empty">连接可用 controller 后加载组和节点数据。</div>`;
   }
 
-  refs.proxyGrid.innerHTML = group.all
+  const proxyNames = limit > 0 ? group.all.slice(0, limit) : group.all;
+  return proxyNames
     .map((proxyName) => {
       const proxy = state.proxies[proxyName] || { name: proxyName, alive: false };
       const delay = proxyDelay(proxy);
@@ -1786,7 +1764,7 @@ function renderProxyGrid() {
       const busyGroup = state.busyGroups.has(group.name);
 
       return `
-        <article class="proxy-card ${active ? "current" : ""} ${busyDelay ? "busy" : ""}">
+        <article class="proxy-card ${compact ? "compact" : ""} ${active ? "current" : ""} ${busyDelay ? "busy" : ""}">
           <div class="proxy-top">
             <span class="flag ${tone}">${escapeHtml(inferProxyLabel(proxyName))}</span>
             <button
@@ -1824,6 +1802,18 @@ function renderProxyGrid() {
       `;
     })
     .join("");
+}
+
+function renderProxyTabs() {
+  const tabsMarkup = proxyTabsMarkup();
+  refs.proxyTabs.innerHTML = tabsMarkup;
+  refs.dashboardProxyTabs.innerHTML = tabsMarkup;
+}
+
+function renderProxyGrid() {
+  const group = currentGroup();
+  refs.proxyGrid.innerHTML = proxyGridMarkup(group);
+  refs.dashboardProxyGrid.innerHTML = proxyGridMarkup(group, { limit: 6, compact: true });
 }
 
 function renderConfigSectionTabs() {
@@ -1924,7 +1914,7 @@ function renderAll() {
   renderProxyGrid();
   renderDaeConfigEditor();
   renderLogs();
-  renderChart();
+  renderCharts();
 }
 
 async function fetchFullSnapshot() {
@@ -2313,7 +2303,7 @@ function bindEvents() {
     connectProxySocket();
   });
 
-  refs.proxyTabs.addEventListener("click", (event) => {
+  const handleProxyTabClick = (event) => {
     const button = event.target.closest("[data-group]");
     if (!button) {
       return;
@@ -2322,9 +2312,13 @@ function bindEvents() {
     renderSystemStatus();
     renderProxyTabs();
     renderProxyGrid();
-  });
+  };
+
+  refs.proxyTabs.addEventListener("click", handleProxyTabClick);
+  refs.dashboardProxyTabs.addEventListener("click", handleProxyTabClick);
 
   refs.proxyGrid.addEventListener("click", handleProxyGridClick);
+  refs.dashboardProxyGrid.addEventListener("click", handleProxyGridClick);
 
   refs.configSectionTabs.addEventListener("click", (event) => {
     const button = event.target.closest("[data-section]");
@@ -2378,7 +2372,7 @@ function bindEvents() {
   });
 
   window.addEventListener("hashchange", applyLocationCredentialsAndReconnect);
-  window.addEventListener("resize", renderChart);
+  window.addEventListener("resize", renderCharts);
 }
 
 function boot() {
