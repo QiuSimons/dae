@@ -475,6 +475,10 @@ func (s *Server) handleProxyDelay(w http.ResponseWriter, r *http.Request, name s
 }
 
 func (s *Server) handleTraffic(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
 	streamTraffic(w, r, func() Traffic { return s.provider.Traffic() })
 }
 
@@ -505,6 +509,10 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleMemory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
 	streamMemory(w, r, func() Memory { return s.provider.Memory() })
 }
 
@@ -613,26 +621,7 @@ func streamTraffic(w http.ResponseWriter, r *http.Request, snapshot func() Traff
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeError(w, http.StatusInternalServerError, &HTTPError{Message: "streaming unsupported"})
-		return
-	}
-	encoder := json.NewEncoder(w)
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	for {
-		if err := encoder.Encode(snapshot()); err != nil {
-			return
-		}
-		flusher.Flush()
-		select {
-		case <-r.Context().Done():
-			return
-		case <-ticker.C:
-		}
-	}
+	writeJSON(w, http.StatusOK, snapshot())
 }
 
 func streamMemory(w http.ResponseWriter, r *http.Request, snapshot func() Memory) {
@@ -657,26 +646,7 @@ func streamMemory(w http.ResponseWriter, r *http.Request, snapshot func() Memory
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeError(w, http.StatusInternalServerError, &HTTPError{Message: "streaming unsupported"})
-		return
-	}
-	encoder := json.NewEncoder(w)
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	for {
-		if err := encoder.Encode(snapshot()); err != nil {
-			return
-		}
-		flusher.Flush()
-		select {
-		case <-r.Context().Done():
-			return
-		case <-ticker.C:
-		}
-	}
+	writeJSON(w, http.StatusOK, snapshot())
 }
 
 func streamJSONSnapshots(w http.ResponseWriter, r *http.Request, snapshot func() any) {

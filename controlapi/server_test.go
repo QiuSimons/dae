@@ -251,6 +251,64 @@ func TestConnectionsRoute(t *testing.T) {
 	}
 }
 
+func TestTrafficAndMemoryRoutesReturnSingleSnapshots(t *testing.T) {
+	provider := &fakeProvider{
+		traffic: Traffic{
+			Up:        11,
+			Down:      22,
+			UpTotal:   33,
+			DownTotal: 44,
+		},
+		memory: Memory{
+			Inuse:   1234,
+			OSLimit: 5678,
+		},
+		proxies: map[string]Proxy{},
+	}
+	server := httptest.NewServer(NewServer(ServerConfig{}, provider, nil).handler())
+	defer server.Close()
+
+	client := &http.Client{Timeout: time.Second}
+
+	resp, err := client.Get(server.URL + "/traffic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("traffic status = %d", resp.StatusCode)
+	}
+	var traffic Traffic
+	if err := json.NewDecoder(resp.Body).Decode(&traffic); err != nil {
+		t.Fatal(err)
+	}
+	if traffic.Up != 11 || traffic.DownTotal != 44 {
+		t.Fatalf("unexpected traffic payload: %#v", traffic)
+	}
+	if _, err := io.ReadAll(resp.Body); err != nil {
+		t.Fatalf("traffic body should close after one snapshot: %v", err)
+	}
+
+	resp, err = client.Get(server.URL + "/memory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("memory status = %d", resp.StatusCode)
+	}
+	var memory Memory
+	if err := json.NewDecoder(resp.Body).Decode(&memory); err != nil {
+		t.Fatal(err)
+	}
+	if memory.Inuse != 1234 || memory.OSLimit != 5678 {
+		t.Fatalf("unexpected memory payload: %#v", memory)
+	}
+	if _, err := io.ReadAll(resp.Body); err != nil {
+		t.Fatalf("memory body should close after one snapshot: %v", err)
+	}
+}
+
 func TestAuthAndPatchConfigs(t *testing.T) {
 	provider := &fakeProvider{
 		proxies: map[string]Proxy{},
