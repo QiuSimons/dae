@@ -1340,6 +1340,22 @@ body.controller-collapsed .controller-bar {
   letter-spacing: -0.04em;
 }
 
+.proxy-delay.pending {
+  color: #8b949b;
+}
+
+.proxy-delay.good {
+  color: #2d9f5d;
+}
+
+.proxy-delay.warn {
+  color: #d5a029;
+}
+
+.proxy-delay.bad {
+  color: #d64f4f;
+}
+
 .proxy-badges {
   display: flex;
   flex-wrap: wrap;

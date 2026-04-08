@@ -381,6 +381,19 @@ function proxyDelay(proxy) {
   return entry.delay;
 }
 
+function proxyDelayTone(proxy, delay) {
+  if (!proxy?.alive || delay === null) {
+    return "pending";
+  }
+  if (delay < 90) {
+    return "good";
+  }
+  if (delay <= 280) {
+    return "warn";
+  }
+  return "bad";
+}
+
 function proxySnapshotSignature(rawProxies) {
   const proxies = rawProxies || {};
   return stableJson(
@@ -2625,6 +2638,7 @@ function proxyGridMarkup(group, { limit = 0, compact = false } = {}) {
       const address = proxy.addr || proxy.address || "address unavailable";
       const protocol = proxy.protocol || proxy.type || "unknown";
       const delayText = delay === null ? "pending" : `${delay} ms`;
+      const delayTone = proxyDelayTone(proxy, delay);
       const busyDelay = state.busyDelayNodes.has(proxyName);
       const busyGroup = state.busyGroups.has(group.name);
 
@@ -2643,7 +2657,7 @@ function proxyGridMarkup(group, { limit = 0, compact = false } = {}) {
           </div>
 
           <div class="proxy-meta">${escapeHtml(address)}</div>
-          <p class="proxy-delay">${escapeHtml(delayText)}</p>
+          ${proxy.alive ? `<p class="proxy-delay ${delayTone}">${escapeHtml(delayText)}</p>` : ""}
 
           <div class="proxy-badges">
             <span class="proxy-badge">${escapeHtml(protocol)}</span>
