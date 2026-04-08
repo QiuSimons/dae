@@ -1297,20 +1297,27 @@ function currentOpenConfigSectionIds() {
 }
 
 function resolveOpenConfigSectionIds(openSectionIds) {
+  const normalizeSingleOpen = (sectionIds) => {
+    const last = sectionIds[sectionIds.length - 1];
+    return last ? [last] : [];
+  };
+
   if (Array.isArray(openSectionIds)) {
-    return openSectionIds.filter((sectionId) => state.daeConfigSections.some((section) => section.id === sectionId));
+    return normalizeSingleOpen(
+      openSectionIds.filter((sectionId) => state.daeConfigSections.some((section) => section.id === sectionId)),
+    );
   }
 
   const openIdsFromDom = currentOpenConfigSectionIds().filter((sectionId) =>
     state.daeConfigSections.some((section) => section.id === sectionId),
   );
   if (openIdsFromDom.length) {
-    return openIdsFromDom;
+    return normalizeSingleOpen(openIdsFromDom);
   }
   if (refs.configSectionTabs?.querySelector("[data-section-panel]")) {
     return [];
   }
-  return state.daeConfigSelected ? [state.daeConfigSelected] : [];
+  return normalizeSingleOpen(state.daeConfigSelected ? [state.daeConfigSelected] : []);
 }
 
 function supportsGuiSection(name) {
@@ -3794,14 +3801,14 @@ function handleConfigSectionInput(event) {
 function handleConfigSectionClick(event) {
   const toggleButton = event.target.closest("[data-section-toggle]");
   if (toggleButton) {
+    event.preventDefault();
     const sectionId = toggleButton.dataset.sectionToggle || "";
     if (!sectionId) {
       return;
     }
+    const [openSectionId] = resolveOpenConfigSectionIds();
     state.daeConfigSelected = sectionId;
-    window.requestAnimationFrame(() => {
-      renderConfigMeta();
-    });
+    renderDaeConfigEditor(openSectionId === sectionId ? [] : [sectionId]);
     return;
   }
 
