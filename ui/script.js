@@ -2249,37 +2249,37 @@ function renderTrafficConnectionsTable(connections) {
           </div>
 
           <div class="connection-state-grid">
-            <div class="connection-state-block">
+            <div class="connection-state-block is-download">
               <span class="connection-state-label">Download</span>
               <strong>${escapeHtml(downloadRateLabel)}</strong>
               <span class="table-secondary">Total ${escapeHtml(downloadTotalLabel)}</span>
             </div>
 
-            <div class="connection-state-block">
+            <div class="connection-state-block is-upload">
               <span class="connection-state-label">Upload</span>
               <strong>${escapeHtml(uploadRateLabel)}</strong>
               <span class="table-secondary">Total ${escapeHtml(uploadTotalLabel)}</span>
             </div>
 
-            <div class="connection-state-block">
+            <div class="connection-state-block is-source">
               <span class="connection-state-label">Source</span>
               <strong>${escapeHtml(sourceLabel)}</strong>
               <code class="table-route">${escapeHtml(sourceEndpoint)}</code>
             </div>
 
-            <div class="connection-state-block">
+            <div class="connection-state-block is-destination">
               <span class="connection-state-label">Destination</span>
               <strong>${escapeHtml(destinationLabel)}</strong>
               <code class="table-route">${escapeHtml(destinationEndpoint)}</code>
             </div>
 
-            <div class="connection-state-block">
+            <div class="connection-state-block is-routing">
               <span class="connection-state-label">Routing</span>
               <strong>${escapeHtml(outboundLabel)}</strong>
               <span class="table-secondary">${escapeHtml(directionLabel)} · ${escapeHtml(routingLabel)}</span>
             </div>
 
-            <div class="connection-state-block">
+            <div class="connection-state-block is-policy">
               <span class="connection-state-label">Policy</span>
               <strong>${escapeHtml(policyLabel)}</strong>
               <span class="table-secondary">Mark ${escapeHtml(conn.mark || 0)} · DSCP ${escapeHtml(conn.dscp || 0)}</span>
@@ -2287,15 +2287,15 @@ function renderTrafficConnectionsTable(connections) {
           </div>
 
           <div class="connection-state-meta">
-            <span class="meta-chip strong">Outbound ${escapeHtml(outboundLabel)}</span>
-            <span class="meta-chip">${escapeHtml(pidLabel)}</span>
-            <span class="meta-chip">Seen ${escapeHtml(lastSeenClock)}</span>
-            <span class="meta-chip">Down ${escapeHtml(downloadTotalLabel)}</span>
-            <span class="meta-chip">Up ${escapeHtml(uploadTotalLabel)}</span>
-            <span class="meta-chip">${escapeHtml(routingLabel)}</span>
-            <span class="meta-chip">${escapeHtml(policyLabel)}</span>
-            <span class="meta-chip">MAC ${escapeHtml(macLabel)}</span>
-            <span class="meta-chip">ID ${escapeHtml(conn.id || "-")}</span>
+            <span class="meta-chip strong meta-outbound">Outbound ${escapeHtml(outboundLabel)}</span>
+            <span class="meta-chip meta-pid">${escapeHtml(pidLabel)}</span>
+            <span class="meta-chip meta-seen">Seen ${escapeHtml(lastSeenClock)}</span>
+            <span class="meta-chip meta-total-down">Down ${escapeHtml(downloadTotalLabel)}</span>
+            <span class="meta-chip meta-total-up">Up ${escapeHtml(uploadTotalLabel)}</span>
+            <span class="meta-chip meta-routing">${escapeHtml(routingLabel)}</span>
+            <span class="meta-chip meta-policy">${escapeHtml(policyLabel)}</span>
+            <span class="meta-chip meta-mac">MAC ${escapeHtml(macLabel)}</span>
+            <span class="meta-chip meta-id">ID ${escapeHtml(conn.id || "-")}</span>
           </div>
         </article>
       `;

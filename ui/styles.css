@@ -2373,7 +2373,6 @@ body.auth-required #controllerTopToggle {
 
 @media (max-width: 720px) {
   .dashboard-grid,
-  .preview-stat-grid,
   .hero-traffic-stats,
   .traffic-totals {
     grid-template-columns: 1fr;
@@ -2411,12 +2410,80 @@ body.auth-required #controllerTopToggle {
     left: 12px;
   }
 
+  .connections-live-card .card-header {
+    flex-direction: row;
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .connections-live-card .card-header-actions {
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-start;
+  }
+
+  .connections-live-card .preview-stat-grid,
+  .connections-preview-card .preview-stat-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .connections-live-card .mini-stat,
+  .connections-preview-card .mini-stat {
+    padding: 10px 12px;
+  }
+
+  .connections-live-card .mini-stat strong,
+  .connections-preview-card .mini-stat strong {
+    font-size: 0.96rem;
+  }
+
+  .connections-table-wrap {
+    padding-inline: 14px;
+    padding-bottom: 14px;
+  }
+
+  .connection-state-card {
+    gap: 10px;
+    padding: 14px;
+    border-radius: 18px;
+  }
+
   .connection-state-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
   }
 
   .connection-state-head {
     flex-direction: column;
+    gap: 12px;
+  }
+
+  .connection-state-block {
+    gap: 4px;
+    padding: 12px;
+    border-radius: 16px;
+  }
+
+  .connection-state-block.is-source,
+  .connection-state-block.is-destination {
+    grid-column: 1 / -1;
+  }
+
+  .connection-state-meta {
+    gap: 6px;
+  }
+
+  .meta-chip {
+    padding: 4px 7px;
+    font-size: 0.72rem;
+  }
+
+  .meta-total-down,
+  .meta-total-up,
+  .meta-routing,
+  .meta-policy {
+    display: none;
   }
 
   .connections-stream {
