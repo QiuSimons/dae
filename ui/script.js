@@ -84,12 +84,10 @@ const refs = {
   topConnectionsValue: document.getElementById("topConnectionsValue"),
   uploadRate: document.getElementById("uploadRate"),
   downloadRate: document.getElementById("downloadRate"),
-  dashboardStatusValue: document.getElementById("dashboardStatusValue"),
   dashboardModeValue: document.getElementById("dashboardModeValue"),
   dashboardLogLevelValue: document.getElementById("dashboardLogLevelValue"),
   dashboardMemoryValue: document.getElementById("dashboardMemoryValue"),
   dashboardAliveValue: document.getElementById("dashboardAliveValue"),
-  dashboardConnectionValue: document.getElementById("dashboardConnectionValue"),
   dashboardUpValue: document.getElementById("dashboardUpValue"),
   dashboardDownValue: document.getElementById("dashboardDownValue"),
   runtimeVersionValue: document.getElementById("runtimeVersionValue"),
@@ -1410,12 +1408,10 @@ function renderSystemStatus() {
   const inUse = Number(state.memory?.inuse || 0);
   const currentSection = selectedConfigSection();
 
-  refs.dashboardStatusValue.textContent = state.apiStatus.message.toLowerCase();
   refs.dashboardModeValue.textContent = state.config?.mode || "-";
   refs.dashboardLogLevelValue.textContent = state.config?.["log-level"] || "-";
   refs.dashboardMemoryValue.textContent = inUse ? humanBytes(inUse) : "-";
   refs.dashboardAliveValue.textContent = `${alive} / ${leaves.length}`;
-  refs.dashboardConnectionValue.textContent = String(state.connections.total);
   refs.runtimeVersionValue.textContent = state.version?.version || "-";
 
   refs.configModeValue.textContent = state.config?.mode || "-";
