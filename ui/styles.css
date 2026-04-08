@@ -689,6 +689,7 @@ body.controller-collapsed .controller-bar {
   display: grid;
   gap: 18px;
   padding: 0 8px;
+  align-items: start;
 }
 
 .dashboard-grid {
@@ -751,8 +752,8 @@ body.controller-collapsed .controller-bar {
 
 .hero-card {
   grid-column: 1 / span 2;
-  min-height: 370px;
-  padding-bottom: 22px;
+  min-height: 0;
+  padding-bottom: 18px;
 }
 
 .hero-header,
@@ -813,13 +814,15 @@ body.controller-collapsed .controller-bar {
 
 .hero-runtime-grid {
   display: grid;
-  grid-template-columns: minmax(250px, 0.78fr) minmax(0, 1.4fr);
-  gap: 16px;
+  grid-template-columns: minmax(220px, 0.72fr) minmax(0, 1.25fr);
+  align-items: start;
+  gap: 14px;
   padding: 4px 24px 0;
 }
 
 .hero-system-panel,
 .hero-traffic-panel {
+  align-self: start;
   position: relative;
   overflow: hidden;
   border: 1px solid rgba(111, 122, 136, 0.12);
@@ -848,7 +851,11 @@ body.controller-collapsed .controller-bar {
 
 .hero-status-grid {
   padding-top: 0;
-  padding-bottom: 18px;
+  padding-bottom: 14px;
+}
+
+.hero-status-grid .detail-row {
+  padding: 11px 12px;
 }
 
 .hero-chart-shell {
@@ -858,18 +865,24 @@ body.controller-collapsed .controller-bar {
 .dashboard-chart-scale {
   left: 18px;
   top: 56px;
-  bottom: 108px;
+  bottom: 88px;
 }
 
 .hero-chart-time {
-  padding: 0 20px 16px 58px;
+  padding: 0 20px 12px 58px;
+}
+
+#dashboardTrafficChart {
+  width: 100%;
+  height: 160px;
+  display: block;
 }
 
 .hero-traffic-stats {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
-  padding: 0 18px 18px;
+  padding: 0 18px 14px;
 }
 
 .preview-card,
@@ -887,6 +900,12 @@ body.controller-collapsed .controller-bar {
 
 .dashboard-proxies-card {
   grid-column: 1 / -1;
+}
+
+.dashboard-grid > .preview-card,
+.dashboard-grid > .connections-preview-card,
+.dashboard-grid > .dashboard-proxies-card {
+  align-self: start;
 }
 
 .preview-stat-grid {
