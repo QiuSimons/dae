@@ -38,6 +38,7 @@ import (
 	"github.com/daeuniverse/dae/component/daedns"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
+	"github.com/daeuniverse/dae/controlapi"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/daeuniverse/dae/pkg/logger"
 	"github.com/mohae/deepcopy"
@@ -151,6 +152,54 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 		return err
 	}
 
+	var controllerServer *controlapi.Server
+	var logBroker *controlapi.LogBroker
+	standardLoggerHookAttached := false
+
+	attachControllerLogHook := func(currentLog *logrus.Logger) {
+		if logBroker == nil {
+			logBroker = controlapi.NewLogBroker()
+		}
+		if currentLog != nil {
+			currentLog.AddHook(logBroker.Hook())
+		}
+		if !standardLoggerHookAttached {
+			logrus.StandardLogger().AddHook(logBroker.Hook())
+			standardLoggerHookAttached = true
+		}
+	}
+
+	startExternalController := func(currentLog *logrus.Logger, currentConf *config.Config, plane *control.ControlPlane) error {
+		if controllerServer != nil {
+			_ = controllerServer.Close()
+			controllerServer = nil
+		}
+		if currentConf == nil || plane == nil || currentConf.Global.ExternalController == "" {
+			return nil
+		}
+		attachControllerLogHook(currentLog)
+		provider, err := controlapi.NewDaeProvider(Version, currentConf, plane, currentLog, logrus.StandardLogger())
+		if err != nil {
+			return err
+		}
+		controllerServer = controlapi.NewServer(controlapi.ServerConfig{
+			Addr:   currentConf.Global.ExternalController,
+			Secret: currentConf.Global.ExternalControllerSecret,
+		}, provider, logBroker)
+		if err := controllerServer.Start(); err != nil {
+			controllerServer = nil
+			return err
+		}
+		currentLog.Infof("External controller listening at: %s", currentConf.Global.ExternalController)
+		return nil
+	}
+
+	if conf.Global.ExternalController != "" {
+		if err := startExternalController(log, conf, c); err != nil {
+			return fmt.Errorf("start external controller: %w", err)
+		}
+	}
+
 	var pprofServer *http.Server
 	if conf.Global.PprofPort != 0 {
 		pprofAddr := fmt.Sprintf("localhost:%d", conf.Global.PprofPort)
@@ -257,6 +306,9 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 			logger.SetLogger(logrus.StandardLogger(), newConf.Global.LogLevel, disableTimestamp, nil)
 			log.SetOutput(oldLogOutput) // NOTE: Restore log output after creating new logger during reload.
 			logrus.SetOutput(oldLogOutput)
+			if logBroker != nil || newConf.Global.ExternalController != "" {
+				attachControllerLogHook(log)
+			}
 
 			// New control plane.
 			obj := c.EjectBpf()
@@ -354,6 +406,12 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 				pprofAddr := fmt.Sprintf("localhost:%d", conf.Global.PprofPort)
 				pprofServer = &http.Server{Addr: pprofAddr, Handler: nil}
 				go func() { _ = pprofServer.ListenAndServe() }()
+			}
+			if err := startExternalController(log, conf, c); err != nil {
+				log.WithError(err).Errorln("[Reload] Failed to restart external controller")
+				if reloadingErr == nil {
+					reloadingErr = fmt.Errorf("external controller: %w", err)
+				}
 			}
 
 			notifyRunStateChange(runStateChanges)
@@ -487,6 +545,10 @@ loop:
 
 	defer func() {
 		_ = sdnotify.Stopping()
+		if controllerServer != nil {
+			log.Infoln("Shutting down external controller")
+			_ = controllerServer.Close()
+		}
 		if pprofServer != nil {
 			log.Infoln("Shutting down pprof server")
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

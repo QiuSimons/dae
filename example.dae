@@ -29,6 +29,14 @@ global {
     # Set non-zero value to enable pprof.
     pprof_port: 0
 
+    # Mihomo/Clash-style external controller API listen address.
+    # Example: external_controller: 127.0.0.1:9090
+    # external_controller: 127.0.0.1:9090
+
+    # Optional bearer token for the external controller API.
+    # WebSocket clients can also pass it as ?token=...
+    # external_controller_secret: your-secret-token
+
     # Socket mark for dae-originated traffic.
     # If omitted, dae auto-selects an internal mark to prevent UDP self-capture.
     # Set a non-zero value to override that mark.

@@ -1,0 +1,187 @@
+package controlapi
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+)
+
+type fakeProvider struct {
+	config       Config
+	traffic      Traffic
+	memory       Memory
+	proxies      map[string]Proxy
+	version      string
+	meta         bool
+	updateCalls  []string
+	resetCalls   []string
+	delayValue   int
+	delayErr     error
+	lastLogLevel string
+}
+
+func (f *fakeProvider) Hello() string                   { return "dae" }
+func (f *fakeProvider) Version() string                 { return f.version }
+func (f *fakeProvider) Meta() bool                      { return f.meta }
+func (f *fakeProvider) Config() Config                  { return f.config }
+func (f *fakeProvider) Memory() Memory                  { return f.memory }
+func (f *fakeProvider) Traffic() Traffic                { return f.traffic }
+func (f *fakeProvider) Proxies() map[string]Proxy       { return f.proxies }
+func (f *fakeProvider) Proxy(name string) (Proxy, bool) { p, ok := f.proxies[name]; return p, ok }
+func (f *fakeProvider) UpdateProxy(groupName, proxyName string) error {
+	f.updateCalls = append(f.updateCalls, groupName+"->"+proxyName)
+	return nil
+}
+func (f *fakeProvider) ResetProxy(groupName string) error {
+	f.resetCalls = append(f.resetCalls, groupName)
+	return nil
+}
+func (f *fakeProvider) Delay(name, probeURL string, timeout time.Duration) (int, error) {
+	return f.delayValue, f.delayErr
+}
+func (f *fakeProvider) SetLogLevel(level string) error {
+	f.lastLogLevel = level
+	return nil
+}
+
+func TestVersionAndConfigs(t *testing.T) {
+	provider := &fakeProvider{
+		version: "test-version",
+		config: Config{
+			TProxyPort: 12345,
+			LogLevel:   "info",
+			Mode:       "rule",
+		},
+		proxies: map[string]Proxy{},
+	}
+	server := httptest.NewServer(NewServer(ServerConfig{}, provider, nil).handler())
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("version status = %d", resp.StatusCode)
+	}
+
+	resp, err = http.Get(server.URL + "/configs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var got Config
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.TProxyPort != 12345 {
+		t.Fatalf("tproxy port = %d", got.TProxyPort)
+	}
+}
+
+func TestProxyRoutes(t *testing.T) {
+	provider := &fakeProvider{
+		version: "test-version",
+		proxies: map[string]Proxy{
+			"auto": {
+				Name: "auto",
+				Type: "Selector",
+				All:  []string{"node-a", "node-b"},
+				Now:  "node-a",
+			},
+		},
+		delayValue: 42,
+	}
+	server := httptest.NewServer(NewServer(ServerConfig{}, provider, nil).handler())
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/proxies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("proxies status = %d", resp.StatusCode)
+	}
+
+	body := bytes.NewBufferString(`{"name":"node-b"}`)
+	req, err := http.NewRequest(http.MethodPut, server.URL+"/proxies/auto", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if len(provider.updateCalls) != 1 || provider.updateCalls[0] != "auto->node-b" {
+		t.Fatalf("unexpected update calls: %#v", provider.updateCalls)
+	}
+
+	req, err = http.NewRequest(http.MethodDelete, server.URL+"/proxies/auto", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if len(provider.resetCalls) != 1 || provider.resetCalls[0] != "auto" {
+		t.Fatalf("unexpected reset calls: %#v", provider.resetCalls)
+	}
+
+	resp, err = http.Get(server.URL + "/proxies/auto/delay?timeout=5000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var delay map[string]int
+	if err := json.NewDecoder(resp.Body).Decode(&delay); err != nil {
+		t.Fatal(err)
+	}
+	if delay["delay"] != 42 {
+		t.Fatalf("delay = %d", delay["delay"])
+	}
+}
+
+func TestAuthAndPatchConfigs(t *testing.T) {
+	provider := &fakeProvider{
+		proxies: map[string]Proxy{},
+	}
+	server := httptest.NewServer(NewServer(ServerConfig{Secret: "secret"}, provider, nil).handler())
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodPatch, server.URL+"/configs", bytes.NewBufferString(`{"log-level":"debug"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if provider.lastLogLevel != "debug" {
+		t.Fatalf("log level = %q", provider.lastLogLevel)
+	}
+
+	req, err = http.NewRequest(http.MethodGet, server.URL+"/version", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected unauthorized, got %d body=%s", resp.StatusCode, string(body))
+	}
+}

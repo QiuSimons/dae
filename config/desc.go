@@ -35,18 +35,20 @@ var SectionDescription = map[string]Desc{
 }
 
 var GlobalDesc = Desc{
-	"tproxy_port":           "tproxy port to listen on. It is NOT a HTTP/SOCKS port, and is just used by eBPF program.\nIn normal case, you do not need to use it.",
-	"tproxy_port_protect":   "Set it true to protect tproxy port from unsolicited traffic. Set it false to allow users to use self-managed iptables tproxy rules.",
-	"so_mark_from_dae":      "Socket mark for dae-originated traffic. If omitted, dae auto-selects an internal mark to prevent UDP self-capture. Set a non-zero value to override that mark. Set 0 explicitly to keep the internal protection mark without the unset warning.",
-	"log_level":             "Log level: error, warn, info, debug, trace.",
-	"tcp_check_url":         "Node connectivity check.\nHost of URL should have both IPv4 and IPv6 if you have double stack in local.\nConsidering traffic consumption, it is recommended to choose a site with anycast IP and less response.",
-	"tcp_check_http_method": "The HTTP request method to `tcp_check_url`. Use 'HEAD' by default because some server implementations bypass accounting for this kind of traffic.",
-	"udp_check_dns":         "This DNS will be used to check UDP connectivity of nodes. And if dns_upstream below contains tcp, it also be used to check TCP DNS connectivity of nodes.\nThis DNS should have both IPv4 and IPv6 if you have double stack in local.",
-	"check_interval":        "Interval of connectivity check for TCP and UDP",
-	"check_tolerance":       "Group will switch node only when new_latency <= old_latency - tolerance.",
-	"lan_interface":         "The LAN interface to bind. Use it if you want to proxy LAN.",
-	"wan_interface":         "The WAN interface to bind. Use it if you want to proxy localhost. Use \"auto\" to auto detect.",
-	"allow_insecure":        "Allow insecure TLS certificates. It is not recommended to turn it on unless you have to.",
+	"tproxy_port":                "tproxy port to listen on. It is NOT a HTTP/SOCKS port, and is just used by eBPF program.\nIn normal case, you do not need to use it.",
+	"tproxy_port_protect":        "Set it true to protect tproxy port from unsolicited traffic. Set it false to allow users to use self-managed iptables tproxy rules.",
+	"external_controller":        "HTTP listen address for the Mihomo/Clash-style external control API, for example 127.0.0.1:9090. Leave empty to disable it.",
+	"external_controller_secret": "Bearer token used by the external control API. WebSocket clients may also pass it as the `token` query parameter for Mihomo compatibility.",
+	"so_mark_from_dae":           "Socket mark for dae-originated traffic. If omitted, dae auto-selects an internal mark to prevent UDP self-capture. Set a non-zero value to override that mark. Set 0 explicitly to keep the internal protection mark without the unset warning.",
+	"log_level":                  "Log level: error, warn, info, debug, trace.",
+	"tcp_check_url":              "Node connectivity check.\nHost of URL should have both IPv4 and IPv6 if you have double stack in local.\nConsidering traffic consumption, it is recommended to choose a site with anycast IP and less response.",
+	"tcp_check_http_method":      "The HTTP request method to `tcp_check_url`. Use 'HEAD' by default because some server implementations bypass accounting for this kind of traffic.",
+	"udp_check_dns":              "This DNS will be used to check UDP connectivity of nodes. And if dns_upstream below contains tcp, it also be used to check TCP DNS connectivity of nodes.\nThis DNS should have both IPv4 and IPv6 if you have double stack in local.",
+	"check_interval":             "Interval of connectivity check for TCP and UDP",
+	"check_tolerance":            "Group will switch node only when new_latency <= old_latency - tolerance.",
+	"lan_interface":              "The LAN interface to bind. Use it if you want to proxy LAN.",
+	"wan_interface":              "The WAN interface to bind. Use it if you want to proxy localhost. Use \"auto\" to auto detect.",
+	"allow_insecure":             "Allow insecure TLS certificates. It is not recommended to turn it on unless you have to.",
 	"dial_mode": `Optional values of dial_mode are:
 1. "ip". Dial proxy using the IP from DNS directly. This allows your ipv4, ipv6 to choose the optimal path respectively, and makes the IP version requested by the application meet expectations. For example, if you use curl -4 ip.sb, you will request IPv4 via proxy and get a IPv4 echo. And curl -6 ip.sb will request IPv6. This may solve some weird full-cone problem if your are be your node support that.Sniffing will be disabled in this mode.
 2. "domain". Dial proxy using the domain from sniffing. This will relieve DNS pollution problem to a great extent if have impure DNS environment. Generally, this mode brings faster proxy response time because proxy will re-resolve the domain in remote, thus get better IP result to connect. This policy does not impact routing. That is to say, domain rewrite will be after traffic split of routing and dae will not re-route it.
