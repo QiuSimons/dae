@@ -2440,6 +2440,21 @@ body.auth-required #controllerTopToggle {
     align-items: flex-start;
   }
 
+  .config-editor-card .editor-toolbar {
+    justify-content: flex-start;
+    gap: 12px;
+  }
+
+  .config-editor-card .editor-meta {
+    flex: none;
+    width: 100%;
+  }
+
+  .config-toolbar-stats {
+    margin-top: 10px;
+    gap: 8px;
+  }
+
   .traffic-card .chart-shell {
     padding-left: 52px;
   }
@@ -2594,7 +2609,27 @@ body.auth-required #controllerTopToggle {
   }
 
   .config-action-cluster {
+    align-items: stretch;
     flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .config-toolbar-actions {
+    gap: 8px;
+  }
+
+  .config-toolbar-actions .config-action-cluster:first-child {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .config-toolbar-actions .config-action-buttons {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .config-toolbar-actions .action-button {
+    justify-content: center;
   }
 
   body.auth-required .controller-bar {
