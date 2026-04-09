@@ -112,7 +112,7 @@ func readConntrackCounters() (map[conntrackTuple]conntrackCounter, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	scanner := bufio.NewScanner(file)
 	entries := make(map[conntrackTuple]conntrackCounter)
@@ -210,9 +210,10 @@ func parseConntrackLine(line string) (conntrackTuple, conntrackCounter, bool) {
 				return conntrackTuple{}, conntrackCounter{}, false
 			}
 			bytesSeen += 1
-			if bytesSeen == 1 {
+			switch bytesSeen {
+			case 1:
 				uploadBytes = value
-			} else if bytesSeen == 2 {
+			case 2:
 				downloadBytes = value
 			}
 		}

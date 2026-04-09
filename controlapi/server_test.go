@@ -84,7 +84,7 @@ func TestVersionAndConfigs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("version status = %d", resp.StatusCode)
 	}
@@ -93,7 +93,7 @@ func TestVersionAndConfigs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var got Config
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
 		t.Fatal(err)
@@ -123,7 +123,7 @@ func TestProxyRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("proxies status = %d", resp.StatusCode)
 	}
@@ -137,7 +137,7 @@ func TestProxyRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if len(provider.updateCalls) != 1 || provider.updateCalls[0] != "auto->node-b" {
 		t.Fatalf("unexpected update calls: %#v", provider.updateCalls)
 	}
@@ -150,7 +150,7 @@ func TestProxyRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if len(provider.resetCalls) != 1 || provider.resetCalls[0] != "auto" {
 		t.Fatalf("unexpected reset calls: %#v", provider.resetCalls)
 	}
@@ -159,7 +159,7 @@ func TestProxyRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var delay map[string]int
 	if err := json.NewDecoder(resp.Body).Decode(&delay); err != nil {
 		t.Fatal(err)
@@ -222,7 +222,7 @@ func TestConnectionsRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("connections status = %d", resp.StatusCode)
 	}
@@ -275,7 +275,7 @@ func TestTrafficAndMemoryRoutesReturnSingleSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("traffic status = %d", resp.StatusCode)
 	}
@@ -294,7 +294,7 @@ func TestTrafficAndMemoryRoutesReturnSingleSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("memory status = %d", resp.StatusCode)
 	}
@@ -326,7 +326,7 @@ func TestAuthAndPatchConfigs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if provider.lastLogLevel != "debug" {
 		t.Fatalf("log level = %q", provider.lastLogLevel)
 	}
@@ -341,7 +341,7 @@ func TestAuthAndPatchConfigs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if provider.lastDaeConfig != "global{} routing{}" {
 		t.Fatalf("dae config = %q", provider.lastDaeConfig)
 	}
@@ -354,7 +354,7 @@ func TestAuthAndPatchConfigs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusUnauthorized {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected unauthorized, got %d body=%s", resp.StatusCode, string(body))
@@ -376,7 +376,7 @@ func TestGetEditableDaeConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("dae config status = %d", resp.StatusCode)
 	}
@@ -404,7 +404,7 @@ func TestWebUIIsServedWithoutBreakingAPIAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("ui status = %d body=%s", resp.StatusCode, string(body))
@@ -424,7 +424,7 @@ func TestWebUIIsServedWithoutBreakingAPIAuth(t *testing.T) {
 	if cacheControl := resp.Header.Get("Cache-Control"); cacheControl != "no-store, max-age=0" {
 		t.Fatalf("unexpected ui cache-control: %q", cacheControl)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("ui script status = %d", resp.StatusCode)
 	}
@@ -433,7 +433,7 @@ func TestWebUIIsServedWithoutBreakingAPIAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected version to remain unauthorized, got %d", resp.StatusCode)
 	}

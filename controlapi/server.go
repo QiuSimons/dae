@@ -429,7 +429,7 @@ func (s *Server) handleProxyByName(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := s.provider.UpdateProxy(name, req.Name); err != nil {
 			status := http.StatusBadRequest
-			if errors.Is(err, providerErrNotFound) {
+			if errors.Is(err, errProviderNotFound) {
 				status = http.StatusNotFound
 			}
 			writeError(w, status, &HTTPError{Message: err.Error()})
@@ -439,7 +439,7 @@ func (s *Server) handleProxyByName(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		if err := s.provider.ResetProxy(name); err != nil {
 			status := http.StatusBadRequest
-			if errors.Is(err, providerErrNotFound) {
+			if errors.Is(err, errProviderNotFound) {
 				status = http.StatusNotFound
 			}
 			writeError(w, status, &HTTPError{Message: err.Error()})
@@ -546,7 +546,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		for {
 			select {
@@ -610,7 +610,7 @@ func streamTraffic(w http.ResponseWriter, r *http.Request, snapshot func() Traff
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		ticker := time.NewTicker(snapshotStreamInterval)
 		defer ticker.Stop()
@@ -635,7 +635,7 @@ func streamMemory(w http.ResponseWriter, r *http.Request, snapshot func() Memory
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
@@ -673,7 +673,7 @@ func streamJSONSnapshotsWithErrorEvery(w http.ResponseWriter, r *http.Request, i
 	if err != nil {
 		return
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -700,10 +700,7 @@ func makeStructuredLog(event LogEvent) structuredLog {
 	}
 	fields := make([]structuredLogField, 0, len(event.Fields))
 	for _, field := range event.Fields {
-		fields = append(fields, structuredLogField{
-			Key:   field.Key,
-			Value: field.Value,
-		})
+		fields = append(fields, structuredLogField(field))
 	}
 	return structuredLog{
 		Time:    event.Time.Format(time.TimeOnly),
@@ -727,4 +724,4 @@ func writeError(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, httpErr)
 }
 
-var providerErrNotFound = errors.New("not found")
+var errProviderNotFound = errors.New("not found")

@@ -28,6 +28,8 @@ import (
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 )
 
 var (
@@ -312,7 +314,7 @@ func (p *DaeProvider) Traffic() Traffic {
 		}
 	}
 
-	if p == nil || p.plane == nil {
+	if p.plane == nil {
 		return Traffic{}
 	}
 
@@ -427,7 +429,7 @@ func (p *DaeProvider) Proxy(name string) (Proxy, bool) {
 func (p *DaeProvider) UpdateProxy(groupName, proxyName string) error {
 	group := p.plane.OutboundByName(groupName)
 	if group == nil {
-		return providerErrNotFound
+		return errProviderNotFound
 	}
 	if isBuiltinOutbound(group.Name) {
 		return fmt.Errorf("built-in outbound %q cannot be updated", group.Name)
@@ -446,7 +448,7 @@ func (p *DaeProvider) UpdateProxy(groupName, proxyName string) error {
 func (p *DaeProvider) ResetProxy(groupName string) error {
 	group := p.plane.OutboundByName(groupName)
 	if group == nil {
-		return providerErrNotFound
+		return errProviderNotFound
 	}
 	policy, ok := p.defaultPolicies[groupName]
 	if !ok {
@@ -537,11 +539,9 @@ func (p *DaeProvider) UpdateDaeConfig(content string) error {
 			flushCurrent()
 			currentFile = strings.TrimPrefix(line, markerPrefix)
 			currentFile = strings.TrimSuffix(currentFile, markerSuffix)
-		} else {
-			if currentFile != "" {
-				currentContent.WriteString(line)
-				currentContent.WriteString("\n")
-			}
+		} else if currentFile != "" {
+			currentContent.WriteString(line)
+			currentContent.WriteString("\n")
 		}
 	}
 	flushCurrent()
@@ -736,7 +736,7 @@ func (p *DaeProvider) resolveProxyTarget(name string) (*dialer.Dialer, error) {
 			return d, nil
 		}
 	}
-	return nil, providerErrNotFound
+	return nil, errProviderNotFound
 }
 
 func (p *DaeProvider) defaultDelay(ctx context.Context, d *dialer.Dialer) (int, error) {
@@ -900,7 +900,7 @@ func protocolProxyType(protocol string) string {
 	case "block":
 		return "Reject"
 	default:
-		return strings.Title(protocol)
+		return cases.Title(language.Und).String(protocol)
 	}
 }
 

@@ -84,9 +84,10 @@ func (c *ControlPlane) LiveConnections(limit int) LiveConnectionsSnapshot {
 	}
 	for _, conn := range unique {
 		connections = append(connections, conn)
-		if conn.Network == "tcp" {
+		switch conn.Network {
+		case "tcp":
 			summary.TCP++
-		} else if conn.Network == "udp" {
+		case "udp":
 			summary.UDP++
 		}
 	}
