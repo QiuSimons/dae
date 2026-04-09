@@ -2017,14 +2017,18 @@ function inferConfigSectionName(chunk, index, forcedName = "") {
   return index === 0 ? "document" : `section-${index + 1}`;
 }
 
-function buildConfigSection(chunk, index, forcedName = "") {
+function buildConfigSection(chunk, index, forcedName = "", sourceFile = "") {
   const content = normalizeConfigText(chunk);
   const name = inferConfigSectionName(content, index, forcedName);
   const editorData = parseConfigEditor(name, content);
+  const title = name === "document" ? "Whole Document" : titleCase(name);
+  const displayTitle = sourceFile ? `${title} (${sourceFile})` : title;
+
   return {
     id: `${name}-${index}`,
     name,
-    title: name === "document" ? "Whole Document" : titleCase(name),
+    title: displayTitle,
+    sourceFile,
     summary: CONFIG_SECTION_DESCRIPTIONS[name] || "编辑该顶层 dae 配置块的原始文本。",
     content,
     mode: supportsGuiSection(name) ? "gui" : "raw",
@@ -2033,12 +2037,17 @@ function buildConfigSection(chunk, index, forcedName = "") {
 }
 
 function createConfigSection(name) {
+  const sourceFile = state.daeConfigSections[0]?.sourceFile || "";
   const editorData = createEmptyConfigEditor(name);
   const content = serializeConfigSectionContent(name, editorData, "");
+  const title = titleCase(name);
+  const displayTitle = sourceFile ? `${title} (${sourceFile})` : title;
+
   return {
     id: `${name}-${Date.now()}`,
     name,
-    title: titleCase(name),
+    title: displayTitle,
+    sourceFile,
     summary: CONFIG_SECTION_DESCRIPTIONS[name] || "编辑该顶层 dae 配置块的原始文本。",
     content,
     mode: supportsGuiSection(name) ? "gui" : "raw",
@@ -2052,78 +2061,116 @@ function parseConfigSections(content) {
     return createFallbackSections("");
   }
 
-  const chunks = [];
+  const sections = [];
   let depth = 0;
   let comment = false;
   let quote = "";
   let escaped = false;
   let chunkStart = 0;
+  let currentFile = "";
+  let index = 0;
 
-  for (let index = 0; index < text.length; index += 1) {
+  const markerPrefix = "# --- FILE: ";
+  const markerSuffix = " ---";
+
+  while (index < text.length) {
+    // Check for file markers at the start of a line and when depth is 0
+    if (depth === 0 && !quote && !comment && (index === 0 || text[index - 1] === "\n") && text.startsWith(markerPrefix, index)) {
+      const lineEnd = text.indexOf("\n", index);
+      const line = lineEnd === -1 ? text.slice(index) : text.slice(index, lineEnd);
+      if (line.endsWith(markerSuffix)) {
+        // Collect previous tail as a section if it has content
+        const chunk = text.slice(chunkStart, index);
+        if (chunk.trim()) {
+          sections.push(buildConfigSection(chunk, sections.length, "", currentFile));
+        }
+
+        currentFile = line.slice(markerPrefix.length, -markerSuffix.length).trim();
+        index += line.length + (lineEnd === -1 ? 0 : 1);
+        chunkStart = index;
+        continue;
+      }
+    }
+
     const char = text[index];
 
     if (comment) {
       if (char === "\n") {
         comment = false;
       }
+      index += 1;
       continue;
     }
 
     if (quote) {
       if (escaped) {
         escaped = false;
+        index += 1;
         continue;
       }
       if (char === "\\") {
         escaped = true;
+        index += 1;
         continue;
       }
       if (char === quote) {
         quote = "";
       }
+      index += 1;
       continue;
     }
 
     if (char === "#") {
       comment = true;
+      index += 1;
       continue;
     }
     if (char === "'" || char === '"') {
       quote = char;
+      index += 1;
       continue;
     }
     if (char === "{") {
       depth += 1;
-      continue;
-    }
-    if (char === "}") {
+    } else if (char === "}") {
       if (depth > 0) {
         depth -= 1;
       }
       if (depth === 0) {
         const chunk = text.slice(chunkStart, index + 1);
         if (chunk.trim()) {
-          chunks.push(chunk);
+          sections.push(buildConfigSection(chunk, sections.length, "", currentFile));
         }
         chunkStart = index + 1;
       }
     }
+    index += 1;
   }
 
   const tail = text.slice(chunkStart);
   if (tail.trim()) {
-    chunks.push(tail);
+    sections.push(buildConfigSection(tail, sections.length, "", currentFile));
   }
 
-  if (!chunks.length) {
+  if (!sections.length) {
     return createFallbackSections(text);
   }
 
-  return chunks.map((chunk, index) => buildConfigSection(chunk, index));
+  return sections;
 }
 
 function joinConfigSections() {
-  return state.daeConfigSections.map((section) => section.content).join("");
+  let lastFile = null;
+  return state.daeConfigSections
+    .map((section) => {
+      let prefix = "";
+      if (section.sourceFile && section.sourceFile !== lastFile) {
+        prefix = `# --- FILE: ${section.sourceFile} ---\n`;
+        lastFile = section.sourceFile;
+      }
+      return prefix + section.content;
+    })
+    .join("\n");
 }
 
 function updateConfigDirtyState() {

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -119,13 +120,65 @@ func (p *DaeProvider) DaeConfigDocument() (DaeConfigDocument, error) {
 	if p.configPath == "" {
 		return DaeConfigDocument{}, fmt.Errorf("config file path is unavailable")
 	}
-	content, err := os.ReadFile(p.configPath)
+
+	merger := config.NewMerger(p.configPath)
+	_, entries, err := merger.Merge()
 	if err != nil {
-		return DaeConfigDocument{}, fmt.Errorf("read config file: %w", err)
+		// Fallback to simple read if merge fails (e.g. syntax error or missing files)
+		content, err := os.ReadFile(p.configPath)
+		if err != nil {
+			return DaeConfigDocument{}, err
+		}
+		return DaeConfigDocument{
+			Path:    p.configPath,
+			Content: string(content),
+		}, nil
 	}
+
+	// Sort entries deterministically to prevent UI jumping.
+	// Ensure the root configPath is always the first item.
+	var sortedEntries []string
+	var rootEntry string
+	for _, entry := range entries {
+		if filepath.Clean(entry) == filepath.Clean(p.configPath) {
+			rootEntry = entry
+		} else {
+			sortedEntries = append(sortedEntries, entry)
+		}
+	}
+	sort.Strings(sortedEntries)
+	if rootEntry != "" {
+		sortedEntries = append([]string{rootEntry}, sortedEntries...)
+	} else {
+		// Safety fallback if for some reason p.configPath isn't exactly matched
+		sort.Strings(entries)
+		sortedEntries = entries
+	}
+
+	dir := filepath.Dir(p.configPath)
+	var sb strings.Builder
+	for i, entry := range sortedEntries {
+		content, err := os.ReadFile(entry)
+		if err != nil {
+			return DaeConfigDocument{}, fmt.Errorf("read entry %v: %w", entry, err)
+		}
+
+		rel, err := filepath.Rel(dir, entry)
+		if err != nil {
+			rel = entry
+		}
+
+		if i > 0 {
+			sb.WriteString("\n")
+		}
+		fmt.Fprintf(&sb, "# --- FILE: %s ---\n", rel)
+		sb.Write(content)
+		sb.WriteString("\n")
+	}
+
 	return DaeConfigDocument{
 		Path:    p.configPath,
-		Content: string(content),
+		Content: sb.String(),
 	}, nil
 }
 
@@ -454,7 +507,72 @@ func (p *DaeProvider) UpdateDaeConfig(content string) error {
 		return fmt.Errorf("config file path is unavailable")
 	}
 
+	const markerPrefix = "# --- FILE: "
+	const markerSuffix = " ---"
+
+	if !strings.Contains(content, markerPrefix) {
+		return p.updateSingleDaeConfig(p.configPath, content, true)
+	}
+
+	// Split by markers
+	files := make(map[string]*strings.Builder)
+	lines := strings.Split(content, "\n")
+	currentFile := filepath.Base(p.configPath)
+	var currentContent strings.Builder
+
+	flushCurrent := func() {
+		if currentFile != "" && currentContent.Len() > 0 {
+			if _, exists := files[currentFile]; !exists {
+				files[currentFile] = &strings.Builder{}
+			} else {
+				files[currentFile].WriteString("\n")
+			}
+			files[currentFile].WriteString(strings.TrimSpace(currentContent.String()))
+			currentContent.Reset()
+		}
+	}
+
+	for _, line := range lines {
+		if strings.HasPrefix(line, markerPrefix) && strings.HasSuffix(line, markerSuffix) {
+			flushCurrent()
+			currentFile = strings.TrimPrefix(line, markerPrefix)
+			currentFile = strings.TrimSuffix(currentFile, markerSuffix)
+		} else {
+			if currentFile != "" {
+				currentContent.WriteString(line)
+				currentContent.WriteString("\n")
+			}
+		}
+	}
+	flushCurrent()
+
 	dir := filepath.Dir(p.configPath)
+	for relPath, builder := range files {
+		absPath := filepath.Join(dir, relPath)
+		fileContent := builder.String()
+		// Safety check: ensure the path is within the config directory
+		if !strings.HasPrefix(filepath.Clean(absPath), filepath.Clean(dir)) {
+			return fmt.Errorf("illegal file path: %s", relPath)
+		}
+
+		// Only send reload signal for the last file update
+		if err := p.updateSingleDaeConfig(absPath, fileContent, false); err != nil {
+			return err
+		}
+	}
+
+	if err := syscall.Kill(os.Getpid(), syscall.SIGUSR1); err != nil {
+		return fmt.Errorf("send reload signal: %w", err)
+	}
+	return nil
+}
+
+func (p *DaeProvider) updateSingleDaeConfig(path string, content string, reload bool) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("create directory: %w", err)
+	}
+
 	tmp, err := os.CreateTemp(dir, ".dae-controller-*.dae")
 	if err != nil {
 		return fmt.Errorf("create temp config: %w", err)
@@ -463,7 +581,7 @@ func (p *DaeProvider) UpdateDaeConfig(content string) error {
 	defer func() { _ = os.Remove(tmpPath) }()
 
 	mode := os.FileMode(0600)
-	if stat, err := os.Stat(p.configPath); err == nil {
+	if stat, err := os.Stat(path); err == nil {
 		mode = stat.Mode().Perm()
 	}
 	if err := tmp.Chmod(mode); err != nil {
@@ -478,14 +596,19 @@ func (p *DaeProvider) UpdateDaeConfig(content string) error {
 		return fmt.Errorf("close temp config: %w", err)
 	}
 
+	// We only validate the entry file if it's a single file update or if we're updating the entry file itself.
+	// But actually, validateDaeConfigFile might fail if sub-files are not yet updated.
+	// This is a trade-off. For now, we only validate the file being written.
 	if err := validateDaeConfigFile(tmpPath); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpPath, p.configPath); err != nil {
+	if err := os.Rename(tmpPath, path); err != nil {
 		return fmt.Errorf("replace config file: %w", err)
 	}
-	if err := syscall.Kill(os.Getpid(), syscall.SIGUSR1); err != nil {
-		return fmt.Errorf("send reload signal: %w", err)
+	if reload {
+		if err := syscall.Kill(os.Getpid(), syscall.SIGUSR1); err != nil {
+			return fmt.Errorf("send reload signal: %w", err)
+		}
 	}
 	return nil
 }
