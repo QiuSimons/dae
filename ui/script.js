@@ -1,8 +1,7 @@
 const DEFAULT_CONFIG_PLACEHOLDER = "# Connect controller to load /etc/dae/config.dae";
-const DEFAULT_CONTROLLER_HINT =
-  "登录后开始同步 Dashboard、Traffic、Proxies、Logs 和 Config。";
-const DEFAULT_EDITOR_NOTE = "按 section 折叠编辑 config.dae；常见块走 GUI Builder，复杂语法可切到 Raw。";
-const DEFAULT_LOG_LEVEL_NOTE = "通过 PATCH /configs 更新运行时日志级别，并保持页面状态同步。";
+
+
+
 const SAMPLE_SIZE = 20;
 const TRAFFIC_SAMPLE_INTERVAL_MS = 5000;
 const CONNECTION_LIMIT = 200;
@@ -76,33 +75,13 @@ const GLOBAL_FIELD_DEFS = [
   },
 ];
 
-const VIEW_META = {
-  dashboard: {
-    eyebrow: "Dashboard",
-    title: "daed Dashboard",
-    banner: "Overview",
-  },
-  proxies: {
-    eyebrow: "Proxies",
-    title: "Proxy Runtime",
-    banner: "Proxy Groups",
-  },
-  traffic: {
-    eyebrow: "Traffic",
-    title: "Realtime Traffic",
-    banner: "Traffic Flow",
-  },
-  configs: {
-    eyebrow: "Config",
-    title: "Startup Config",
-    banner: "config.dae Builder",
-  },
-  logs: {
-    eyebrow: "Logs",
-    title: "Live Logs",
-    banner: "Structured Log Stream",
-  },
-};
+const VIEW_META = () => ({
+  dashboard: { eyebrow: t("nav.dashboard"), title: "dae Dashboard", banner: t("dashboard.overview") },
+  proxies: { eyebrow: t("nav.proxies"), title: t("nav.proxies"), banner: "代理分组" },
+  traffic: { eyebrow: t("nav.traffic"), title: t("traffic.realtime_title"), banner: t("dashboard.traffic_flow") },
+  configs: { eyebrow: t("nav.configs"), title: "config.dae", banner: "config.dae Builder" },
+  logs: { eyebrow: t("nav.logs"), title: t("nav.logs"), banner: "Structured Log Stream" },
+});
 
 const STORAGE_KEYS = {
   controller: "daed-demo-controller",
@@ -111,16 +90,16 @@ const STORAGE_KEYS = {
   connectionSort: "daed-demo-connection-sort",
 };
 
-const CONFIG_SECTION_DESCRIPTIONS = {
-  include: "拆分配置入口和 include 路径。",
-  global: "全局运行参数、控制器、网络接口和拨号行为。",
-  subscription: "订阅链接和订阅标签。",
-  node: "手工添加的节点链接。",
-  dns: "DNS 上游、绑定地址与 DNS routing。",
-  group: "代理组、选路策略和组内筛选。",
-  routing: "流量分流与 fallback 规则。",
-  document: "无法拆分时按整份文档编辑。",
-};
+const CONFIG_SECTION_DESCRIPTIONS = () => ({
+  include: t('config.section_include'),
+  global: t('config.section_global'),
+  subscription: t('config.section_subscription'),
+  node: t('config.section_node'),
+  dns: t('config.section_dns'),
+  group: t('config.section_group'),
+  routing: t('config.section_routing'),
+  document: t('config.section_document'),
+});
 
 const refs = {
   controllerForm: document.getElementById("controllerForm"),
@@ -244,11 +223,11 @@ const state = {
   currentView: "dashboard",
   apiStatus: {
     kind: "offline",
-    message: "Disconnected",
+    message: "",
   },
-  controllerHintText: DEFAULT_CONTROLLER_HINT,
-  editorNoteText: DEFAULT_EDITOR_NOTE,
-  runtimeLogLevelNoteText: DEFAULT_LOG_LEVEL_NOTE,
+  controllerHintText: "",
+  editorNoteText: "",
+  runtimeLogLevelNoteText: "",
   version: null,
   versionSignature: "",
   config: null,
@@ -602,9 +581,9 @@ function resetLiveState() {
   state.daeConfigDirty = false;
   state.logs = [];
   state.logsPaused = false;
-  state.controllerHintText = DEFAULT_CONTROLLER_HINT;
-  state.editorNoteText = DEFAULT_EDITOR_NOTE;
-  state.runtimeLogLevelNoteText = DEFAULT_LOG_LEVEL_NOTE;
+  state.controllerHintText = t("controller.hint");
+  state.editorNoteText = t("config.editor_note");
+  state.runtimeLogLevelNoteText = t("controller.log_level_note");
 }
 
 function isEmbeddedUIPath() {
@@ -2029,7 +2008,7 @@ function buildConfigSection(chunk, index, forcedName = "", sourceFile = "") {
     name,
     title: displayTitle,
     sourceFile,
-    summary: CONFIG_SECTION_DESCRIPTIONS[name] || "编辑该顶层 dae 配置块的原始文本。",
+    summary: (CONFIG_SECTION_DESCRIPTIONS()[name] || t("config.section_default")),
     content,
     mode: supportsGuiSection(name) ? "gui" : "raw",
     editorData,
@@ -2048,7 +2027,7 @@ function createConfigSection(name) {
     name,
     title: displayTitle,
     sourceFile,
-    summary: CONFIG_SECTION_DESCRIPTIONS[name] || "编辑该顶层 dae 配置块的原始文本。",
+    summary: (CONFIG_SECTION_DESCRIPTIONS()[name] || t("config.section_default")),
     content,
     mode: supportsGuiSection(name) ? "gui" : "raw",
     editorData,
@@ -2200,7 +2179,7 @@ function renderLayoutState() {
 }
 
 function activeViewMeta() {
-  return VIEW_META[state.currentView] || VIEW_META.dashboard;
+  return VIEW_META()[state.currentView] || VIEW_META().dashboard;
 }
 
 function renderViewState() {
@@ -2243,19 +2222,19 @@ function renderSystemStatus() {
   refs.dashboardAliveValue.textContent = `${alive} / ${leaves.length}`;
   refs.runtimeVersionValue.textContent = state.version?.version || "-";
 
-  if (!state.logLevelChanging) {
+  if (!state.logLevelChanging && document.activeElement !== refs.runtimeLogLevelSelect) {
     refs.runtimeLogLevelSelect.value = state.config?.["log-level"] || "info";
   }
 
   const group = currentGroup();
   refs.currentGroupName.textContent = group?.name || "No group";
   refs.currentGroupMeta.textContent = group
-    ? `${group.type} · current: ${group.now || "none"} · ${group.all.length} node(s) · 右上角按钮测延迟`
-    : "连接控制器后加载代理组与节点。";
+    ? t("proxies.delay", {now: group.now || "none", count: group.all.length})
+    : t("proxies.waiting");
   refs.dashboardCurrentGroupName.textContent = group?.name || "No group";
   refs.dashboardCurrentGroupMeta.textContent = group
     ? `${group.type} · current: ${group.now || "none"} · ${group.all.length} node(s)`
-    : "连接控制器后加载代理组与节点。";
+    : t("proxies.waiting");
   refs.resetGroupButton.disabled = !group || state.busyGroups.has(group.name);
 }
 
@@ -2270,7 +2249,7 @@ function renderTrafficMeta() {
   refs.dashboardDownValue.textContent = formatByteRate(state.traffic.down);
 }
 
-function renderConnectionPreviewList(target, connections, emptyMessage = "暂无活动连接。") {
+function renderConnectionPreviewList(target, connections, emptyMessage = t("traffic.empty")) {
   if (!connections.length) {
     target.innerHTML = `<div class="proxy-empty">${escapeHtml(emptyMessage)}</div>`;
     return;
@@ -2439,7 +2418,7 @@ function renderTrafficConnectionsTable(connections) {
       `;
     })
     .join("");
-  refs.trafficConnectionsEmpty.textContent = "暂无活动连接。";
+  refs.trafficConnectionsEmpty.textContent = t("traffic.empty");
   refs.trafficConnectionsEmpty.hidden = connections.length > 0;
 }
 
@@ -2448,26 +2427,26 @@ function renderConnections() {
   refs.dashboardConnectionsTcp.textContent = String(state.connections.tcp);
   refs.dashboardConnectionsUdp.textContent = String(state.connections.udp);
   refs.dashboardConnectionsUpdated.textContent = !state.connectionsAvailable
-    ? "当前 controller 未提供 /connections。"
+    ? t("traffic.unsupported")
     : state.connections.updatedAt
-      ? `最近更新 ${formatClock(state.connections.updatedAt)}`
-      : "等待 /connections 数据。";
+      ? t("traffic.updated_at", {time: formatClock(state.connections.updatedAt)})
+      : t("traffic.waiting");
 
   refs.trafficConnectionsTotal.textContent = String(state.connections.total);
   refs.trafficConnectionsTcp.textContent = String(state.connections.tcp);
   refs.trafficConnectionsUdp.textContent = String(state.connections.udp);
   refs.trafficConnectionsUpdated.textContent = !state.connectionsAvailable
-    ? "当前 controller 未提供 /connections。"
+    ? t("traffic.unsupported")
     : state.connections.updatedAt
-      ? `最近更新 ${formatClock(state.connections.updatedAt)}`
-      : "等待 /connections 数据。";
+      ? t("traffic.updated_at", {time: formatClock(state.connections.updatedAt)})
+      : t("traffic.waiting");
   refs.trafficSortSelect.value = state.connectionSort;
   refs.trafficSortSelect.disabled = !state.connectionsAvailable;
 
   if (!state.connectionsAvailable) {
-    renderConnectionPreviewList(refs.dashboardConnectionList, [], "当前 controller 未提供 /connections。");
+    renderConnectionPreviewList(refs.dashboardConnectionList, [], t("traffic.unsupported"));
     refs.trafficConnectionsList.innerHTML = "";
-    refs.trafficConnectionsEmpty.textContent = "当前 controller 未提供 /connections。";
+    refs.trafficConnectionsEmpty.textContent = t("traffic.unsupported");
     refs.trafficConnectionsEmpty.hidden = false;
     return;
   }
@@ -2483,23 +2462,23 @@ function renderControllerPanel() {
   const summaryUrl = state.controllerUrl || (embedded ? window.location.origin : "") || "未连接";
   refs.controllerSummaryUrl.textContent = summaryUrl;
   refs.controllerSummaryMeta.textContent = connected
-    ? `已连接，${state.token ? "使用 Bearer token" : "未配置 token"}。`
+    ? (state.token ? t("controller.connected_token") : t("controller.connected_no_token"))
     : authOnlyMode
-      ? "当前页面已经运行在 dae 控制器上，只需要输入 token。"
-      : "输入地址与 token，连接 dae 控制器。";
-  refs.controllerPanelTitle.textContent = connected ? "Controller 已连接" : authOnlyMode ? "登录 dae 控制台" : "连接 dae External Controller";
+      ? t("controller.embedded_hint")
+      : t("controller.hint_meta");
+  refs.controllerPanelTitle.textContent = connected ? t("controller.connected_title") : authOnlyMode ? t("controller.login_embedded") : t("controller.title");
   refs.controllerHint.textContent =
-    authOnlyMode && state.controllerHintText === DEFAULT_CONTROLLER_HINT
-      ? "正在访问当前控制器。输入 token 后直接建立连接。"
+    authOnlyMode && state.controllerHintText === t("controller.hint")
+      ? t("controller.embedded_direct")
       : state.controllerHintText;
   refs.runtimeLogLevelNote.textContent = state.runtimeLogLevelNoteText;
   refs.connectButton.disabled = state.connecting;
-  refs.connectButton.textContent = state.connecting ? "登录中..." : connected ? "重新连接" : "登录";
+  refs.connectButton.textContent = state.connecting ? t("controller.logging_in") : connected ? t("controller.reconnect_btn") : t("controller.login_btn");
   refs.controllerUrlField.hidden = authOnlyMode;
   refs.controllerUrl.readOnly = authOnlyMode;
   refs.controllerUrl.placeholder = embedded ? window.location.origin : "http://127.0.0.1:9090";
   refs.applyLogLevelButton.disabled = !state.controllerUrl || state.logLevelChanging || state.connecting;
-  refs.controllerTopToggle.textContent = connected ? "Controller" : "登录";
+  refs.controllerTopToggle.textContent = connected ? t("controller.controller_top_connected") : t("controller.toggle");
   refs.controllerTopToggle.hidden = !connected;
 
   renderLayoutState();
@@ -2680,7 +2659,7 @@ function proxyTabsMarkup() {
 
 function proxyGridMarkup(group, { limit = 0, compact = false } = {}) {
   if (!group) {
-    return `<div class="proxy-empty">连接可用 controller 后加载组和节点数据。</div>`;
+    return `<div class="proxy-empty">${t("proxies.empty")}</div>`;
   }
 
   const proxyNames = limit > 0 ? group.all.slice(0, limit) : group.all;
@@ -3370,9 +3349,9 @@ function renderLogs() {
   let statusText = `Waiting for live events from /logs?format=structured&level=${state.logsLevel}.`;
   const currentState = wsState("logs");
   if (!state.controllerUrl) {
-    statusText = "连接 controller 后开启日志流。";
+    statusText = t("logs.status_waiting_controller");
   } else if (state.logsPaused) {
-    statusText = "本地已暂停日志流，恢复后继续接收新事件。";
+    statusText = t("logs.status_paused");
   } else if (currentState === "live") {
     statusText = `Streaming live logs at level ${state.logsLevel}.`;
   } else if (currentState === "retrying" || currentState === "opening") {
@@ -3474,9 +3453,9 @@ async function refreshSnapshot(updateStatus = true) {
     const snapshot = await fetchFullSnapshot();
     applyFullSnapshot(snapshot);
     if (updateStatus) {
-      setApiStatus("connected", "Connected");
+      setApiStatus("connected", t("topbar.connected_status"));
       state.controllerHintText =
-        "已连接，实时数据正在同步。";
+        t("controller.connected_syncing");
       state.controllerExpanded = false;
       openLiveChannels();
       renderAll();
@@ -3494,11 +3473,11 @@ function handleConnectionError(error) {
   state.controllerExpanded = true;
 
   if (error.status === 401) {
-    setApiStatus("warn", "Unauthorized");
-    state.controllerHintText = "登录失败，请确认 token 正确。";
+    setApiStatus("warn", t("topbar.unauthorized"));
+    state.controllerHintText = t("controller.login_failed");
   } else {
-    setApiStatus("offline", "Unavailable");
-    state.controllerHintText = "无法连接 controller，请确认 dae 正在运行。";
+    setApiStatus("offline", t("topbar.unavailable"));
+    state.controllerHintText = t("controller.connection_failed");
   }
 
   renderAll();
@@ -3520,8 +3499,8 @@ async function connectController() {
   closeAllSockets();
   resetLiveState();
   setBusyState(true);
-  setApiStatus("warn", "Connecting");
-  state.controllerHintText = "正在连接 controller 并建立实时通道。";
+  setApiStatus("warn", t("topbar.connecting"));
+  state.controllerHintText = t("controller.connecting_channel");
   renderAll();
   await refreshSnapshot(true);
   setBusyState(false);
@@ -3544,8 +3523,8 @@ async function resyncControllerAfterConfigSave() {
       const snapshot = await fetchFullSnapshot();
       state.daeConfigDirty = false;
       applyFullSnapshot(snapshot);
-      setApiStatus("connected", "Connected");
-      state.controllerHintText = "已连接，实时数据正在同步。";
+      setApiStatus("connected", t("topbar.connected_status"));
+      state.controllerHintText = t("controller.connected_syncing");
       openLiveChannels();
       state.editorNoteText = `Saved ${state.daeConfigPath || "config.dae"} and reloaded dae.`;
       renderAll();
@@ -3713,7 +3692,7 @@ function toggleControllerPanel() {
 }
 
 function setActiveView(view) {
-  if (!VIEW_META[view]) {
+  if (!VIEW_META()[view]) {
     return;
   }
   state.currentView = view;
@@ -4058,4 +4037,38 @@ function boot() {
   }
 }
 
-boot();
+window.addEventListener("languageChanged", () => {
+  renderDaeConfigEditor();
+  renderSystemStatus();
+  renderControllerPanel();
+  renderTrafficMeta();
+  renderProxyTabs();
+  renderProxyGrid();
+  renderViewState();
+  
+  // Re-evaluate default states
+  state.controllerHintText = t("controller.hint");
+  state.editorNoteText = t("config.editor_note");
+  state.runtimeLogLevelNoteText = t("controller.log_level_note");
+  
+  if (state.daeConfigSections) {
+    state.daeConfigSections.forEach(sec => {
+        sec.summary = (CONFIG_SECTION_DESCRIPTIONS()[sec.name] || t("config.section_default"));
+    });
+  }
+});
+
+// Use a self-executing async function to initialize i18n then boot the app
+(async () => {
+    if (window.I18n) {
+        await window.I18n.init();
+        
+        // Add listener for the language toggle button
+        document.addEventListener("click", (e) => {
+           if (e.target.closest("#langToggle")) {
+               window.I18n.setLanguage(window.I18n.currentLang === 'zh' ? 'en' : 'zh');
+           }
+        });
+    }
+    boot();
+})();

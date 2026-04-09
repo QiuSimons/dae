@@ -402,6 +402,8 @@ body.sidebar-collapsed .nav-item.active {
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.78);
   box-shadow: var(--shadow-sm);
+  min-width: 160px;
+  justify-content: center;
 }
 
 .status-chip strong,
