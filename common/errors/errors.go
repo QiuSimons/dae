@@ -263,7 +263,7 @@ func IsUDPEndpointNormalClose(err error) bool {
 		}
 	}
 
-	return false
+	return ContainsIgnorableErrorPattern(errStr)
 }
 
 // IsReplayAttackError reports whether err is a replay attack error.
@@ -291,6 +291,18 @@ var ignorableErrorPatterns = []string{
 	"canceled by local with error code 0",
 	"canceled by remote with error code 0",
 	"use of closed network connection",
+	"websocket: close 1000 (normal)",
+	"websocket: close 1001",
+	"websocket: close 1005",
+	"client closed",
+	"client closing",
+	"too many open streams",
+	"hold on",
+	"Application error 0x100",
+	"Application error 0x0",
+	"NO_ERROR",
+	"stream reset",
+	"connection timed out",
 }
 
 // ContainsIgnorableErrorPattern provides fallback pattern matching

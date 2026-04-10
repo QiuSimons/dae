@@ -2604,12 +2604,14 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 								return
 							}
 							if c.log.IsLevelEnabled(logrus.WarnLevel) && c.allowDnsFastPathErrorLog(time.Now()) {
-								c.log.WithFields(logrus.Fields{
-									"src":      convergeSrc.String(),
-									"dst":      realDst.String(),
-									"question": dnsMessage.Question,
-									"error":    e.Error(),
-								}).Warn("DNS ingress fast path failed; sending SERVFAIL response")
+								if !commonerrors.IsIgnorableConnectionError(e) {
+									c.log.WithFields(logrus.Fields{
+										"src":      convergeSrc.String(),
+										"dst":      realDst.String(),
+										"question": dnsMessage.Question,
+										"error":    e.Error(),
+									}).Warn("DNS ingress fast path failed; sending SERVFAIL response")
+								}
 							}
 							if sendErr := c.dnsController.sendDnsErrorResponse_(dnsMessage, dnsmessage.RcodeServerFailure, "ServeFail (dns ingress fast path)", req, nil); sendErr != nil {
 								if c.log.IsLevelEnabled(logrus.WarnLevel) && c.allowDnsFastPathServfailLog(time.Now()) {
@@ -3052,6 +3054,12 @@ func (c *ControlPlane) closeTail() error {
 	c.clearAllTcpSniffNegative()
 	c.failedQuicDcidCache.Clear()
 	// Note: inConnections is cleared by AbortConnections() which should be called before Close()
+
+	if c.dnsController != nil {
+		if dnsErr := c.dnsController.Close(); dnsErr != nil {
+			errs = append(errs, dnsErr)
+		}
+	}
 
 	// Combine defer errors with core.Close error
 	if c.core != nil {
